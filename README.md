@@ -45,7 +45,7 @@
 ### 1. 載入擴充功能
 1. 下載或 Clone 本專案：
    ```bash
-   git clone https://github.com/f0909172434/kaggle-course-translator.git
+   git clone https://github.com/Chih-Kai-Wang/kaggle-course-translator.git
    ```
 2. 開啟 Chromium 系瀏覽器的擴充功能管理頁面：
    - Chrome：`chrome://extensions/`
