@@ -86,6 +86,7 @@
   const pendingItems = []; // { kind?: 'block' | 'comment', el, key, text, placeholders?, nestedListEl?, commentInfo? }
   let totalDetected = 0;
   let totalTranslated = 0;
+  let translationEpoch = 0;
   let lastErrorMsg = '';
   const subframeStats = new Map(); // frameId -> { totalDetected, totalTranslated, isBusy, lastErrorMsg }
 
@@ -105,7 +106,7 @@
 
   function applyDisplayModeClass(mode) {
     const root = document.documentElement;
-    root.classList.add('kct-active');
+    root.classList.toggle('kct-active', settings?.enabled !== false);
     root.classList.remove('kct-mode-bilingual', 'kct-mode-replace', 'kct-mode-original');
     const resolvedMode = mode || settings?.displayMode || 'replace';
     if (resolvedMode === 'original') {
@@ -405,15 +406,7 @@
 
   function syncCmOverlays() {
     if (!settings || settings.translateCodeComments === false || settings.displayMode === 'original') return;
-    const layers = document.querySelectorAll('.kct-cm-layer');
-    for (const layer of layers) {
-      for (const badge of Array.from(layer.children)) {
-        const linkedSpan = cmSpanByOverlay.get(badge);
-        if (!linkedSpan || !linkedSpan.isConnected) {
-          badge.remove();
-        }
-      }
-    }
+    const activeSpans = new Set();
     const editors = document.querySelectorAll('.cm-editor');
     for (const ed of editors) {
       if (ed.closest('.jp-MarkdownCell') || !isElementVisible(ed)) continue;
@@ -430,8 +423,18 @@
           if (!isCommentOffsetInPythonLine(lineText, spanOffset)) continue;
           const cached = commentCacheByBody.get(info.body);
           if (cached) {
+            activeSpans.add(t);
             renderCmCommentOverlay(ed, t, `${info.leadWs}${info.hashes}${info.midWs}${cached}`);
           }
+        }
+      }
+    }
+    const layers = document.querySelectorAll('.kct-cm-layer');
+    for (const layer of layers) {
+      for (const badge of Array.from(layer.children)) {
+        const linkedSpan = cmSpanByOverlay.get(badge);
+        if (!linkedSpan || !linkedSpan.isConnected || !activeSpans.has(linkedSpan)) {
+          badge.remove();
         }
       }
     }
@@ -757,6 +760,7 @@
             }
           }
 
+          const batchEpoch = translationEpoch;
           activeRequests += 1;
           updateWidgetUI();
           try {
@@ -765,12 +769,17 @@
               items: Array.from(uniqueMap.values())
             });
 
+            if (batchEpoch !== translationEpoch) {
+              continue;
+            }
+
             if (!response?.ok) {
               lastErrorMsg = response?.error || '翻譯失敗';
               for (const item of batch) {
                 if (item.kind === 'comment') commentState.delete(item.el);
                 else elementState.delete(item.el);
               }
+              totalDetected = Math.max(totalTranslated, totalDetected - batch.length);
               if (response?.errorCode === 'NO_API_KEY') {
                 pendingItems.length = 0;
                 break;
@@ -795,17 +804,22 @@
               } else {
                 if (item.kind === 'comment') commentState.delete(item.el);
                 else elementState.delete(item.el);
+                totalDetected = Math.max(totalTranslated, totalDetected - 1);
               }
             }
-            if (jobs.length > 0) {
+            if (jobs.length > 0 && batchEpoch === translationEpoch) {
               await renderBatchWithRAF(jobs);
             }
           } catch (err) {
+            if (batchEpoch !== translationEpoch) {
+              continue;
+            }
             lastErrorMsg = err?.message || '通訊失敗';
             for (const item of batch) {
               if (item.kind === 'comment') commentState.delete(item.el);
               else elementState.delete(item.el);
             }
+            totalDetected = Math.max(totalTranslated, totalDetected - batch.length);
           } finally {
             activeRequests -= 1;
             updateWidgetUI();
@@ -854,7 +868,11 @@
           btn.textContent = '譯';
           return;
         }
-        const latestText = (area.innerText || area.textContent || '').replace(/^譯\s*/, '').trim();
+        const clone = area.cloneNode(true);
+        for (const uiNode of clone.querySelectorAll('[data-kct-ui]')) {
+          uiNode.remove();
+        }
+        const latestText = (clone.innerText || clone.textContent || '').trim();
         btn.textContent = '翻譯中...';
         btn.disabled = true;
         try {
@@ -907,6 +925,7 @@
       const curKey = location.origin + location.pathname;
       if (curKey !== lastPageKey) {
         lastPageKey = curKey;
+        translationEpoch += 1;
         totalDetected = 0;
         totalTranslated = 0;
         pendingItems.length = 0;
@@ -946,6 +965,7 @@
     }
     commentCacheByBody.clear();
 
+    translationEpoch += 1;
     pendingItems.length = 0;
     totalDetected = 0;
     totalTranslated = 0;
@@ -1424,17 +1444,23 @@
       }
     }
 
-    if (prev && (
+    if (prev && prev.enabled && !settings.enabled) {
+      clearAllInjectedTranslations();
+      if (isTopFrame()) subframeStats.clear();
+    } else if (prev && settings.enabled && (
       prev.scope !== settings.scope ||
       prev.targetLang !== settings.targetLang ||
       prev.customTargetLang !== settings.customTargetLang ||
       prev.translateCodeComments !== settings.translateCodeComments ||
-      (!prev.enabled && settings.enabled)
+      prev.customGlossary !== settings.customGlossary ||
+      prev.model !== settings.model ||
+      prev.protocol !== settings.protocol ||
+      !prev.enabled
     )) {
       clearAllInjectedTranslations();
       if (isTopFrame()) subframeStats.clear();
       scanAndTranslate(true);
-    } else if (prev && !prev.autoTranslate && settings.autoTranslate) {
+    } else if (prev && settings.enabled && !prev.autoTranslate && settings.autoTranslate) {
       scanAndTranslate(false);
     }
     updateWidgetUI();

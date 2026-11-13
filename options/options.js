@@ -19,7 +19,11 @@ function readFormValues() {
     apiKey: document.getElementById('apikey-input').value.trim(),
     model: document.getElementById('model-input').value.trim(),
     batchSize: Math.min(20, Math.max(1, Number(document.getElementById('batch-size').value) || 8)),
-    temperature: Math.min(1, Math.max(0, Number(document.getElementById('temperature-input').value) || 0.2)),
+    temperature: (() => {
+      const raw = document.getElementById('temperature-input').value.trim();
+      const t = raw === '' ? NaN : Number(raw);
+      return Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : 0.2;
+    })(),
     customGlossary: document.getElementById('glossary-input').value
   };
 }

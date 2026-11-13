@@ -5,7 +5,8 @@ const {
   getSettings,
   resolveEndpoint,
   resolveTargetLanguage,
-  sanitizeApiKey
+  sanitizeApiKey,
+  hashText
 } = globalThis.KCTConfig;
 
 const MAX_CACHE_ENTRIES = 4000;
@@ -50,7 +51,10 @@ function isLocalEndpoint(baseUrl) {
 
 function buildCacheSignature(settings) {
   const lang = resolveTargetLanguage(settings);
-  return `${settings.protocol}:${settings.model}:${lang.id}:${lang.promptName}`;
+  const glossaryHash = (lang.id === 'zh-TW' || lang.id === 'zh-CN')
+    ? hashText(String(settings.customGlossary || '').trim())
+    : 'noglossary';
+  return `${settings.protocol}:${settings.model}:${lang.id}:${lang.promptName}:${glossaryHash}`;
 }
 
 async function readCacheMap() {
@@ -98,8 +102,11 @@ function buildLanguageGuidance(lang) {
 function buildSystemPrompt(settings) {
   const lang = resolveTargetLanguage(settings);
   const glossary = String(settings.customGlossary || '').trim();
+  const glossaryNote = lang.id === 'zh-CN'
+    ? '參考術語表（若術語表為繁體寫法，輸出時請自動轉為對應簡體字形與中國大陸技術用語）：'
+    : '參考術語表（若語意符合請優先採用一致譯法）：';
   const glossarySection = (lang.id === 'zh-TW' || lang.id === 'zh-CN') && glossary
-    ? `\n參考術語表（若語意符合請優先採用一致譯法）：\n${glossary}\n`
+    ? `\n${glossaryNote}\n${glossary}\n`
     : '';
 
   return [
@@ -256,16 +263,21 @@ async function callLLMChat(settings, messages, expectJson = true) {
           await sleep(800 * attempt * attempt);
           continue;
         }
-        throw new Error(`HTTP ${status}: ${errBody.slice(0, 280) || response.statusText}`);
+        const httpErr = new Error(`HTTP ${status}: ${errBody.slice(0, 280) || response.statusText}`);
+        httpErr.httpStatus = status;
+        httpErr.noSplit = status === 400 || status === 401 || status === 403 || status === 404 || status === 429;
+        throw httpErr;
       }
 
       const data = await response.json();
       if (settings.protocol === 'gemini') {
-        const parts = data?.candidates?.[0]?.content?.parts || [];
+        const candidate = data?.candidates?.[0];
+        const parts = candidate?.content?.parts || [];
         const answerParts = parts.filter((p) => !p.thought && p.text);
         const text = (answerParts.length ? answerParts : parts).map((p) => p.text || '').join('');
         if (!text) {
-          throw new Error(data?.error?.message || 'Gemini 未返回文本内容');
+          const reason = candidate?.finishReason ? ` (${candidate.finishReason})` : '';
+          throw new Error(data?.error?.message || `Gemini 未返回文本內容${reason}`);
         }
         return text;
       } else {
@@ -279,6 +291,7 @@ async function callLLMChat(settings, messages, expectJson = true) {
       lastError = err;
       if (err.name === 'AbortError') {
         lastError = new Error('請求逾時 (25s)，請檢查網路或 API 服務狀態');
+        lastError.noSplit = true;
       }
       if (attempt < maxAttempts && /timeout|network|failed to fetch|429|5\d\d/i.test(String(lastError.message))) {
         await sleep(700 * attempt);
@@ -360,6 +373,9 @@ async function translateItemsWithFallback(settings, items) {
 
     return mapped;
   } catch (err) {
+    if (err?.noSplit) {
+      throw err;
+    }
     if (items.length > 1) {
       const mid = Math.ceil(items.length / 2);
       const [left, right] = await Promise.all([
