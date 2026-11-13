@@ -71,7 +71,7 @@
   const INLINE_PROTECT_SELECTOR = 'code, kbd, var, .katex, .MathJax, mjx-container';
 
   let settings = null;
-  let lastUrl = location.href;
+  let lastPageKey = location.origin + location.pathname;
   let scanTimer = null;
   let isProcessingQueue = false;
   let activeRequests = 0;
@@ -81,6 +81,7 @@
   const elementState = new WeakMap(); // el -> 'queued' | 'done' | 'error'
   const commentState = new WeakMap(); // span/line -> 'queued' | 'done'
   const cmOverlayBySpan = new WeakMap(); // cm span/line -> overlay div inside .cm-scroller
+  const cmSpanByOverlay = new WeakMap(); // overlay div -> cm span/line
   const commentCacheByBody = new Map(); // rawCommentBody -> cleanedTranslatedBody
   const pendingItems = []; // { kind?: 'block' | 'comment', el, key, text, placeholders?, nestedListEl?, commentInfo? }
   let totalDetected = 0;
@@ -334,37 +335,6 @@
     }
   }
 
-  function collectCodeComments() {
-    if (!settings || !settings.enabled || settings.translateCodeComments === false) return [];
-    const items = [];
-    const seen = new Set();
-
-    // 1. Static tutorial / viewer <pre> code blocks (Pygments spans)
-    const pres = document.querySelectorAll('pre');
-    for (const pre of pres) {
-      if (pre.closest('.cm-editor, .CodeMirror, .monaco-editor, [data-kct-ui]')) continue;
-      if (!isElementVisible(pre)) continue;
-      const commentSpans = pre.querySelectorAll('span.c1, span.c, span.cm, span.cs, span.ch');
-      for (const span of commentSpans) {
-        if (seen.has(span) || commentState.has(span)) continue;
-        if (span.hasAttribute('data-kct-comment-trans')) continue;
-        if (span.children.length > 0) continue;
-        seen.add(span);
-
-        const info = parseTranslatableComment(span.textContent);
-        if (!info) continue;
-        ensureCodeFontSizeVar(pre, span);
-        commentState.set(span, 'queued');
-        items.push({
-          kind: 'comment',
-          el: span,
-          key: hashText(`COMMENT::${info.body}`),
-          text: `# ${info.body}`,
-          commentInfo: info
-        });
-      }
-    }
-
   function resolveOpaqueBackground(el) {
     let cur = el;
     while (cur && cur.nodeType === Node.ELEMENT_NODE) {
@@ -411,6 +381,7 @@
       layer.appendChild(badge);
       cmOverlayBySpan.set(span, badge);
     }
+    cmSpanByOverlay.set(badge, span);
 
     const spanStyle = getComputedStyle(span);
     const top = Math.round(spRect.top - scRect.top + scroller.scrollTop);
@@ -437,7 +408,10 @@
     const layers = document.querySelectorAll('.kct-cm-layer');
     for (const layer of layers) {
       for (const badge of Array.from(layer.children)) {
-        if (!badge.isConnected) badge.remove();
+        const linkedSpan = cmSpanByOverlay.get(badge);
+        if (!linkedSpan || !linkedSpan.isConnected) {
+          badge.remove();
+        }
       }
     }
     const editors = document.querySelectorAll('.cm-editor');
@@ -452,6 +426,8 @@
         for (const t of targets) {
           const info = parseTranslatableComment(t.textContent);
           if (!info) continue;
+          const spanOffset = t === line ? info.leadWs.length : getTextOffsetInParent(line, t) + info.leadWs.length;
+          if (!isCommentOffsetInPythonLine(lineText, spanOffset)) continue;
           const cached = commentCacheByBody.get(info.body);
           if (cached) {
             renderCmCommentOverlay(ed, t, `${info.leadWs}${info.hashes}${info.midWs}${cached}`);
@@ -460,6 +436,37 @@
       }
     }
   }
+
+  function collectCodeComments() {
+    if (!settings || !settings.enabled || settings.translateCodeComments === false) return [];
+    const items = [];
+    const seen = new Set();
+
+    // 1. Static tutorial / viewer <pre> code blocks (Pygments spans)
+    const pres = document.querySelectorAll('pre');
+    for (const pre of pres) {
+      if (pre.closest('.cm-editor, .CodeMirror, .monaco-editor, [data-kct-ui]')) continue;
+      if (!isElementVisible(pre)) continue;
+      const commentSpans = pre.querySelectorAll('span.c1, span.c, span.cm, span.cs, span.ch');
+      for (const span of commentSpans) {
+        if (seen.has(span) || commentState.has(span)) continue;
+        if (span.hasAttribute('data-kct-comment-trans')) continue;
+        if (span.children.length > 0) continue;
+        seen.add(span);
+
+        const info = parseTranslatableComment(span.textContent);
+        if (!info) continue;
+        ensureCodeFontSizeVar(pre, span);
+        commentState.set(span, 'queued');
+        items.push({
+          kind: 'comment',
+          el: span,
+          key: hashText(`COMMENT::${info.body}`),
+          text: `# ${info.body}`,
+          commentInfo: info
+        });
+      }
+    }
 
     // 2. Interactive JupyterLab v4 CodeMirror 6 code cells (non-intrusive overlay layer)
     const cmEditors = document.querySelectorAll('.cm-editor');
@@ -602,16 +609,21 @@
     const BATCH = 15;
     for (let i = 0; i < renderJobs.length; i += BATCH) {
       const slice = renderJobs.slice(i, i + BATCH);
-      await new Promise((resolve) => {
-        requestAnimationFrame(() => {
-          for (const job of slice) {
+      const flushSlice = () => {
+        for (const job of slice) {
+          try {
             if (job.kind === 'comment') {
               const { el, zh, commentInfo, cmEditor } = job;
-              if (!el.isConnected) continue;
               const cleaned = String(zh || '').replace(/^\s*#+\s*/, '').trim();
               if (cleaned) {
-                const fullComment = `${commentInfo.leadWs}${commentInfo.hashes}${commentInfo.midWs}${cleaned}`;
                 commentCacheByBody.set(commentInfo.body, cleaned);
+              }
+              if (!el.isConnected) {
+                totalDetected = Math.max(totalTranslated, totalDetected - 1);
+                continue;
+              }
+              if (cleaned) {
+                const fullComment = `${commentInfo.leadWs}${commentInfo.hashes}${commentInfo.midWs}${cleaned}`;
                 if (cmEditor && cmEditor.isConnected) {
                   renderCmCommentOverlay(cmEditor, el, fullComment);
                 } else {
@@ -621,14 +633,19 @@
                 totalTranslated += 1;
               } else {
                 commentState.delete(el);
+                totalDetected = Math.max(totalTranslated, totalDetected - 1);
               }
               continue;
             }
 
             const { el, zh, placeholders, nestedListEl } = job;
-            if (!el.isConnected) continue;
+            if (!el.isConnected) {
+              totalDetected = Math.max(totalTranslated, totalDetected - 1);
+              continue;
+            }
             if (el.hasAttribute('data-kct-has-trans') || el.querySelector('[data-kct-ui="trans"]')) {
               elementState.set(el, 'done');
+              totalDetected = Math.max(totalTranslated, totalDetected - 1);
               continue;
             }
 
@@ -662,13 +679,32 @@
             el.setAttribute('data-kct-has-trans', '1');
             elementState.set(el, 'done');
             totalTranslated += 1;
+          } catch (jobErr) {
+            console.warn('[KCT] render job error:', jobErr);
+            if (!lastErrorMsg) {
+              lastErrorMsg = `渲染錯誤: ${jobErr?.message || jobErr}`;
+            }
           }
-          resolve();
+        }
+      };
+
+      await new Promise((resolve) => {
+        let flushed = false;
+        const complete = () => {
+          if (flushed) return;
+          flushed = true;
+          try {
+            flushSlice();
+          } finally {
+            resolve();
+          }
+        };
+        const timer = setTimeout(complete, 600);
+        requestAnimationFrame(() => {
+          clearTimeout(timer);
+          complete();
         });
       });
-      if (globalThis.scheduler?.yield) {
-        await globalThis.scheduler.yield();
-      }
     }
     updateWidgetUI();
   }
@@ -683,6 +719,7 @@
       const next = pendingItems[0];
       if (!next.el.isConnected) {
         pendingItems.shift();
+        totalDetected = Math.max(totalTranslated, totalDetected - 1);
         continue;
       }
       if (batch.length > 0 && chars + next.text.length > maxChars) {
@@ -867,8 +904,9 @@
   function scheduleScan(delay = 450) {
     if (scanTimer) clearTimeout(scanTimer);
     scanTimer = setTimeout(() => {
-      if (location.href !== lastUrl) {
-        lastUrl = location.href;
+      const curKey = location.origin + location.pathname;
+      if (curKey !== lastPageKey) {
+        lastPageKey = curKey;
         totalDetected = 0;
         totalTranslated = 0;
         pendingItems.length = 0;
@@ -1257,6 +1295,7 @@
     // Also trigger re-prioritized scan on inner or window scroll & focusout (JupyterLab hydration)
     let scrollTimer = null;
     const onScrollOrBlur = () => {
+      requestAnimationFrame(syncCmOverlays);
       if (pendingItems.length > 0) {
         sortViewportFirst(pendingItems);
       }
@@ -1264,7 +1303,10 @@
       scrollTimer = setTimeout(() => scheduleScan(250), 250);
     };
     document.addEventListener('scroll', onScrollOrBlur, { passive: true, capture: true });
-    document.addEventListener('focusout', () => scheduleScan(200));
+    document.addEventListener('focusout', () => {
+      requestAnimationFrame(syncCmOverlays);
+      scheduleScan(200);
+    });
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

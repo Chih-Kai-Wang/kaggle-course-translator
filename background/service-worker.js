@@ -10,6 +10,25 @@ const {
 
 const MAX_CACHE_ENTRIES = 4000;
 let cacheMutex = Promise.resolve();
+let nextBatchSeq = 1;
+const activeBatchDebug = new Map();
+const recentBatchDebug = [];
+
+function recordBatchEvent(id, patch) {
+  const cur = activeBatchDebug.get(id);
+  if (cur) {
+    Object.assign(cur, patch);
+  }
+}
+
+function finishBatchEvent(id, patch) {
+  const cur = activeBatchDebug.get(id);
+  if (!cur) return;
+  Object.assign(cur, patch, { endedAt: Date.now(), elapsedMs: Date.now() - cur.startedAt });
+  activeBatchDebug.delete(id);
+  recentBatchDebug.push(cur);
+  if (recentBatchDebug.length > 20) recentBatchDebug.shift();
+}
 
 function runWithCacheLock(task) {
   const execute = async () => {
@@ -134,12 +153,12 @@ async function callLLMChat(settings, messages, expectJson = true) {
     throw new Error('API 地址无效，请检查设置中的 Base URL');
   }
 
-  const maxAttempts = 3;
+  const maxAttempts = 2;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 45000);
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
 
     try {
       let response;
@@ -237,7 +256,7 @@ async function callLLMChat(settings, messages, expectJson = true) {
     } catch (err) {
       lastError = err;
       if (err.name === 'AbortError') {
-        lastError = new Error('请求超时 (45s)，请检查网络或 API 服务状态');
+        lastError = new Error('請求逾時 (25s)，請檢查網路或 API 服務狀態');
       }
       if (attempt < maxAttempts && /timeout|network|failed to fetch|429|5\d\d/i.test(String(lastError.message))) {
         await sleep(700 * attempt);
@@ -321,8 +340,10 @@ async function translateItemsWithFallback(settings, items) {
   } catch (err) {
     if (items.length > 1) {
       const mid = Math.ceil(items.length / 2);
-      const left = await translateItemsWithFallback(settings, items.slice(0, mid));
-      const right = await translateItemsWithFallback(settings, items.slice(mid));
+      const [left, right] = await Promise.all([
+        translateItemsWithFallback(settings, items.slice(0, mid)),
+        translateItemsWithFallback(settings, items.slice(mid))
+      ]);
       return { ...left, ...right };
     }
 
@@ -347,8 +368,18 @@ async function translateItemsWithFallback(settings, items) {
 }
 
 async function handleTranslateBatch(items) {
+  const bid = nextBatchSeq++;
+  activeBatchDebug.set(bid, {
+    id: bid,
+    total: items.length,
+    sample: items.slice(0, 2).map((x) => String(x.text || '').slice(0, 40)),
+    startedAt: Date.now(),
+    stage: 'start'
+  });
+
   const settings = await getSettings();
   if (!sanitizeApiKey(settings.apiKey) && !isLocalEndpoint(settings.baseUrl)) {
+    finishBatchEvent(bid, { stage: 'no_key' });
     return {
       ok: false,
       errorCode: 'NO_API_KEY',
@@ -370,17 +401,26 @@ async function handleTranslateBatch(items) {
     }
   }
 
+  recordBatchEvent(bid, { stage: 'calling_llm', uncached: uncached.length, cached: items.length - uncached.length });
   if (uncached.length > 0) {
-    const translatedMap = await translateItemsWithFallback(settings, uncached);
-    const toPersist = [];
-    for (const item of uncached) {
-      const zh = translatedMap[item.key];
-      if (zh) {
-        results[item.key] = { zh, cached: false };
-        toPersist.push({ cacheKey: item.cacheKey, zh });
+    try {
+      const translatedMap = await translateItemsWithFallback(settings, uncached);
+      const toPersist = [];
+      for (const item of uncached) {
+        const zh = translatedMap[item.key];
+        if (zh) {
+          results[item.key] = { zh, cached: false };
+          toPersist.push({ cacheKey: item.cacheKey, zh });
+        }
       }
+      await writeCacheEntries(toPersist);
+      finishBatchEvent(bid, { stage: 'done', translated: toPersist.length });
+    } catch (err) {
+      finishBatchEvent(bid, { stage: 'error', error: err?.message || String(err) });
+      throw err;
     }
-    await writeCacheEntries(toPersist);
+  } else {
+    finishBatchEvent(bid, { stage: 'done_cached', translated: 0 });
   }
 
   return { ok: true, results };
@@ -490,6 +530,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const entries = Object.keys(cache).length;
           const bytes = JSON.stringify(cache).length;
           sendResponse({ ok: true, entries, bytes });
+          break;
+        }
+        case 'GET_SW_DEBUG': {
+          sendResponse({
+            ok: true,
+            now: Date.now(),
+            active: Array.from(activeBatchDebug.values()),
+            recent: recentBatchDebug
+          });
           break;
         }
         case 'CLEAR_CACHE': {
