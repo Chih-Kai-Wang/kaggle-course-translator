@@ -732,8 +732,8 @@
   }
 
   function takeNextBatch() {
-    const maxCount = Number(settings.batchSize || 16);
-    const maxChars = Number(settings.maxBatchChars || 4500);
+    const maxCount = Number(settings.batchSize || 24);
+    const maxChars = Number(settings.maxBatchChars || 6500);
     const batch = [];
     let chars = 0;
 
@@ -846,7 +846,7 @@
         }
       };
 
-      const batchTarget = Math.max(1, Number(settings.batchSize || 16));
+      const batchTarget = Math.max(1, Number(settings.batchSize || 24));
       const concurrency = Math.min(MAX_CONCURRENT_BATCHES, Math.max(1, Math.ceil(pendingItems.length / batchTarget)));
       for (let i = 0; i < concurrency; i++) {
         workers.push(spawnWorker());
@@ -1496,8 +1496,8 @@
     setupObservers();
     if (settings.enabled && settings.autoTranslate) {
       // Initial scan + follow-up scans for async React/Jupyter hydration
-      setTimeout(() => scanAndTranslate(false), 80);
-      setTimeout(() => scanAndTranslate(false), 900);
+      setTimeout(() => scanAndTranslate(false), 220);
+      setTimeout(() => scanAndTranslate(false), 1000);
       setTimeout(() => scanAndTranslate(false), 2400);
       setTimeout(() => scanAndTranslate(false), 4500);
     }

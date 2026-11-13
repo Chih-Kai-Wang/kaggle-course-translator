@@ -153,6 +153,50 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Cross-frame global scheduler + adaptive cooldown after HTTP 429 (protects Free Tier 5-15 RPM)
+const NORMAL_MAX_CONCURRENT = 3;
+let inFlightRequests = 0;
+const slotWaiters = [];
+let globalCooldownUntil = 0;
+let adaptivePacingUntil = 0;
+let lastRequestStartAt = 0;
+let pacingTail = Promise.resolve();
+
+function getEffectiveMaxConcurrent() {
+  return Date.now() < adaptivePacingUntil ? 1 : NORMAL_MAX_CONCURRENT;
+}
+
+async function acquireRequestSlot() {
+  while (inFlightRequests >= getEffectiveMaxConcurrent()) {
+    await new Promise((resolve) => slotWaiters.push(resolve));
+  }
+  inFlightRequests += 1;
+
+  const gate = pacingTail.then(async () => {
+    const cooldownWait = globalCooldownUntil - Date.now();
+    if (cooldownWait > 0) {
+      await sleep(cooldownWait);
+    }
+    if (Date.now() < adaptivePacingUntil) {
+      const gapWait = lastRequestStartAt + 4300 - Date.now();
+      if (gapWait > 0) {
+        await sleep(gapWait);
+      }
+    }
+    lastRequestStartAt = Date.now();
+  });
+  pacingTail = gate.catch(() => {});
+  await gate;
+}
+
+function releaseRequestSlot() {
+  inFlightRequests = Math.max(0, inFlightRequests - 1);
+  if (slotWaiters.length > 0 && inFlightRequests < getEffectiveMaxConcurrent()) {
+    const wake = slotWaiters.shift();
+    wake();
+  }
+}
+
 function parseRetryDelayMs(errBody, response) {
   const retryAfter = response?.headers?.get?.('Retry-After');
   if (retryAfter) {
@@ -217,10 +261,12 @@ async function callLLMChat(settings, messages, expectJson = true) {
     throw new Error('API 地址无效，请检查设置中的 Base URL');
   }
 
-  const maxAttempts = 3;
+  const maxAttempts = 4;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let sleepAfterAttemptMs = 0;
+    await acquireRequestSlot();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 25000);
 
@@ -281,16 +327,21 @@ async function callLLMChat(settings, messages, expectJson = true) {
         const errBody = await response.text();
         const status = response.status;
         if (status === 429) {
+          const isDailyOrZeroQuota = /PerDay|RequestsPerDay|GenerateRequestsPerDay|"quotaValue"\s*:\s*"0"|limit:\s*0/i.test(errBody);
           const retryDelayMs = parseRetryDelayMs(errBody, response);
-          // If quota window requires >8s wait (e.g., Gemini Free Tier 10 RPM), fail fast instead of burning retries
-          if (attempt < maxAttempts && retryDelayMs <= 8000) {
-            await sleep(retryDelayMs > 0 ? retryDelayMs + 250 : 1200 * attempt);
+          if (!isDailyOrZeroQuota && attempt < maxAttempts && retryDelayMs <= 28000) {
+            const waitMs = Math.min(26000, (retryDelayMs > 0 ? retryDelayMs + 400 : 4500 * attempt));
+            const now = Date.now();
+            adaptivePacingUntil = Math.max(adaptivePacingUntil, now + 90000);
+            globalCooldownUntil = Math.max(globalCooldownUntil, now + waitMs);
             continue;
           }
           const waitSec = retryDelayMs > 0 ? Math.ceil(retryDelayMs / 1000) : null;
-          const rateHint = waitSec
-            ? `HTTP 429：請求頻率達上限，需等待約 ${waitSec}s`
-            : `HTTP 429：請求頻率達上限 (${errBody.slice(0, 180) || response.statusText})`;
+          const rateHint = isDailyOrZeroQuota
+            ? 'HTTP 429：已達每日免費額度上限（或模型配額為 0），建議切換 Tier 1 Key、更換模型或改用 DeepSeek'
+            : waitSec
+              ? `HTTP 429：請求頻率達上限，需等待約 ${waitSec}s（免費版限 5–15 RPM）`
+              : `HTTP 429：請求頻率達上限 (${errBody.slice(0, 160) || response.statusText})`;
           const httpErr = new Error(rateHint);
           httpErr.httpStatus = 429;
           httpErr.noSplit = true;
@@ -298,7 +349,7 @@ async function callLLMChat(settings, messages, expectJson = true) {
           throw httpErr;
         }
         if (status >= 500 && attempt < maxAttempts) {
-          await sleep(700 * attempt);
+          sleepAfterAttemptMs = 700 * attempt;
           continue;
         }
         const httpErr = new Error(`HTTP ${status}: ${errBody.slice(0, 280) || response.statusText}`);
@@ -335,12 +386,16 @@ async function callLLMChat(settings, messages, expectJson = true) {
         break;
       }
       if (attempt < maxAttempts && /timeout|network|failed to fetch|5\d\d/i.test(String(lastError.message))) {
-        await sleep(700 * attempt);
+        sleepAfterAttemptMs = 700 * attempt;
         continue;
       }
       break;
     } finally {
       clearTimeout(timeoutId);
+      releaseRequestSlot();
+      if (sleepAfterAttemptMs > 0) {
+        await sleep(sleepAfterAttemptMs);
+      }
     }
   }
 

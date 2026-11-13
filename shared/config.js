@@ -202,7 +202,7 @@
   ].join('\n');
 
   const DEFAULT_SETTINGS = {
-    settingsSchemaVersion: 3,
+    settingsSchemaVersion: 4,
     enabled: true,
     autoTranslate: true,
     targetLang: 'zh-TW',
@@ -219,8 +219,8 @@
     apiKey: '',
     model: 'deepseek-chat',
     temperature: 0.2,
-    batchSize: 16,
-    maxBatchChars: 4500,
+    batchSize: 24,
+    maxBatchChars: 6500,
     customGlossary: DEFAULT_GLOSSARY
   };
 
@@ -287,7 +287,7 @@
       return { ...DEFAULT_SETTINGS };
     }
     const ver = raw.settingsSchemaVersion || 1;
-    if (ver < 3) {
+    if (ver < 4) {
       let migrated = { ...DEFAULT_SETTINGS, ...raw };
       if (ver < 2) {
         migrated = {
@@ -300,9 +300,9 @@
             : raw.customGlossary
         };
       }
-      migrated.batchSize = (!raw.batchSize || raw.batchSize === 8) ? 16 : raw.batchSize;
-      migrated.maxBatchChars = (!raw.maxBatchChars || raw.maxBatchChars === 1800) ? 4500 : raw.maxBatchChars;
-      migrated.settingsSchemaVersion = 3;
+      migrated.batchSize = (!raw.batchSize || raw.batchSize === 8 || raw.batchSize === 16) ? 24 : raw.batchSize;
+      migrated.maxBatchChars = (!raw.maxBatchChars || raw.maxBatchChars === 1800 || raw.maxBatchChars === 4500) ? 6500 : raw.maxBatchChars;
+      migrated.settingsSchemaVersion = 4;
       await chrome.storage.local.set({ [SETTINGS_KEY]: migrated });
       return migrated;
     }
@@ -311,7 +311,7 @@
 
   async function saveSettings(partial) {
     const current = await getSettings();
-    const next = { ...current, ...partial, settingsSchemaVersion: 3 };
+    const next = { ...current, ...partial, settingsSchemaVersion: 4 };
     await chrome.storage.local.set({ [SETTINGS_KEY]: next });
     return next;
   }
