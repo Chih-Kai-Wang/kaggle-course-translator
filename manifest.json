@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "Kaggle 課程智慧翻譯助手",
+  "version": "1.1.0",
+  "description": "專為 Kaggle Learn 課程與 Notebook 實作打造的多語言 AI 翻譯擴充功能：完整保留原版排版美感、翻譯 Python 程式碼註解、支援一鍵切換原文與譯文，並可自選目標語言。",
+  "minimum_chrome_version": "119",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Kaggle 課程智慧翻譯助手",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_page": "options/options.html",
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.kaggle.com/*",
+    "https://*.kaggle.com/*",
+    "https://*.kaggle.net/*",
+    "https://*.kaggleusercontent.com/*",
+    "https://api.deepseek.com/*",
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://api.siliconflow.cn/*",
+    "https://api.moonshot.cn/*",
+    "https://open.bigmodel.cn/*",
+    "https://openrouter.ai/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.kaggle.com/*",
+        "https://*.kaggle.com/*",
+        "https://*.kaggle.net/*",
+        "https://*.kaggleusercontent.com/*"
+      ],
+      "all_frames": true,
+      "match_origin_as_fallback": true,
+      "js": [
+        "shared/config.js",
+        "content/content.js"
+      ],
+      "css": [
+        "content/content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
