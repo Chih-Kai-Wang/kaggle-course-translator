@@ -57,12 +57,15 @@
   ].join(', ');
 
   const NAV_EXCLUDE_SELECTOR = 'nav, header, footer, [role="navigation"], [role="banner"], [role="tablist"], button';
-  const COURSE_CONTAINER_SELECTOR = [
+  const LESSON_CELL_SELECTOR = [
     '.jp-RenderedHTMLCommon',
     '.jp-MarkdownOutput',
     '.rendered_html',
     '.text_cell_render',
-    '.markdown-converter__text--rendered',
+    '.markdown-converter__text--rendered'
+  ].join(', ');
+  const COURSE_CONTAINER_SELECTOR = [
+    LESSON_CELL_SELECTOR,
     'main',
     'article',
     '[role="main"]'
@@ -75,7 +78,7 @@
   let scanTimer = null;
   let isProcessingQueue = false;
   let activeRequests = 0;
-  const MAX_CONCURRENT_BATCHES = 2;
+  const MAX_CONCURRENT_BATCHES = 3;
 
   // Track elements already queued or translated in this document
   const elementState = new WeakMap(); // el -> 'queued' | 'done' | 'error'
@@ -217,6 +220,22 @@
     // keep the host IDE sidebar chrome (Notebook / Input / Output / /kaggle/working) uncluttered in course mode.
     if (isTopFrame() && /\/code\/[^/]+\/[^/]+\/edit(?:\/|$)/i.test(location.pathname)) {
       return [];
+    }
+
+    // On Kaggle Notebook viewer (/code/...), prefer actual rendered notebook cells + top h1
+    // so right-hand metadata sidebars (Input / Leaderboard / etc.) don't consume course-mode API quota.
+    if (isTopFrame() && /^\/code\//i.test(location.pathname)) {
+      const cells = Array.from(document.querySelectorAll(LESSON_CELL_SELECTOR)).filter(
+        (node) => !node.closest('[data-testid="notebook-editor-render-tid"]')
+      );
+      if (cells.length > 0) {
+        const dedupedCells = cells.filter((node) => !cells.some((other) => other !== node && other.contains(node)));
+        const h1 = document.querySelector('main h1');
+        if (h1 && !dedupedCells.some((c) => c.contains(h1))) {
+          return [h1, ...dedupedCells];
+        }
+        return dedupedCells;
+      }
     }
 
     const found = Array.from(document.querySelectorAll(COURSE_CONTAINER_SELECTOR));
@@ -713,8 +732,8 @@
   }
 
   function takeNextBatch() {
-    const maxCount = Number(settings.batchSize || 8);
-    const maxChars = Number(settings.maxBatchChars || 1800);
+    const maxCount = Number(settings.batchSize || 16);
+    const maxChars = Number(settings.maxBatchChars || 4500);
     const batch = [];
     let chars = 0;
 
@@ -827,7 +846,8 @@
         }
       };
 
-      const concurrency = Math.min(MAX_CONCURRENT_BATCHES, Math.max(1, Math.ceil(pendingItems.length / 4)));
+      const batchTarget = Math.max(1, Number(settings.batchSize || 16));
+      const concurrency = Math.min(MAX_CONCURRENT_BATCHES, Math.max(1, Math.ceil(pendingItems.length / batchTarget)));
       for (let i = 0; i < concurrency; i++) {
         workers.push(spawnWorker());
       }
@@ -919,7 +939,7 @@
     }
   }
 
-  function scheduleScan(delay = 450) {
+  function scheduleScan(delay = 300) {
     if (scanTimer) clearTimeout(scanTimer);
     scanTimer = setTimeout(() => {
       const curKey = location.origin + location.pathname;
@@ -1297,7 +1317,7 @@
         if (hasExternalNodes) break;
       }
       if (hasExternalNodes) {
-        scheduleScan(450);
+        scheduleScan(300);
       }
     });
 
@@ -1475,9 +1495,10 @@
     setupSelectionListener();
     setupObservers();
     if (settings.enabled && settings.autoTranslate) {
-      // Initial scan + follow-up scan for async React/Jupyter hydration
-      setTimeout(() => scanAndTranslate(false), 600);
-      setTimeout(() => scanAndTranslate(false), 2200);
+      // Initial scan + follow-up scans for async React/Jupyter hydration
+      setTimeout(() => scanAndTranslate(false), 80);
+      setTimeout(() => scanAndTranslate(false), 900);
+      setTimeout(() => scanAndTranslate(false), 2400);
       setTimeout(() => scanAndTranslate(false), 4500);
     }
   }

@@ -18,7 +18,7 @@ function readFormValues() {
     baseUrl: document.getElementById('baseurl-input').value.trim(),
     apiKey: document.getElementById('apikey-input').value.trim(),
     model: document.getElementById('model-input').value.trim(),
-    batchSize: Math.min(20, Math.max(1, Number(document.getElementById('batch-size').value) || 8)),
+    batchSize: Math.min(30, Math.max(1, Number(document.getElementById('batch-size').value) || 16)),
     temperature: (() => {
       const raw = document.getElementById('temperature-input').value.trim();
       const t = raw === '' ? NaN : Number(raw);
@@ -127,7 +127,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('baseurl-input').value = settings.baseUrl || '';
   document.getElementById('apikey-input').value = settings.apiKey || '';
   document.getElementById('model-input').value = settings.model || '';
-  document.getElementById('batch-size').value = settings.batchSize ?? 8;
+  document.getElementById('batch-size').value = settings.batchSize ?? 16;
   document.getElementById('temperature-input').value = settings.temperature ?? 0.2;
   document.getElementById('glossary-input').value = settings.customGlossary ?? DEFAULT_GLOSSARY;
 

@@ -110,14 +110,13 @@ function buildSystemPrompt(settings) {
     : '';
 
   return [
-    'You are an expert technical translator specializing in Machine Learning, Data Science, Python, and Kaggle courses/notebooks.',
+    'Technical translator for ML, Data Science, Python & Kaggle courses.',
     buildLanguageGuidance(lang),
-    'Task: Translate the English texts inside the user JSON array accurately and naturally while preserving formatting clarity.',
-    'Strict Rules:',
-    '1. Keep ALL placeholders formatted like [[C0]], [[C1]], [[M0]] completely unchanged in the appropriate grammatical position of the target language. Never translate, remove, alter, or split bracket placeholders.',
-    '2. Keep Python identifiers, function/class/library names (e.g. pandas, scikit-learn, XGBoost, DataFrame, train_test_split) and standard abbreviations (MAE, RMSE, AUC, CV, SQL) intact.',
-    '3. If an input item has `"kind":"comment"`, it is a single-line Python `#` comment inside code. Keep the leading `# ` prefix (matching the original `# ` style) and output only a concise, natural translation of the comment text—do not add quotes, markdown, or extra code.',
-    '4. Return ONLY a valid JSON object strictly matching: {"translations":[{"id":0,"zh":"..."},...]} with identical ids and count as the input array. No extra commentary or markdown fences.',
+    'Rules:',
+    '1. Keep ALL placeholders ([[C0]], [[C1]], [[M0]]) exact and untranslated in natural positions.',
+    '2. Keep Python identifiers, package/class/function names, and abbreviations (MAE, RMSE, AUC, CV, SQL) intact.',
+    '3. For `"kind":"comment"`, keep the leading `# ` prefix and return only the concise translated comment text.',
+    '4. Output ONLY valid JSON: {"translations":[{"id":0,"zh":"..."},...]} matching all input ids.',
     glossarySection
   ].join('\n');
 }
@@ -152,6 +151,28 @@ function extractJsonObject(rawText) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseRetryDelayMs(errBody, response) {
+  const retryAfter = response?.headers?.get?.('Retry-After');
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    if (Number.isFinite(secs) && secs >= 0) {
+      return Math.ceil(secs * 1000);
+    }
+  }
+  const text = String(errBody || '');
+  const jsonMatch = text.match(/"retryDelay"\s*:\s*"([0-9.]+)s"/i);
+  if (jsonMatch) {
+    const secs = Number(jsonMatch[1]);
+    if (Number.isFinite(secs) && secs >= 0) return Math.ceil(secs * 1000);
+  }
+  const proseMatch = text.match(/retry in\s+([0-9.]+)s/i);
+  if (proseMatch) {
+    const secs = Number(proseMatch[1]);
+    if (Number.isFinite(secs) && secs >= 0) return Math.ceil(secs * 1000);
+  }
+  return 0;
 }
 
 function normalizeGeminiModelId(model) {
@@ -259,13 +280,30 @@ async function callLLMChat(settings, messages, expectJson = true) {
       if (!response.ok) {
         const errBody = await response.text();
         const status = response.status;
-        if ((status === 429 || status >= 500) && attempt < maxAttempts) {
-          await sleep(800 * attempt * attempt);
+        if (status === 429) {
+          const retryDelayMs = parseRetryDelayMs(errBody, response);
+          // If quota window requires >8s wait (e.g., Gemini Free Tier 10 RPM), fail fast instead of burning retries
+          if (attempt < maxAttempts && retryDelayMs <= 8000) {
+            await sleep(retryDelayMs > 0 ? retryDelayMs + 250 : 1200 * attempt);
+            continue;
+          }
+          const waitSec = retryDelayMs > 0 ? Math.ceil(retryDelayMs / 1000) : null;
+          const rateHint = waitSec
+            ? `HTTP 429：請求頻率達上限，需等待約 ${waitSec}s`
+            : `HTTP 429：請求頻率達上限 (${errBody.slice(0, 180) || response.statusText})`;
+          const httpErr = new Error(rateHint);
+          httpErr.httpStatus = 429;
+          httpErr.noSplit = true;
+          httpErr.noRetry = true;
+          throw httpErr;
+        }
+        if (status >= 500 && attempt < maxAttempts) {
+          await sleep(700 * attempt);
           continue;
         }
         const httpErr = new Error(`HTTP ${status}: ${errBody.slice(0, 280) || response.statusText}`);
         httpErr.httpStatus = status;
-        httpErr.noSplit = status === 400 || status === 401 || status === 403 || status === 404 || status === 429;
+        httpErr.noSplit = status === 400 || status === 401 || status === 403 || status === 404;
         throw httpErr;
       }
 
@@ -293,7 +331,10 @@ async function callLLMChat(settings, messages, expectJson = true) {
         lastError = new Error('請求逾時 (25s)，請檢查網路或 API 服務狀態');
         lastError.noSplit = true;
       }
-      if (attempt < maxAttempts && /timeout|network|failed to fetch|429|5\d\d/i.test(String(lastError.message))) {
+      if (lastError.noRetry) {
+        break;
+      }
+      if (attempt < maxAttempts && /timeout|network|failed to fetch|5\d\d/i.test(String(lastError.message))) {
         await sleep(700 * attempt);
         continue;
       }

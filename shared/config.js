@@ -202,7 +202,7 @@
   ].join('\n');
 
   const DEFAULT_SETTINGS = {
-    settingsSchemaVersion: 2,
+    settingsSchemaVersion: 3,
     enabled: true,
     autoTranslate: true,
     targetLang: 'zh-TW',
@@ -219,8 +219,8 @@
     apiKey: '',
     model: 'deepseek-chat',
     temperature: 0.2,
-    batchSize: 8,
-    maxBatchChars: 1800,
+    batchSize: 16,
+    maxBatchChars: 4500,
     customGlossary: DEFAULT_GLOSSARY
   };
 
@@ -273,23 +273,36 @@
   }
 
   async function getSettings() {
-    const data = await chrome.storage.local.get(SETTINGS_KEY);
+    if (!chrome?.runtime?.id) {
+      return { ...DEFAULT_SETTINGS };
+    }
+    let data;
+    try {
+      data = await chrome.storage.local.get(SETTINGS_KEY);
+    } catch (_) {
+      return { ...DEFAULT_SETTINGS };
+    }
     const raw = data[SETTINGS_KEY];
     if (!raw) {
       return { ...DEFAULT_SETTINGS };
     }
-    if ((raw.settingsSchemaVersion || 1) < 2) {
-      const migrated = {
-        ...DEFAULT_SETTINGS,
-        ...raw,
-        targetLang: raw.targetLang || 'zh-TW',
-        displayMode: raw.displayMode === 'bilingual' ? 'replace' : (raw.displayMode || 'replace'),
-        translateCodeComments: raw.translateCodeComments ?? true,
-        customGlossary: (!raw.customGlossary || raw.customGlossary.includes('过拟合'))
-          ? DEFAULT_GLOSSARY
-          : raw.customGlossary,
-        settingsSchemaVersion: 2
-      };
+    const ver = raw.settingsSchemaVersion || 1;
+    if (ver < 3) {
+      let migrated = { ...DEFAULT_SETTINGS, ...raw };
+      if (ver < 2) {
+        migrated = {
+          ...migrated,
+          targetLang: raw.targetLang || 'zh-TW',
+          displayMode: raw.displayMode === 'bilingual' ? 'replace' : (raw.displayMode || 'replace'),
+          translateCodeComments: raw.translateCodeComments ?? true,
+          customGlossary: (!raw.customGlossary || raw.customGlossary.includes('过拟合'))
+            ? DEFAULT_GLOSSARY
+            : raw.customGlossary
+        };
+      }
+      migrated.batchSize = (!raw.batchSize || raw.batchSize === 8) ? 16 : raw.batchSize;
+      migrated.maxBatchChars = (!raw.maxBatchChars || raw.maxBatchChars === 1800) ? 4500 : raw.maxBatchChars;
+      migrated.settingsSchemaVersion = 3;
       await chrome.storage.local.set({ [SETTINGS_KEY]: migrated });
       return migrated;
     }
@@ -298,7 +311,7 @@
 
   async function saveSettings(partial) {
     const current = await getSettings();
-    const next = { ...current, ...partial, settingsSchemaVersion: 2 };
+    const next = { ...current, ...partial, settingsSchemaVersion: 3 };
     await chrome.storage.local.set({ [SETTINGS_KEY]: next });
     return next;
   }
