@@ -56,7 +56,9 @@
 
 ### 2. 設定模型與 API Key
 1. 點擊瀏覽器工具列上的擴充功能圖示 → **模型與 API 設定**。
-2. 選擇模型服務商（推薦使用 **DeepSeek `deepseek-chat`**，或 **Google Gemini** / **OpenAI** / **Ollama** 等）。
+2. 選擇模型服務商：
+   - **Google Gemini（原生介面 · 推薦免費額度方案）**：使用 Google AI Studio 免費層專案 API Key，預設 `gemini-3.5-flash-lite`（免費層 **500 RPD / 10 RPM**、單批約 0.8–1.4 秒），或可選 `gemini-3.1-flash-lite` / `gemini-3.8-flash` / `gemini-4-hydrogen`。
+   - **DeepSeek / OpenAI / Qwen / OpenRouter / 本機 Ollama**：亦完整支援各家 OpenAI 相容端點。
 3. 貼上您的 API Key，點擊 **測試連線** 確認成功後點擊 **儲存設定**。
 
 ### 3. 開始學習 Kaggle 課程

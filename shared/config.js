@@ -20,12 +20,20 @@
     },
     gemini: {
       id: 'gemini',
-      label: 'Google Gemini（原生介面）',
+      label: 'Google Gemini（原生介面 · 支援免費額度）',
       protocol: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-      defaultModel: 'gemini-2.5-flash',
-      placeholderKey: 'AIza...',
-      hint: '使用 Google AI Studio API Key，支援 gemini-2.5-flash / gemini-2.0-flash。'
+      defaultModel: 'gemini-3.5-flash-lite',
+      suggestedModels: [
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite',
+        'gemini-3.8-flash',
+        'gemini-4-hydrogen',
+        'gemini-3.6-flash',
+        'gemini-2.5-flash'
+      ],
+      placeholderKey: 'AQ... 或 AIza...',
+      hint: '使用 Google AI Studio API Key；免費額度首選 gemini-3.5-flash-lite（500 RPD），高階翻譯可選 gemini-3.8-flash / gemini-4-hydrogen。'
     },
     qwen: {
       id: 'qwen',
@@ -68,7 +76,12 @@
       label: 'OpenRouter',
       protocol: 'openai',
       baseUrl: 'https://openrouter.ai/api/v1',
-      defaultModel: 'google/gemini-2.0-flash-001',
+      defaultModel: 'google/gemini-2.5-flash',
+      suggestedModels: [
+        'google/gemini-2.5-flash',
+        'google/gemini-2.5-flash-lite',
+        'deepseek/deepseek-chat'
+      ],
       placeholderKey: 'sk-or-...',
       hint: '聚合多家大模型，填入對應模型 ID 即可。'
     },

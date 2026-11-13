@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kaggle 課程智慧翻譯助手",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "專為 Kaggle Learn 課程與 Notebook 實作打造的多語言 AI 翻譯擴充功能：完整保留原版排版美感、翻譯 Python 程式碼註解、支援一鍵切換原文與譯文，並可自選目標語言。",
   "minimum_chrome_version": "119",
   "icons": {

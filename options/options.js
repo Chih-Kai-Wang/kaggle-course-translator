@@ -35,6 +35,20 @@ function updateCustomLangVisibility() {
   document.getElementById('custom-lang-wrap').classList.toggle('hidden', !isCustom);
 }
 
+function updateModelSuggestions(preset) {
+  const datalist = document.getElementById('model-suggestions');
+  if (!datalist) return;
+  datalist.textContent = '';
+  const models = Array.isArray(preset?.suggestedModels) && preset.suggestedModels.length
+    ? preset.suggestedModels
+    : (preset?.defaultModel ? [preset.defaultModel] : []);
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    datalist.appendChild(opt);
+  }
+}
+
 function applyPreset(presetId) {
   const preset = PROVIDER_PRESETS[presetId];
   if (!preset) return;
@@ -43,6 +57,7 @@ function applyPreset(presetId) {
   document.getElementById('model-input').value = preset.defaultModel;
   document.getElementById('apikey-input').placeholder = preset.placeholderKey;
   document.getElementById('provider-hint').textContent = preset.hint;
+  updateModelSuggestions(preset);
   updateEndpointPreview();
 }
 
@@ -116,6 +131,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (activePreset) {
     document.getElementById('provider-hint').textContent = activePreset.hint;
     document.getElementById('apikey-input').placeholder = activePreset.placeholderKey;
+    updateModelSuggestions(activePreset);
   }
   updateEndpointPreview();
   await refreshCacheStats();

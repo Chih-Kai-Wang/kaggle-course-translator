@@ -147,13 +147,49 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeGeminiModelId(model) {
+  return String(model || '').replace(/^models\//i, '').trim().toLowerCase();
+}
+
+function buildGeminiRequestBody(settings, messages, expectJson) {
+  const systemMsg = messages.find((m) => m.role === 'system');
+  const userMsgs = messages.filter((m) => m.role !== 'system');
+  const normModel = normalizeGeminiModelId(settings.model);
+  const isGemini3Or4 = /^gemini-(?:3|4)(?:[.\-]|$)/.test(normModel);
+
+  const generationConfig = {};
+  if (!isGemini3Or4) {
+    generationConfig.temperature = Number(settings.temperature ?? 0.2);
+  }
+  if (/^gemini-(?:3\.5-flash-lite|3\.6-flash|3-flash)/.test(normModel)) {
+    generationConfig.thinkingConfig = { thinkingLevel: 'MINIMAL' };
+  } else if (/^gemini-(?:3\.8-flash|4-|3\.1-pro)/.test(normModel)) {
+    generationConfig.thinkingConfig = { thinkingLevel: 'LOW' };
+  }
+  if (expectJson) {
+    generationConfig.responseMimeType = 'application/json';
+  }
+
+  const body = {
+    contents: userMsgs.map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }]
+    })),
+    generationConfig
+  };
+  if (systemMsg) {
+    body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+  }
+  return body;
+}
+
 async function callLLMChat(settings, messages, expectJson = true) {
   const endpoint = resolveEndpoint(settings);
   if (!endpoint) {
     throw new Error('API 地址无效，请检查设置中的 Base URL');
   }
 
-  const maxAttempts = 2;
+  const maxAttempts = 3;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -163,31 +199,15 @@ async function callLLMChat(settings, messages, expectJson = true) {
     try {
       let response;
       if (settings.protocol === 'gemini') {
-        const systemMsg = messages.find((m) => m.role === 'system');
-        const userMsgs = messages.filter((m) => m.role !== 'system');
-        const body = {
-          contents: userMsgs.map((m) => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }]
-          })),
-          generationConfig: {
-            temperature: Number(settings.temperature ?? 0.2)
-          }
-        };
-        if (systemMsg) {
-          body.systemInstruction = { parts: [{ text: systemMsg.content }] };
-        }
-        if (expectJson) {
-          body.generationConfig.responseMimeType = 'application/json';
-        }
-        const url = new URL(endpoint);
+        const body = buildGeminiRequestBody(settings, messages, expectJson);
+        const headers = { 'Content-Type': 'application/json' };
         const cleanKey = sanitizeApiKey(settings.apiKey);
         if (cleanKey) {
-          url.searchParams.set('key', cleanKey);
+          headers['x-goog-api-key'] = cleanKey;
         }
-        response = await fetch(url.toString(), {
+        response = await fetch(endpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(body),
           signal: controller.signal
         });
@@ -241,7 +261,9 @@ async function callLLMChat(settings, messages, expectJson = true) {
 
       const data = await response.json();
       if (settings.protocol === 'gemini') {
-        const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+        const parts = data?.candidates?.[0]?.content?.parts || [];
+        const answerParts = parts.filter((p) => !p.thought && p.text);
+        const text = (answerParts.length ? answerParts : parts).map((p) => p.text || '').join('');
         if (!text) {
           throw new Error(data?.error?.message || 'Gemini 未返回文本内容');
         }
