@@ -459,8 +459,8 @@
     }
   }
 
-  function collectCodeComments() {
-    if (!settings || !settings.enabled || settings.translateCodeComments === false) return [];
+  function collectCodeComments(force = false) {
+    if (!settings || (!settings.enabled && !force) || settings.translateCodeComments === false) return [];
     const items = [];
     const seen = new Set();
 
@@ -558,8 +558,8 @@
     return items;
   }
 
-  function collectBlocks() {
-    if (!settings || !settings.enabled) return [];
+  function collectBlocks(force = false) {
+    if (!settings || (!settings.enabled && !force)) return [];
     const roots = getCandidateRoots();
     const collected = [];
     const seen = new Set();
@@ -925,8 +925,8 @@
     if (!settings.enabled && !force) return;
     if (!settings.autoTranslate && !force) return;
 
-    const newBlocks = collectBlocks();
-    const newComments = collectCodeComments();
+    const newBlocks = collectBlocks(force);
+    const newComments = collectCodeComments(force);
     const newItems = [...newBlocks, ...newComments];
     if (newItems.length > 0) {
       totalDetected += newItems.length;
@@ -1166,6 +1166,9 @@
       dot.classList.add('kct-err');
       status.textContent = '未設定 API Key';
       status.title = '請點選「⚙」填寫大模型 API Key';
+    } else if (!settings?.enabled) {
+      status.textContent = agg.totalTranslated > 0 ? `已譯 ${agg.totalTranslated} 項（已暫停）` : '已暫停';
+      status.title = '全域翻譯開關已關閉，點擊右上角擴充圖示或按「↻」可啟用並翻譯';
     } else if (agg.totalTranslated > 0) {
       status.textContent = `已譯 ${agg.totalTranslated} 項`;
       status.title = status.textContent;
@@ -1430,12 +1433,24 @@
         switch (message.action) {
           case 'TRANSLATE_NOW':
             settings = await getSettings();
+            if (!settings.enabled) {
+              settings = { ...settings, enabled: true };
+              if (isTopFrame()) {
+                settings = await saveSettings({ enabled: true });
+              }
+            }
             scanAndTranslate(true);
             break;
           case 'RETRANSLATE':
             clearAllInjectedTranslations();
             if (isTopFrame()) subframeStats.clear();
             settings = await getSettings();
+            if (!settings.enabled) {
+              settings = { ...settings, enabled: true };
+              if (isTopFrame()) {
+                settings = await saveSettings({ enabled: true });
+              }
+            }
             scanAndTranslate(true);
             break;
           case 'CLEAR_PAGE':
