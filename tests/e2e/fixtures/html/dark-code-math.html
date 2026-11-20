@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en" data-color-mode="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Observer Streams & Dark Code Math Fixture</title>
+  <style>
+    html, body { background: #0d1117; color: #e6edf3; font-family: system-ui, -apple-system, sans-serif; margin: 0; line-height: 1.65; }
+    main { max-width: 880px; margin: 28px auto; padding: 0 20px; }
+    a { color: #58a6ff; }
+    code { background: #161b22; padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, monospace; }
+    pre { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 13px; }
+    .c1, .hljs-comment, .token.comment, .pl-c { color: #8b949e; }
+    .fixed-box { height: 48px; overflow: hidden; border: 1px solid #30363d; padding: 8px 12px; border-radius: 6px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+      <h1>Asynchronous Intersection Streams</h1>
+      <p>
+        Registering an <code>IntersectionObserver</code> callback decouples scroll-visibility tracking
+        from the main layout pipeline.<sup class="reference"><a href="#ref2">[2]</a></sup>
+        Thresholds satisfy
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <mrow>
+            <mn>0</mn><mo>&#x2264;</mo><mi>&#x03B8;</mi><mo>&#x2264;</mo><mn>1</mn>
+          </mrow>
+        </math>
+        as documented in the <a href="#observer-spec">observer specification</a>.
+      </p>
+
+      <pre><code><span class="c1">// Observe visible document sections without polling scroll events</span>
+const observer = new IntersectionObserver((entries) =&gt; {
+  for (const entry of entries) {
+    if (entry.isIntersecting) queueBatch(entry.target);
+  }
+});</code></pre>
+
+      <pre><code><span class="hljs-comment"># Normalize threshold vectors across viewport root margins</span>
+thresholds = [0.0, 0.25, 0.5, 1.0]</code></pre>
+
+      <pre><code><span class="token comment">/* Ensure translated dark surfaces maintain accessible text contrast */</span>
+.surface-dark { color: #e6edf3; background: #0d1117; }</code></pre>
+
+      <pre><code><span class="pl-c">// Release pending queue entries when stream closes early</span>
+releasePendingKeys(batchIds);</code></pre>
+
+      <div class="fixed-box">
+        Compact fixed-height summary strip that expands cleanly when bilingual or longer translated text arrives.
+      </div>
+    </article>
+  </main>
+</body>
+</html>

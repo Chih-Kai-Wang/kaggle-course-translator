@@ -2,7 +2,7 @@
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · **Deutsch**
 
-**NativeRead (v2.4.0)** ist eine Manifest-V3-Browser-Erweiterung und mobile PWA, die Webseiten, PDFs, Codekommentare und eingebettete Infografiken übersetzt und dabei die ursprüngliche Typografie und das Seitenlayout beibehält. Sie bleibt standardmäßig inaktiv, läuft bei Bedarf mit Ihrem eigenen LLM-API-Schlüssel und streamt Übersetzungen Absatz für Absatz, ohne den Lesefluss zu unterbrechen.
+**NativeRead (v2.5.0)** ist eine Manifest-V3-Browser-Erweiterung und mobile PWA, die Webseiten, PDFs, Codekommentare und eingebettete Infografiken übersetzt und dabei die ursprüngliche Typografie und das Seitenlayout beibehält. Sie bleibt standardmäßig inaktiv, läuft bei Bedarf mit Ihrem eigenen LLM-API-Schlüssel und streamt Übersetzungen Absatz für Absatz, ohne den Lesefluss zu unterbrechen.
 
 ---
 
@@ -29,30 +29,52 @@ Erfordert Chromium 119+ (Chrome, Edge, Brave oder kompatible Browser).
    ```
 2. Öffnen Sie `chrome://extensions/` (oder `edge://extensions/`) und aktivieren Sie den **Entwicklermodus**.
 3. Klicken Sie auf **Entpackte Erweiterung laden** und wählen Sie das geklonte Verzeichnis `native-read` aus.
-4. Klicken Sie auf das **NativeRead**-Symbolleisten-Icon → **Options**, wählen Sie einen Modellanbieter, geben Sie Ihren API-Schlüssel ein, klicken Sie auf **Test Connection** und speichern Sie.
-5. Starten Sie die Übersetzung auf einer beliebigen Webseite oder einem PDF-Tab mit **`Alt+T`**, dem Popup-Button oder dem Kontextmenü. Klicken Sie auf `☆` / `★` im Popup oder in der schwebenden Pill, um die aktuelle Domain zur Auto-Übersetzungs-Positivliste hinzuzufügen oder daraus zu entfernen.
+4. Klicken Sie auf das **NativeRead**-Symbolleisten-Icon → **Options**, wählen Sie einen Modellanbieter, geben Sie Ihren API-Schlüssel ein, klicken Sie auf **Fetch model list** und wählen Sie ein Modell aus, klicken Sie dann auf **Test Connection** und speichern Sie.
+5. Starten Sie die Übersetzung auf einer beliebigen Webseite oder einem PDF-Tab mit **`Alt+T`** (**⌥ Option+T** unter macOS; das Popup zeigt Ihr konfiguriertes Tastenkürzel an, anpassbar unter `chrome://extensions/shortcuts`), dem Popup-Button oder dem Kontextmenü. Klicken Sie auf `☆` / `★` im Popup oder in der schwebenden Pill, um die aktuelle Domain zur Auto-Übersetzungs-Positivliste hinzuzufügen oder daraus zu entfernen.
 
 ### Unterstützte Modellanbieter
 
-Konfiguriert in `shared/config.js` (`PROVIDER_PRESETS`). Lokale Endpunkte (`localhost`, `127.0.0.1`, `0.0.0.0`) benötigen keinen API-Schlüssel.
+Konfiguriert in `shared/config.js` (`PROVIDER_PRESETS`) als datengesteuertes Verzeichnis mit 32 Voreinstellungen in vier Gruppen (dargestellt mit `<optgroup>` in den Optionen und der PWA, wobei `scripts/build-mobile.js` `docs/providers.js` aus derselben Quelle generiert). Nutzer können verfügbare Modelle live vom konfigurierten Endpunkt abrufen; lokale Endpunkte (`localhost`, `127.0.0.1`, `0.0.0.0`) benötigen keinen API-Schlüssel, und jeder andere OpenAI-kompatible Dienst funktioniert über `custom`.
 
-| Anbieter-ID | Protokoll | Standard-Basis-URL | Standardmodell |
+| Gruppe | Anbieter-ID | Protokoll | Basis-URL |
 | --- | --- | --- | --- |
-| `deepseek` | OpenAI | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| `gemini` | Gemini Native | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.5-flash-lite` |
-| `qwen` | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| `siliconflow` | OpenAI | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` |
-| `moonshot` | OpenAI | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
-| `openrouter` | OpenAI | `https://openrouter.ai/api/v1` | `google/gemini-2.5-flash` |
-| `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` | `claude-opus-5-5` |
-| `azure` | OpenAI (api-key header) | `https://YOUR-RESOURCE.openai.azure.com/openai/v1` | Deployment-Name |
-| `custom` | OpenAI | `http://localhost:11434/v1` | `qwen2.5:7b` |
+| Nativ | `gemini` | Gemini Native | `https://generativelanguage.googleapis.com/v1beta` |
+| Nativ | `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` |
+| International | `openai` | OpenAI | `https://api.openai.com/v1` |
+| International | `azure` | OpenAI (api-key header) | `https://YOUR-RESOURCE.openai.azure.com/openai/v1` |
+| International | `openrouter` | OpenAI | `https://openrouter.ai/api/v1` |
+| International | `groq` | OpenAI | `https://api.groq.com/openai/v1` |
+| International | `mistral` | OpenAI | `https://api.mistral.ai/v1` |
+| International | `xai` | OpenAI | `https://api.x.ai/v1` |
+| International | `together` | OpenAI | `https://api.together.xyz/v1` |
+| International | `fireworks` | OpenAI | `https://api.fireworks.ai/inference/v1` |
+| International | `cerebras` | OpenAI | `https://api.cerebras.ai/v1` |
+| International | `deepinfra` | OpenAI | `https://api.deepinfra.com/v1/openai` |
+| International | `huggingface` | OpenAI | `https://router.huggingface.co/v1` |
+| International | `novita` | OpenAI | `https://api.novita.ai/openai` |
+| International | `deepseek` | OpenAI | `https://api.deepseek.com/v1` |
+| International | `qwen-intl` | OpenAI | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| International | `moonshot-intl` | OpenAI | `https://api.moonshot.ai/v1` |
+| International | `zai` | OpenAI | `https://api.z.ai/api/paas/v4` |
+| International | `minimax-intl` | OpenAI | `https://api.minimax.io/v1` |
+| International | `siliconflow-intl` | OpenAI | `https://api.siliconflow.com/v1` |
+| Festlandchina | `qwen` | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| Festlandchina | `moonshot` | OpenAI | `https://api.moonshot.cn/v1` |
+| Festlandchina | `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` |
+| Festlandchina | `siliconflow` | OpenAI | `https://api.siliconflow.cn/v1` |
+| Festlandchina | `volcengine` | OpenAI | `https://ark.cn-beijing.volces.com/api/v3` |
+| Festlandchina | `qianfan` | OpenAI | `https://qianfan.baidubce.com/v2` |
+| Festlandchina | `hunyuan` | OpenAI | `https://api.hunyuan.cloud.tencent.com/v1` |
+| Festlandchina | `minimax` | OpenAI | `https://api.minimaxi.com/v1` |
+| Festlandchina | `stepfun` | OpenAI | `https://api.stepfun.com/v1` |
+| Lokal & benutzerdefiniert | `ollama` | OpenAI | `http://localhost:11434/v1` |
+| Lokal & benutzerdefiniert | `lmstudio` | OpenAI | `http://localhost:1234/v1` |
+| Lokal & benutzerdefiniert | `custom` | OpenAI | `http://localhost:11434/v1` |
 
-- **Anthropic Claude (`anthropic`)**: Nutzt die native Messages API in Erweiterung, Userscript und PWA (Streaming-SSE, Batch-/Einzelübersetzung, Test Connection sowie On-Demand-Bildübersetzung über Base64-Bildblöcke), mit den empfohlenen Modellen `claude-sonnet-5-5` und `claude-haiku-5-5`. Prüft `stop_reason`, sodass Ablehnungen als klare Fehlermeldungen erscheinen.
-- **Azure OpenAI (`azure`)**: Unterstützt Endpunkte unter `*.openai.azure.com`, `*.services.ai.azure.com` und `*.cognitiveservices.azure.com`; tragen Sie Ihren Deployment-Namen in das Modellfeld ein – der API-Schlüssel wird automatisch im `api-key`-Header gesendet.
-- **Hinweis zur Verifizierung**: Die Unterstützung für Anthropic Claude und Azure OpenAI wurde mit Offline-Fixture-Tests (Endpunkt, Header, Request-Body sowie Response-/Stream-Parsing) verifiziert, aber noch nicht gegen die Live-APIs getestet.
+- **Modellauswahl & Live-Liste**: `gemini` ist der Standardanbieter und nur `gemini` (`gemini-3.5-flash-lite`), `anthropic` (`claude-opus-5-5`) sowie `openrouter` (`google/gemini-2.5-flash`) behalten ein Standardmodell; alle anderen Voreinstellungen starten leer, sodass Sie über **Fetch model list** auswählen können (`LIST_MODELS` fragt Gemini `GET /v1beta/models` mit `generateContent`, Anthropic `GET /v1/models` mit `after_id`-Paginierung oder OpenAI-kompatibles `GET {baseUrl}/models` ab), mit Warnung bei nicht gelistetem aktuellem Modell, Aufforderung zur Modellauswahl vor dem Übersetzen oder Testen bei leerem Feld und Hinweis zur Neuauswahl bei 400/404/410/422-Fehlern wegen nicht gefundenem oder veraltetem Modell, ohne gespeicherte Einstellungen zu überschreiben.
+- **Anthropic Claude (`anthropic`)**: Nutzt die native Messages API in Erweiterung, Userscript und PWA (Streaming-SSE, Batch-/Einzelübersetzung, Test Connection sowie On-Demand-Bildübersetzung über Base64-Bildblöcke), mit den empfohlenen Modellen `claude-sonnet-5-5` und `claude-haiku-5-5`, und prüft `stop_reason`, sodass Ablehnungen als klare Fehlermeldungen erscheinen.
+- **Azure OpenAI (`azure`)**: Unterstützt Endpunkte unter `*.openai.azure.com`, `*.services.ai.azure.com` und `*.cognitiveservices.azure.com`; tragen Sie Ihren Deployment-Namen in das Modellfeld ein (von der Live-Modellliste ausgeschlossen) – der API-Schlüssel wird automatisch im `api-key`-Header gesendet.
+- **Hinweis zur Verifizierung**: Jede gehostete voreingestellte Basis-URL (alle außer der `azure`-Vorlage und den lokalen Endpunkten `ollama` / `lmstudio` / `custom`) wurde live auf Endpunkt-Verfügbarkeit geprüft, während die Request-/Response-Unterstützung für Anthropic Claude und Azure OpenAI mit Offline-Fixture-Tests (Endpunkt, Header, Request-Body sowie Response-/Stream-Parsing) verifiziert und noch nicht gegen die Live-APIs getestet wurde.
 - **Zielsprachen**: `zh-TW` (Standard), `zh-CN`, `ja`, `ko`, `es`, `fr`, `de`, `vi`, `pt`, plus benutzerdefinierte Sprach-Prompts.
 - **Denkaufwand (`thinkingEffort`)**: `fastest` (Standard), `balanced` oder `deep`. Ordnet automatisch Gemini 3.x/4.x auf `thinkingLevel` (`MINIMAL` / `LOW` / `MEDIUM`), Gemini 2.5 Flash auf `thinkingBudget` (`0` / `512` / `2048`), OpenAI `o1`/`o3`/`o4` auf `reasoning_effort: "low"`, DashScope `qwen3` im Modus `fastest` auf `enable_thinking: false` (unter Entfernen von `thought`-Teilen aus Antworten) und Anthropic Claude auf `output_config.effort` (`low` / `medium` / `high`) bei unterstützten Modellen zu, ohne `temperature`, `top_p`, `top_k` oder eine Thinking-Konfiguration zu senden.
 
@@ -111,7 +133,7 @@ flowchart TD
         C1 --> C2["collectUniversalCandidateElements + queryAllDeep (Shadow DOM)"]
         C2 --> C3["shouldSkipBlock / isMeaningfulLeafText / shouldTranslateText"]
         C3 -->|"Überspringen"| SKIP["UI-Elemente / Code / Zielsprache (0 Tokens)"]
-        C3 -->|"Behalten"| C4["extractBlockContent ([[C#]] [[M#]] [[L#]] Schutz)"]
+        C3 -->|"Behalten"| C4["resolveInlineHost + extractBlockContent ([[C#]] [[M#]] [[L#]] & [[A#]] [[S#]] Tags)"]
         C1 -->|"Drive PDF"| C5["preparePdfOverlayLayers + detectPdfTocEntries"]
         C1 -->|"Codeblöcke"| C6["content/code-overlay.js: collectCodeComments + Ausgabe-Schaltfläche"]
     end
@@ -146,9 +168,9 @@ flowchart TD
   - *Durchgang 1*: Sammelt semantische Blöcke (`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`) und überspringt verschachtelte Container, sodass nur Blatt-Textblöcke beansprucht werden.
   - *Durchgang 2*: Durchläuft `DIV`, `SPAN`, `A`, `LABEL` und `BUTTON`-Blattkandidaten für moderne SPAs, lehnt Shadow-DOM-Hosts, Elemente mit Block-Kindern oder interaktiven Steuerelementen (`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`), reine Metadaten-Zähler (`PURE_METADATA_REGEX`) sowie Wrapper-`div`/`span`-Knoten ab, die nur `<a href>`-Links umschließen. Beide Durchgänge werden in DOM-Dokumentreihenfolge (`compareDocumentPosition`) zusammengeführt.
 - **Shadow-DOM-Traversierung (`queryAllDeep`, `ensureShadowModeStyle`)**: Traversiert offene `shadowRoot`-Bäume bis Tiefe 5, überspringt dabei Code-Editoren und UI-Knoten (`SHADOW_SKIP_SELECTOR`) und injiziert `:host-context(html.kct-mode-*)`-Regeln, damit das Umschalten zwischen Ersetzen / Original / Zweisprachig auch im Shadow DOM funktioniert.
-- **Inline-Schutz-Tokens (`extractBlockContent`, `buildTranslatedFragment`)**: Ersetzt Inline-Code (`code, kbd, var`) durch `[[C#]]`, Mathematik und Zitationen (`.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`) durch `[[M#]]` sowie kurze/nicht-übersetzbare `<a href>`-Links (`<= 28` Zeichen) durch `[[L#]]`. Der Renderer stellt jedes Token durch Klonen des ursprünglichen DOM-Knotens (`cloneNode(true)`) in ein `DocumentFragment` wieder her.
+- **Inline-Struktur & Schutz-Tokens (`extractBlockContent`, `buildTranslatedFragment`, `resolveInlineHost`, `validateTranslatedTokens`)**: Erzeugt atomare Tokens `[[C#]]` (Inline-Code `code, kbd, var`), `[[M#]]` (Mathematik und Zitationen `.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`) und `[[L#]]` (nicht-übersetzbare `<a href>`-Links wie Bezeichner, URLs oder Zitationsmarker) sowie gepaarte `[[A#]]…[[/A#]]` (übersetzbare klickbare Links) und `[[S#]]…[[/S#]]` (Inline-Hervorhebung: bold/strong/italic/em/u/mark/s/small/sub/sup); `buildTranslatedFragment` stellt atomare Tokens als tiefe Klone (`cloneNode(true)`) und gepaarte Tags als flache Klone (`cloneNode(false)`, unter Beibehaltung von `href`/`class` ohne `id`) in einem `DocumentFragment` wieder her. Befindet sich der Text eines Blocks in einer einzigen Inline-Kette (z. B. `li > a > b`), steigt `resolveInlineHost` in diese hinab, sodass die Übersetzung direkt im ursprünglichen Link oder der Hervorhebung gerendert wird, ohne auf das Modell angewiesen zu sein. Vor dem Rendern prüft `validateTranslatedTokens`, ob jeder Platzhalter genau einmal mit ausgewogenen, korrekt verschachtelten gepaarten Tags vorkommt; andernfalls wird der Block mit `data-kct-structure-fallback="1"` gerendert, wodurch das klickbare Original neben der Übersetzung sichtbar bleibt, statt Links stillschweigend zu verwerfen.
 - **Sprachfilterung (`shouldTranslateText`)**: Filtert URLs, E-Mails, Dateipfade, Jupyter-`In[]`/`Out[]`-Prompts, einwortige ASCII-Code-Bezeichner sowie Text heraus, der bereits in der Zielsprache vorliegt, anhand von Unicode-Skriptanteilen (für `zh-TW`/`zh-CN` wird Han-Anteil `>= 0.55` mit `< 6` lateinischen Wörtern übersprungen, während japanischer Text mit Kana-Anteil `>= 0.12` weiterhin übersetzt wird).
-- **Schriftarten-Gen-Paarung (`probeTypography`, `sanitizeFontFamily`, `content/content.css`)**: Klassifiziert jeden Block anhand von `fontFamily` als `serif`, `sans` oder `mono`, entfernt generische CSS-Sammelfamilien (`serif`, `sans-serif`, `monospace`, `system-ui` usw.), sodass bis zu 5 seitenspezifische lateinische Schriften in `--kct-orig-font` erhalten bleiben, und hängt den passenden Zielsprachen-Stack an (`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`). Dichte, nicht abgeschnittene Fließtextblöcke mit `lineHeight / fontSize < 1.62` erhalten eine selektive `line-height: 1.72`-Anhebung (`data-kct-lh-lift="1"`).
+- **Schriftarten-Gen-Paarung (`probeTypography`, `detectRenderedSerif`, `sanitizeFontFamily`, `content/content.css`)**: Klassifiziert jeden Block anhand von `fontFamily` als `serif`, `sans` oder `mono` – und wenn eine Website-Schriftart nicht namentlich erkannt wird (z. B. die `CMS` Computer Modern Webfont, die einen `sans-serif`-Fallback deklariert), zeichnet `detectRenderedSerif` ein `"I"` auf ein Canvas, um auf Serifen zu prüfen (pro Familie zwischengespeichert), sodass Serif-Websites Serif-CJK-Schriften erhalten –, entfernt dann generische CSS-Sammelfamilien (`serif`, `sans-serif`, `monospace`, `system-ui` usw.), sodass bis zu 5 seitenspezifische lateinische Schriften in `--kct-orig-font` erhalten bleiben, und hängt den passenden Zielsprachen-Stack an (`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`). Dichte, nicht abgeschnittene Fließtextblöcke mit `lineHeight / fontSize < 1.62` erhalten eine selektive `line-height: 1.72`-Anhebung (`data-kct-lh-lift="1"`).
 
 ### 2.2 Duale PDF-Native-Layout-Pipelines
 
@@ -183,7 +205,7 @@ NativeRead unterhält zwei spezialisierte PDF-Pipelines, zugeschnitten auf die j
 native-read/
 ├── manifest.json                 # MV3-Manifest, Versions-Single-Source-of-Truth, Berechtigungen, Alt+T-Befehl
 ├── shared/
-│   ├── config.js                 # Schema-v5-Einstellungen, Anbieter-Presets, Thinking-Konfig, URL-/PDF-Helfer
+│   ├── config.js                 # Schema-v5-Einstellungen, 32-Anbieter-Verzeichnis (PROVIDER_PRESETS), Thinking-Konfiguration, URL-/PDF-Helfer
 │   └── cache-db.js               # IndexedDB kct_cache_db_v2 LRU-Cache für 20.000 Einträge
 ├── background/
 │   └── service-worker.js         # Dynamischer Injektor, SSE/NDJSON-Streamer, 429-Limiter, Vision-Engine, #nr_sync-Guard
@@ -199,7 +221,8 @@ native-read/
 ├── icons/                        # Erweiterungs-Icons (16 / 48 / 128 px)
 ├── scripts/
 │   └── build-mobile.js           # Stempelt Version; erzeugt Userscript, meta.js, version.json, Android-ZIP, PDF.js/Icons
-├── docs/                         # GitHub-Pages-Mobile-PWA (index.html, app.js, app.css, sw.js, generierte Bundles)
+├── docs/                         # GitHub-Pages-Mobil-PWA (index.html, app.js, app.css, sw.js, generierte providers.js & Bundles)
+├── tests/                        # Offline-Regressions-Fixtures (inkl. tests/fixtures/inline-structure/ für Link-/Hervorhebungserhalt)
 ├── LICENSE                       # MIT-Lizenz
 └── README*.md                    # Mehrsprachige Produkt-, Architektur- und Sicherheitsdokumentation
 ```
@@ -213,9 +236,10 @@ native-read/
 | **Lokale Speicherung** | Erweiterungseinstellungen und API-Schlüssel liegen ausschließlich in `chrome.storage.local` (`kct_settings_v1`); PWA-Einstellungen in `localStorage`; Userscript-Einstellungen in `GM_getValue`/`GM_setValue` (`localStorage`-Fallback). Übersetzungs-Caches liegen lokal in IndexedDB (`kct_cache_db_v2`) und können jederzeit geleert werden. |
 | **Netzwerk-Endpunkte** | Der Datenverkehr von Erweiterung und Userscript geht direkt an Ihren konfigurierten LLM-Endpunkt – einschließlich `api.anthropic.com` oder Azure-OpenAI-Hosts, sofern ausgewählt – wobei API-Schlüssel strikt in HTTP-Headern (`x-goog-api-key`, `Authorization: Bearer`, `x-api-key` + `anthropic-version: 2026-10-21` + `anthropic-dangerous-direct-browser-access: true` für Anthropic oder `api-key` für Azure) platziert und aus Fehlermeldungen geschwärzt werden (`redactApiKey`). Remote-PDFs und On-Demand-Bilder werden direkt von ihren Quell-URLs durch den Service Worker abgerufen. |
 | **Update-Prüfung** | Beim Öffnen des Erweiterungs-Popups (sofern `checkForUpdates` aktiviert ist, standardmäßig an) wird `https://chih-kai-wang.github.io/native-read/version.json` höchstens einmal alle 24 Stunden abgerufen (gecacht in `chrome.storage.local` unter `nr_update_check_v1`, 5 s-Timeout, `credentials: 'omit'`, keine zusätzlichen Berechtigungen, keine Hintergrund-Timer). Die JSON-Nutzlast wird streng validiert und niemals als URL verwendet; der Update-Link ist fest auf das GitHub-README verdrahtet. Deaktivieren Sie `checkForUpdates` in den Optionen, um die Prüfung vollständig abzuschalten. |
+| **Modellliste** | Ein Klick auf **Fetch model list** in Options sendet `LIST_MODELS` (nur Erweiterung, `isExtensionSender`) direkt an den konfigurierten Anbieter (`GET /v1beta/models`, `GET /v1/models` oder `GET {baseUrl}/models`; 10 s Timeout, Azure ausgeschlossen) und speichert ausschließlich die zurückgegebenen Modell-IDs (niemals den API-Schlüssel, max. 20 Endpunkte) im Cache unter `chrome.storage.local` (`nr_model_list_v1`). |
 | **`#nr_sync`-Fragment-Behandlung** | Sync-Nutzlasten liegen ausschließlich im URL-`#`-Fragment (niemals `?query`), das Browser nicht in HTTP-Anfragen übertragen. `background/service-worker.js` akzeptiert `#nr_sync` nur vom Erweiterungs-Origin oder `https://chih-kai-wang.github.io/native-read`, lehnt Endpunkt-Änderungen (`baseUrl` / `protocol` / `providerId`) ab, sofern kein expliziter `apiKey` enthalten ist, validiert `http:`/`https:`-Schemas und löscht das Fragment sofort per `history.replaceState`. |
-| **Zero-`innerHTML`-DOM-Sicherheit** | Alle übersetzten Zeichenketten, Popovers und Overlays werden über `document.createTextNode` und `.textContent` geschrieben. Inline-Platzhalter (`[[C#]]`, `[[M#]]`, `[[L#]]`) stellen ausschließlich geklonte, bereits vorhandene DOM-Knoten wieder her. |
-| **MV3-CSP- & PDF.js-Härtung** | PDF.js wird lokal mit `isEvalSupported: false` sowohl in `viewer/pdf-viewer.js` als auch in `docs/app.js` gebündelt. Privilegierte Service-Worker-Aktionen (`ENSURE_AND_COMMAND`, `TEST_CONNECTION`, `OPEN_PDF_VIEWER`, `GET_SW_DEBUG`, `CLEAR_CACHE`) erzwingen `isExtensionSender(sender)`. |
+| **Zero-`innerHTML`-DOM-Sicherheit** | Alle übersetzten Zeichenketten, Popovers und Overlays werden über `document.createTextNode` und `.textContent` geschrieben. Atomare Platzhalter (`[[C#]]`, `[[M#]]`, `[[L#]]`) stellen ausschließlich geklonte, bereits vorhandene DOM-Knoten wieder her, gepaarte Tags (`[[A#]]`, `[[S#]]`) rekonstruieren nur flache Klone (`cloneNode(false)`) bereits vorhandener Elemente, und der Strukturwächter `validateTranslatedTokens` hält das Original bei Abweichungen sichtbar, sodass niemals ein Link verloren geht. |
+| **MV3-CSP- & PDF.js-Härtung** | PDF.js wird lokal mit `isEvalSupported: false` sowohl in `viewer/pdf-viewer.js` als auch in `docs/app.js` gebündelt. Privilegierte Service-Worker-Aktionen (`ENSURE_AND_COMMAND`, `TEST_CONNECTION`, `LIST_MODELS`, `OPEN_PDF_VIEWER`, `GET_SW_DEBUG`, `CLEAR_CACHE`) erzwingen `isExtensionSender(sender)`. |
 | **UI- & QR-Isolierung** | Schwebende Pills, Auswahl-Popovers, Bild-Hover-Auslöser und Userscript-Steuerelemente sind im Shadow DOM isoliert (`all: initial`). Sync-QR-Codes werden lokal auf der Optionsseite erzeugt, ohne externe QR-Dienste aufzurufen. |
 
 > **Hinweis zur mobilen PWA (`docs/app.js`)**: Bei PDF-URLs löst NativeRead Google-Drive-Links auf und nutzt ausschließlich direkten Browser-Fetch (15 s-Timeout für vollständige Downloads, kein `api.allorigins.win`-Relay, plus Fallback-Button „PDF in neuem Tab öffnen“ und Hinweis für lokale Dateien), sodass private PDF-URLs/-Bytes niemals an ein Drittanbieter-Relay gesendet werden. Im optionalen **Web URL**-Tab der PWA nutzt die Cross-Origin-Extraktion öffentlicher Artikel (`fetchReadableArticleFromUrl`) derzeit `r.jina.ai` (mit `api.allorigins.win` als Fallback); falls Sie mobil keinerlei Drittanbieter-Relays wünschen, fügen Sie Artikeltext direkt im Web-Tab ein oder nutzen Sie stattdessen das Userscript bzw. die Android-Erweiterung.

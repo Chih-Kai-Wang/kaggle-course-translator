@@ -2,7 +2,7 @@
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **한국어** · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
-**NativeRead (v2.4.0)**는 웹 페이지, PDF, 코드 주석, 내장 인포그래픽을 원본 페이지의 타이포그래피와 레이아웃을 유지한 채 번역하는 Manifest V3 브라우저 확장 프로그램이자 모바일 PWA입니다. 기본적으로는 아무 동작도 하지 않으며, 사용자의 LLM API 키를 이용해 필요할 때만 실행되고 읽기 흐름을 방해하지 않도록 문단 단위로 스트리밍 번역합니다.
+**NativeRead (v2.5.0)**는 웹 페이지, PDF, 코드 주석, 내장 인포그래픽을 원본 페이지의 타이포그래피와 레이아웃을 유지한 채 번역하는 Manifest V3 브라우저 확장 프로그램이자 모바일 PWA입니다. 기본적으로는 아무 동작도 하지 않으며, 사용자의 LLM API 키를 이용해 필요할 때만 실행되고 읽기 흐름을 방해하지 않도록 문단 단위로 스트리밍 번역합니다.
 
 ---
 
@@ -29,30 +29,52 @@ Chromium 119 이상(Chrome, Edge, Brave 또는 호환 브라우저)이 필요합
    ```
 2. `chrome://extensions/`(또는 `edge://extensions/`)를 열고 **개발자 모드**를 활성화합니다.
 3. **압축해제된 확장 프로그램을 로드합니다**를 클릭하고 클론한 `native-read` 디렉터리를 선택합니다.
-4. **NativeRead** 툴바 아이콘 → **옵션**을 클릭하여 모델 제공자를 선택하고 API 키를 입력한 뒤 **연결 테스트**를 클릭하고 저장합니다.
-5. 아무 웹 페이지나 PDF 탭에서 **`Alt+T`**, 팝업 버튼 또는 우클릭 메뉴로 번역을 실행합니다. 팝업이나 플로팅 필에서 `☆` / `★`를 클릭하면 현재 도메인을 자동 번역 허용 목록에 추가하거나 제거할 수 있습니다.
+4. **NativeRead** 툴바 아이콘 → **Options**를 클릭하고 모델 제공자를 선택한 다음 API 키를 입력하고 **Fetch model list**를 클릭하여 모델을 고른 뒤 **Test Connection**을 클릭하고 저장합니다.
+5. 아무 웹 페이지나 PDF 탭에서 **`Alt+T`**(macOS에서는 **⌥ Option+T**; 팝업에 설정된 단축키가 표시되며 `chrome://extensions/shortcuts`에서 사용자 지정 가능), 팝업 버튼 또는 우클릭 메뉴로 번역을 실행합니다. 팝업이나 플로팅 필에서 `☆` / `★`를 클릭하면 현재 도메인을 자동 번역 허용 목록에 추가하거나 제거할 수 있습니다.
 
 ### 지원 모델 제공자
 
-`shared/config.js`(`PROVIDER_PRESETS`)에 구성되어 있습니다. 로컬 엔드포인트(`localhost`, `127.0.0.1`, `0.0.0.0`)는 API 키가 필요하지 않습니다.
+`shared/config.js`(`PROVIDER_PRESETS`)에 4개 그룹에 걸친 32개 프리셋의 데이터 기반 레지스트리로 구성되어 있습니다(옵션 페이지와 PWA에서는 `<optgroup>`으로 렌더링되며, `scripts/build-mobile.js`가 동일한 소스에서 `docs/providers.js`를 생성합니다). 사용자는 구성된 엔드포인트에서 사용 가능한 모델을 실시간으로 가져올 수 있으며, 로컬 엔드포인트(`localhost`, `127.0.0.1`, `0.0.0.0`)는 API 키가 필요하지 않고, 다른 모든 OpenAI 호환 서비스는 `custom`을 통해 사용할 수 있습니다.
 
-| 제공자 ID | 프로토콜 | 기본 Base URL | 기본 모델 |
+| 그룹 | 제공자 ID | 프로토콜 | Base URL |
 | --- | --- | --- | --- |
-| `deepseek` | OpenAI | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| `gemini` | Gemini Native | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.5-flash-lite` |
-| `qwen` | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| `siliconflow` | OpenAI | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` |
-| `moonshot` | OpenAI | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
-| `openrouter` | OpenAI | `https://openrouter.ai/api/v1` | `google/gemini-2.5-flash` |
-| `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` | `claude-opus-5-5` |
-| `azure` | OpenAI (api-key header) | `https://YOUR-RESOURCE.openai.azure.com/openai/v1` | 배포 이름 |
-| `custom` | OpenAI | `http://localhost:11434/v1` | `qwen2.5:7b` |
+| 네이티브 | `gemini` | Gemini Native | `https://generativelanguage.googleapis.com/v1beta` |
+| 네이티브 | `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` |
+| 국제 | `openai` | OpenAI | `https://api.openai.com/v1` |
+| 국제 | `azure` | OpenAI (api-key header) | `https://YOUR-RESOURCE.openai.azure.com/openai/v1` |
+| 국제 | `openrouter` | OpenAI | `https://openrouter.ai/api/v1` |
+| 국제 | `groq` | OpenAI | `https://api.groq.com/openai/v1` |
+| 국제 | `mistral` | OpenAI | `https://api.mistral.ai/v1` |
+| 국제 | `xai` | OpenAI | `https://api.x.ai/v1` |
+| 국제 | `together` | OpenAI | `https://api.together.xyz/v1` |
+| 국제 | `fireworks` | OpenAI | `https://api.fireworks.ai/inference/v1` |
+| 국제 | `cerebras` | OpenAI | `https://api.cerebras.ai/v1` |
+| 국제 | `deepinfra` | OpenAI | `https://api.deepinfra.com/v1/openai` |
+| 국제 | `huggingface` | OpenAI | `https://router.huggingface.co/v1` |
+| 국제 | `novita` | OpenAI | `https://api.novita.ai/openai` |
+| 국제 | `deepseek` | OpenAI | `https://api.deepseek.com/v1` |
+| 국제 | `qwen-intl` | OpenAI | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| 국제 | `moonshot-intl` | OpenAI | `https://api.moonshot.ai/v1` |
+| 국제 | `zai` | OpenAI | `https://api.z.ai/api/paas/v4` |
+| 국제 | `minimax-intl` | OpenAI | `https://api.minimax.io/v1` |
+| 국제 | `siliconflow-intl` | OpenAI | `https://api.siliconflow.com/v1` |
+| 중국 본토 | `qwen` | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 중국 본토 | `moonshot` | OpenAI | `https://api.moonshot.cn/v1` |
+| 중국 본토 | `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` |
+| 중국 본토 | `siliconflow` | OpenAI | `https://api.siliconflow.cn/v1` |
+| 중국 본토 | `volcengine` | OpenAI | `https://ark.cn-beijing.volces.com/api/v3` |
+| 중국 본토 | `qianfan` | OpenAI | `https://qianfan.baidubce.com/v2` |
+| 중국 본토 | `hunyuan` | OpenAI | `https://api.hunyuan.cloud.tencent.com/v1` |
+| 중국 본토 | `minimax` | OpenAI | `https://api.minimaxi.com/v1` |
+| 중국 본토 | `stepfun` | OpenAI | `https://api.stepfun.com/v1` |
+| 로컬 및 사용자 지정 | `ollama` | OpenAI | `http://localhost:11434/v1` |
+| 로컬 및 사용자 지정 | `lmstudio` | OpenAI | `http://localhost:1234/v1` |
+| 로컬 및 사용자 지정 | `custom` | OpenAI | `http://localhost:11434/v1` |
 
-- **Anthropic Claude (`anthropic`)**: 확장 프로그램, 유저스크립트, PWA 전반에서 네이티브 Messages API(스트리밍 SSE, 배치/단일 번역, 연결 테스트, base64 이미지 블록을 통한 온디맨드 이미지 번역)를 사용하며 추천 모델로 `claude-sonnet-5-5` 및 `claude-haiku-5-5`를 제공합니다. `stop_reason`을 확인하여 거절 응답이 명확한 오류로 표시되도록 합니다.
-- **Azure OpenAI (`azure`)**: `*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com` 엔드포인트를 지원합니다. 모델 필드에 배포 이름을 입력하면 API 키가 자동으로 `api-key` 헤더에 포함되어 전송됩니다.
-- **검증 참고**: Anthropic Claude 및 Azure OpenAI 지원은 오프라인 픽스처 테스트(엔드포인트, 헤더, 요청 본문, 응답/스트림 파싱)로 검증되었으나 실제 라이브 API에 대한 테스트는 아직 수행되지 않았습니다.
+- **모델 선택 및 실시간 목록**: `gemini`가 기본 제공자이며, `gemini`(`gemini-3.5-flash-lite`), `anthropic`(`claude-opus-5-5`), `openrouter`(`google/gemini-2.5-flash`)만 기본 모델을 유지합니다. 나머지 모든 프리셋은 비어 있는 상태로 시작하므로 **Fetch model list**(`LIST_MODELS`는 `generateContent`가 포함된 Gemini `GET /v1beta/models`, `after_id` 페이지네이션이 포함된 Anthropic `GET /v1/models`, 또는 OpenAI 호환 `GET {baseUrl}/models`를 조회)를 통해 선택할 수 있습니다. 현재 모델이 목록에 없으면 경고를 표시하고, 비어 있을 때는 번역이나 테스트 전에 모델 선택을 안내하며, 400/404/410/422 모델 미발견 또는 지원 중단 오류 시 저장된 설정을 덮어쓰지 않고 다시 선택하도록 안내합니다.
+- **Anthropic Claude (`anthropic`)**: 확장 프로그램, 유저스크립트, PWA 전반에서 네이티브 Messages API(스트리밍 SSE, 배치/단일 번역, 연결 테스트, base64 이미지 블록을 통한 온디맨드 이미지 번역)를 사용하며 추천 모델로 `claude-sonnet-5-5` 및 `claude-haiku-5-5`를 제공하고, `stop_reason`을 확인하여 거절 응답이 명확한 오류로 표시되도록 합니다.
+- **Azure OpenAI (`azure`)**: `*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com` 엔드포인트를 지원합니다. 모델 필드에 배포 이름을 입력하면(실시간 모델 목록에서 제외됨) API 키가 자동으로 `api-key` 헤더에 포함되어 전송됩니다.
+- **검증 참고**: `azure` 템플릿 URL과 로컬 `ollama` / `lmstudio` / `custom` 엔드포인트를 제외한 모든 클라우드 프리셋 Base URL은 엔드포인트 가용성에 대해 라이브 프로브를 완료했으며, Anthropic Claude 및 Azure OpenAI 요청/응답 지원은 오프라인 픽스처 테스트(엔드포인트, 헤더, 요청 본문, 응답/스트림 파싱)로 검증되었으나 실제 라이브 API에 대한 테스트는 아직 수행되지 않았습니다.
 - **대상 언어**: `zh-TW`(기본값), `zh-CN`, `ja`, `ko`, `es`, `fr`, `de`, `vi`, `pt` 및 사용자 지정 언어 프롬프트.
 - **사고 수준 (`thinkingEffort`)**: `fastest`(기본값), `balanced`, 또는 `deep`. Gemini 3.x/4.x는 `thinkingLevel`(`MINIMAL` / `LOW` / `MEDIUM`)로, Gemini 2.5 Flash는 `thinkingBudget`(`0` / `512` / `2048`)로, OpenAI `o1`/`o3`/`o4`는 `reasoning_effort: "low"`로 자동 매핑됩니다. DashScope `qwen3`은 `fastest` 모드에서 `enable_thinking: false`로 설정하고 응답의 `thought` 파트를 제거하며, Anthropic Claude는 이를 지원하는 모델에서 `temperature`, `top_p`, `top_k` 또는 thinking config를 보내지 않고 `output_config.effort`(`low` / `medium` / `high`)로 매핑합니다.
 
@@ -111,7 +133,7 @@ flowchart TD
         C1 --> C2["collectUniversalCandidateElements + queryAllDeep (Shadow DOM)"]
         C2 --> C3["shouldSkipBlock / isMeaningfulLeafText / shouldTranslateText"]
         C3 -->|"건너뛰기"| SKIP["UI 크롬 / 코드 / 대상 언어 (0 Tokens)"]
-        C3 -->|"유지"| C4["extractBlockContent ([[C#]] [[M#]] [[L#]] 보호)"]
+        C3 -->|"유지"| C4["resolveInlineHost + extractBlockContent ([[C#]] [[M#]] [[L#]] & [[A#]] [[S#]] 태그)"]
         C1 -->|"Drive PDF"| C5["preparePdfOverlayLayers + detectPdfTocEntries"]
         C1 -->|"코드 블록"| C6["content/code-overlay.js: collectCodeComments + 출력 버튼"]
     end
@@ -146,9 +168,9 @@ flowchart TD
   - *패스 1*: 시맨틱 블록(`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`)을 수집하며 중첩된 컨테이너는 건너뛰어 리프 산문 블록만 선택합니다.
   - *패스 2*: 최신 SPA를 위해 `DIV`, `SPAN`, `A`, `LABEL`, `BUTTON` 리프 후보를 순회하며 Shadow DOM 호스트, 블록 자식이나 대화형 컨트롤이 있는 요소(`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`), 순수 메타데이터 카운터(`PURE_METADATA_REGEX`), `<a href>` 링크만 감싸는 래퍼 `div`/`span` 노드를 제외합니다. 두 패스는 DOM 문서 순서(`compareDocumentPosition`)로 병합됩니다.
 - **Shadow DOM 순회 (`queryAllDeep`, `ensureShadowModeStyle`)**: 코드 에디터와 UI 노드(`SHADOW_SKIP_SELECTOR`)를 건너뛰면서 최대 깊이 5까지 열린 `shadowRoot` 트리를 순회하고, Shadow DOM 내부에서도 교체 / 원본 / 이중 언어 전환이 작동하도록 `:host-context(html.kct-mode-*)` 규칙을 주입합니다.
-- **인라인 보호 토큰 (`extractBlockContent`, `buildTranslatedFragment`)**: 인라인 코드(`code, kbd, var`)는 `[[C#]]`로, 수식과 인용(`.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`)은 `[[M#]]`로, 짧거나 번역 불필요한 `<a href>` 링크(`<= 28`자)는 `[[L#]]`로 치환합니다. 렌더러는 원본 DOM 노드를 복제(`cloneNode(true)`)하여 `DocumentFragment`에 삽입함으로써 각 토큰을 복원합니다.
+- **인라인 구조 및 보호 토큰 (`extractBlockContent`, `buildTranslatedFragment`, `resolveInlineHost`, `validateTranslatedTokens`)**: 원자적 토큰 `[[C#]]`(인라인 코드 `code, kbd, var`), `[[M#]]`(수식 및 인용 `.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`), `[[L#]]`(식별자, URL, 인용 마커 등 번역 불필요한 `<a href>` 링크)와 함께 쌍으로 된 `[[A#]]…[[/A#]]`(번역 가능한 클릭 가능 링크) 및 `[[S#]]…[[/S#]]`(인라인 강조: bold/strong/italic/em/u/mark/s/small/sub/sup)를 생성합니다. `buildTranslatedFragment`는 원자적 토큰을 깊은 복제(`cloneNode(true)`)로, 쌍 태그를 얕은 복제(`cloneNode(false)`, `id`는 제거하고 `href`/`class` 유지)로 `DocumentFragment`에 복원합니다. 블록의 텍스트가 단일 인라인 체인(예: `li > a > b`) 내부에 있을 때 `resolveInlineHost`가 그 안으로 내려가 모델에 의존하지 않고 원본 링크나 강조 내부에 번역을 렌더링합니다. 렌더링 전에 `validateTranslatedTokens`가 모든 플레이스홀더가 한 번씩 나타나고 쌍 태그가 균형 있게 중첩되었는지 검증하며, 그렇지 않으면 블록이 `data-kct-structure-fallback="1"`로 렌더링되어 링크를 조용히 누락하는 대신 번역과 함께 클릭 가능한 원문을 유지합니다.
 - **언어 필터링 (`shouldTranslateText`)**: URL, 이메일, 파일 경로, Jupyter `In[]`/`Out[]` 프롬프트, 단일 토큰 ASCII 코드 식별자를 걸러내며, 유니코드 스크립트 비율을 사용해 이미 대상 언어로 작성된 텍스트를 제외합니다(`zh-TW`/`zh-CN`의 경우 라틴 단어 `< 6`개이면서 한자 비율 `>= 0.55`이면 건너뛰되, 가나 비율 `>= 0.12`인 일본어 텍스트는 계속 번역합니다).
-- **폰트-진(Font-gene) 페어링 (`probeTypography`, `sanitizeFontFamily`, `content/content.css`)**: 계산된 `fontFamily`로부터 각 블록을 `serif`, `sans`, `mono`로 분류하고 일반 CSS 포괄 패밀리(`serif`, `sans-serif`, `monospace`, `system-ui` 등)를 제거하여 최대 5개의 사이트 고유 라틴 폰트를 `--kct-orig-font`에 남긴 뒤, 일치하는 대상 언어 스택(`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`)을 뒤에 붙입니다. `lineHeight / fontSize < 1.62`인 밀집된 비고정 산문 블록에는 선택적으로 `line-height: 1.72` 상승(`data-kct-lh-lift="1"`)을 적용합니다.
+- **폰트-진(Font-gene) 페어링 (`probeTypography`, `detectRenderedSerif`, `sanitizeFontFamily`, `content/content.css`)**: 계산된 `fontFamily`로부터 각 블록을 `serif`, `sans`, `mono`로 분류하며, 사이트 폰트가 이름으로 인식되지 않는 경우(예: `sans-serif` 폴백을 선언하는 `CMS` Computer Modern 웹폰트) `detectRenderedSerif`가 캔버스에 `"I"`를 그려 세리프 여부를 확인(패밀리별 캐시)하여 세리프 사이트에 세리프 CJK 폰트를 적용합니다. 그런 다음 일반 CSS 포괄 패밀리(`serif`, `sans-serif`, `monospace`, `system-ui` 등)를 제거하여 최대 5개의 사이트 고유 라틴 폰트를 `--kct-orig-font`에 남긴 뒤, 일치하는 대상 언어 스택(`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`)을 뒤에 붙입니다. `lineHeight / fontSize < 1.62`인 밀집된 비고정 산문 블록에는 선택적으로 `line-height: 1.72` 상승(`data-kct-lh-lift="1"`)을 적용합니다.
 
 ### 2.2 듀얼 PDF 네이티브 레이아웃 파이프라인
 
@@ -183,7 +205,7 @@ NativeRead는 브라우저에서 PDF가 렌더링되는 방식에 맞춘 두 가
 native-read/
 ├── manifest.json                 # MV3 매니페스트, 버전 단일 진실 공급원, 권한, Alt+T 명령
 ├── shared/
-│   ├── config.js                 # 스키마 v5 설정, 제공자 프리셋, 사고 설정, URL/PDF 헬퍼
+│   ├── config.js                 # Schema v5 설정, 32개 제공자 레지스트리(PROVIDER_PRESETS), 사고 설정, URL/PDF 도우미
 │   └── cache-db.js               # IndexedDB kct_cache_db_v2 20,000개 항목 LRU 캐시
 ├── background/
 │   └── service-worker.js         # 동적 인젝터, SSE/NDJSON 스트리머, 429 리미터, Vision 엔진, #nr_sync 가드
@@ -199,7 +221,8 @@ native-read/
 ├── icons/                        # 확장 프로그램 아이콘 (16 / 48 / 128 px)
 ├── scripts/
 │   └── build-mobile.js           # 버전 스탬핑; 유저스크립트, meta.js, version.json, Android ZIP, PDF.js/아이콘 생성
-├── docs/                         # GitHub Pages 모바일 PWA (index.html, app.js, app.css, sw.js, 생성된 번들)
+├── docs/                         # GitHub Pages 모바일 PWA(index.html, app.js, app.css, sw.js, 생성된 providers.js 및 번들)
+├── tests/                        # 오프라인 회귀 테스트 픽스처(링크/강조 보존용 tests/fixtures/inline-structure/ 포함)
 ├── LICENSE                       # MIT 라이선스
 └── README*.md                    # 다국어 제품, 아키텍처 및 보안 문서
 ```
@@ -213,9 +236,10 @@ native-read/
 | **로컬 저장소** | 확장 프로그램 설정과 API 키는 `chrome.storage.local`(`kct_settings_v1`)에만 저장됩니다. PWA 설정은 `localStorage`에, 유저스크립트 설정은 `GM_getValue`/`GM_setValue`(`localStorage` 폴백)에 저장됩니다. 번역 캐시는 IndexedDB(`kct_cache_db_v2`)에 로컬로 저장되며 언제든지 삭제할 수 있습니다. |
 | **네트워크 엔드포인트** | 확장 프로그램과 유저스크립트 트래픽은 선택한 경우 `api.anthropic.com` 또는 Azure OpenAI 호스트를 포함해 사용자가 구성한 LLM 엔드포인트로 직접 전송됩니다. API 키는 엄격하게 HTTP 헤더(`x-goog-api-key`, `Authorization: Bearer`, Anthropic용 `x-api-key` + `anthropic-version: 2026-10-21` + `anthropic-dangerous-direct-browser-access: true`, 또는 Azure용 `api-key`)에만 배치되며 오류 메시지에서는 마스킹됩니다(`redactApiKey`). 원격 PDF와 온디맨드 이미지는 Service Worker가 원본 URL에서 직접 가져옵니다. |
 | **업데이트 확인** | 확장 프로그램 팝업을 열면(`checkForUpdates`가 활성화된 경우, 기본값 켜짐) 24시간당 최대 1회 `https://chih-kai-wang.github.io/native-read/version.json`을 가져옵니다(`nr_update_check_v1` 아래 `chrome.storage.local`에 캐시, 5 s 타임아웃, `credentials: 'omit'`, 추가 권한 없음, 백그라운드 타이머 없음). JSON 페이로드는 엄격하게 검증되며 URL로 사용되지 않습니다. 업데이트 링크는 GitHub README로 하드코딩되어 있습니다. 완전히 비활성화하려면 옵션에서 `checkForUpdates`를 선택 해제하세요. |
+| **모델 목록** | Options에서 **Fetch model list**를 클릭하면 구성된 제공자로 직접 `LIST_MODELS`(확장 프로그램 전용, `isExtensionSender`)를 전송하고(`GET /v1beta/models`, `GET /v1/models` 또는 `GET {baseUrl}/models`, 10초 타임아웃, Azure 제외), 반환된 모델 ID만(API 키는 절대 저장하지 않으며 최대 20개 엔드포인트) `chrome.storage.local`의 `nr_model_list_v1`에 캐시합니다. |
 | **`#nr_sync` 프래그먼트 처리** | 동기화 페이로드는 브라우저가 HTTP 요청으로 전송하지 않는 URL `#` 프래그먼트에만 존재합니다(`?query`에는 절대 포함되지 않음). `background/service-worker.js`는 확장 프로그램 출처 또는 `https://chih-kai-wang.github.io/native-read`에서의 `#nr_sync`만 수락하고, 명시적인 `apiKey`가 포함되지 않은 경우 엔드포인트 변경(`baseUrl` / `protocol` / `providerId`)을 거부하며, `http:`/`https:` 스킴을 검증하고 `history.replaceState`로 프래그먼트를 즉시 지웁니다. |
-| **Zero-`innerHTML` DOM 안전성** | 모든 번역된 문자열, 팝오버, 오버레이는 `document.createTextNode`와 `.textContent`를 통해 작성됩니다. 인라인 플레이스홀더(`[[C#]]`, `[[M#]]`, `[[L#]]`)는 복제된 기존 DOM 노드만 복원합니다. |
-| **MV3 CSP 및 PDF.js 강화** | PDF.js는 `viewer/pdf-viewer.js`와 `docs/app.js` 모두에서 `isEvalSupported: false`로 로컬 번들링됩니다. 권한이 있는 Service Worker 작업(`ENSURE_AND_COMMAND`, `TEST_CONNECTION`, `OPEN_PDF_VIEWER`, `GET_SW_DEBUG`, `CLEAR_CACHE`)은 `isExtensionSender(sender)`를 강제합니다. |
+| **Zero-`innerHTML` DOM 안전성** | 모든 번역된 문자열, 팝오버, 오버레이는 `document.createTextNode`와 `.textContent`를 통해 작성됩니다. 원자적 플레이스홀더(`[[C#]]`, `[[M#]]`, `[[L#]]`)는 복제된 기존 DOM 노드만 복원하고, 쌍 태그(`[[A#]]`, `[[S#]]`)는 기존 요소의 얕은 복제(`cloneNode(false)`)만 재구성하며, `validateTranslatedTokens` 구조 가드가 불일치 시 원문을 표시된 상태로 유지하므로 링크가 절대 누락되지 않습니다. |
+| **MV3 CSP 및 PDF.js 강화** | PDF.js는 `viewer/pdf-viewer.js`와 `docs/app.js` 모두에서 `isEvalSupported: false`로 로컬 번들링됩니다. 권한이 있는 Service Worker 작업(`ENSURE_AND_COMMAND`, `TEST_CONNECTION`, `LIST_MODELS`, `OPEN_PDF_VIEWER`, `GET_SW_DEBUG`, `CLEAR_CACHE`)은 `isExtensionSender(sender)`를 강제합니다. |
 | **UI 및 QR 격리** | 플로팅 필, 선택 팝오버, 이미지 호버 트리거, 유저스크립트 컨트롤은 Shadow DOM(`all: initial`) 내부에 격리됩니다. 동기화 QR 코드는 외부 QR 서비스를 호출하지 않고 옵션 페이지에서 로컬로 생성됩니다. |
 
 > **모바일 PWA(`docs/app.js`) 관련 참고 사항**: PDF URL의 경우 NativeRead는 Google Drive 링크를 해석하고 직접 브라우저 fetch만 사용하므로(15 s 전체 다운로드 타임아웃, `api.allorigins.win` 릴레이 없음, "새 탭에서 PDF 열기" 폴백 버튼 및 로컬 파일 안내 제공) 비공개 PDF URL/바이트가 타사 릴레이로 전송되지 않습니다. PWA의 선택적 **Web URL** 탭에서 교차 출처 공개 문서 추출(`fetchReadableArticleFromUrl`)은 현재 `r.jina.ai`(`api.allorigins.win` 폴백 포함)를 사용합니다. 모바일에서 타사 릴레이를 전혀 사용하지 않으려면 Web 탭에 문서 텍스트를 직접 붙여넣거나 유저스크립트 / Android 확장 프로그램을 사용하세요.

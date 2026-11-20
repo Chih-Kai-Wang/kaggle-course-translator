@@ -1,0 +1,85 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [11 0 R 13 0 R] >>
+endobj
+3 0 obj
+<< /Title (Mixed Portrait and Landscape Presentation) /Producer (NativeRead E2E PDF 1.4 Generator) >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+10 0 obj
+<< /Length 287 >>
+stream
+BT /F2 18 Tf 1 0 0 1 60 726 Tm (Quarterly Architecture Deck) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 694 Tm (Page 1 uses portrait orientation while Page 2 switches to landscape) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 678 Tm (widescreen slides to verify per-page viewport scaling and horizontal fit.) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R /F4 7 0 R /F5 8 0 R /F6 9 0 R >> >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 867 >>
+stream
+0.08 0.16 0.32 rg 0 532 792 80 re f
+1 1 1 rg
+BT /F2 20 Tf 1 0 0 1 48 566 Tm (Distributed Cache & Streaming Topology) Tj ET
+0 0 0 rg
+0.95 0.97 1.0 rg 48 160 328 330 re f
+0.75 0.82 0.92 RG 1 w 48 160 328 330 re S
+0.95 0.97 1.0 rg 416 160 328 330 re f
+0.75 0.82 0.92 RG 1 w 416 160 328 330 re S
+BT /F2 14 Tf 1 0 0 1 68 456 Tm (Ingress & LRU Cache) Tj ET
+BT /F3 11 Tf 1 0 0 1 68 426 Tm (Requests resolve against local IndexedDB) Tj ET
+BT /F3 11 Tf 1 0 0 1 68 408 Tm (entries before dispatching incremental SSE) Tj ET
+BT /F3 11 Tf 1 0 0 1 68 390 Tm (batches to the configured provider.) Tj ET
+BT /F2 14 Tf 1 0 0 1 436 456 Tm (Resilient Fallback) Tj ET
+BT /F3 11 Tf 1 0 0 1 436 426 Tm (Partial chunks update DOM immediately) Tj ET
+BT /F3 11 Tf 1 0 0 1 436 408 Tm (while unreceived items trigger bounded) Tj ET
+BT /F3 11 Tf 1 0 0 1 436 390 Tm (binary-split recovery.) Tj ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R /F4 7 0 R /F5 8 0 R /F6 9 0 R >> >> /Contents 12 0 R >>
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000129 00000 n 
+0000000246 00000 n 
+0000000343 00000 n 
+0000000445 00000 n 
+0000000544 00000 n 
+0000000642 00000 n 
+0000000737 00000 n 
+0000000804 00000 n 
+0000001142 00000 n 
+0000001320 00000 n 
+0000002238 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R /Info 3 0 R >>
+startxref
+2416
+%%EOF

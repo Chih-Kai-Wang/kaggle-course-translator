@@ -1,10 +1,11 @@
-const CACHE_NAME = 'nativeread-pwa-v2.4.0';
+const CACHE_NAME = 'nativeread-pwa-v2.5.0';
 
 const APP_SHELL_ASSETS = [
   './',
   './index.html',
   './app.css',
   './app.js',
+  './providers.js',
   './manifest.webmanifest',
   './nativeread.user.js',
   './icons/icon-16.png',

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Intro to Machine Learning — NativeRead SPA Fixture</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; color: #1f2937; background: #ffffff; line-height: 1.6; }
+    header[role="banner"] { border-bottom: 1px solid #e5e7eb; padding: 12px 24px; background: #f9fafb; display: flex; gap: 16px; align-items: center; }
+    nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+    main { max-width: 900px; margin: 24px auto; padding: 0 20px; }
+    .toolbar-row { display: flex; gap: 12px; align-items: center; margin: 16px 0; flex-wrap: wrap; }
+    button, [role="tab"] { padding: 8px 14px; border: 1px solid #d1d5db; background: #ffffff; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    [role="tab"][aria-selected="true"] { background: #1d4ed8; color: #ffffff; border-color: #1d4ed8; }
+    .rendered_html { margin-top: 20px; }
+    pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+    .cm-editor { border: 1px solid #d1d5db; border-radius: 6px; width: 320px; background: #fafafa; margin: 16px 0; }
+    .cm-scroller { width: 320px; overflow-x: auto; padding: 10px 12px; font-family: ui-monospace, monospace; font-size: 13px; white-space: nowrap; }
+    .cm-line { min-width: 680px; }
+    .c1, .cm-comment { color: #6b7280; font-style: italic; }
+  </style>
+</head>
+<body>
+  <header role="banner">
+    <strong>Learning Hub</strong>
+    <nav aria-label="Main navigation">
+      <a href="#courses" id="nav-courses">Courses</a>
+      <a href="#discussions" id="nav-discussions">Discussions</a>
+    </nav>
+    <button type="button" id="btn-resume-course">Resume Course</button>
+  </header>
+
+  <main>
+    <h1 id="course-title">Intro to Machine Learning</h1>
+
+    <div class="toolbar-row" role="tablist" aria-label="Course Sections">
+      <button type="button" role="tab" id="tab-courses" aria-selected="true">Courses</button>
+      <button type="button" role="tab" id="tab-discussions" aria-selected="false">Discussions</button>
+      <button type="button" id="btn-next-lesson">Next Lesson (pushState)</button>
+      <button type="button" id="btn-notes-hash">Open Notes (replaceState)</button>
+    </div>
+
+    <h2>Builds on</h2>
+    <p>
+      This lesson builds on <a href="#prereq-linear">linear regression fundamentals</a> and
+      evaluates validation error using
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <mrow>
+          <mi>MSE</mi>
+          <mo>=</mo>
+          <mfrac>
+            <mn>1</mn>
+            <mi>n</mi>
+          </mfrac>
+          <mo>&#x2211;</mo>
+          <msup>
+            <mrow><mo>(</mo><mi>y</mi><mo>-</mo><mover><mi>y</mi><mo>^</mo></mover><mo>)</mo></mrow>
+            <mn>2</mn>
+          </msup>
+        </mrow>
+      </math>
+      across validation splits.
+    </p>
+
+    <div id="shadow-mount"></div>
+
+    <div class="rendered_html" id="lesson-body">
+      <article>
+        <h2>Lesson 1: Decision Trees and Generalization</h2>
+        <p>
+          Decision trees partition feature space recursively to minimize node impurity. Read the
+          <a href="#overfitting-guide">overfitting mitigation guide</a> before tuning tree depth.
+        </p>
+        <pre><code><span class="c1"># Fit a baseline decision tree regressor on training features</span>
+model = DecisionTreeRegressor(max_depth=5, random_state=42)
+model.fit(train_X, train_y)</code></pre>
+        <div class="cm-editor">
+          <div class="cm-scroller" id="cm-scroller">
+            <div class="cm-content">
+              <div class="cm-line"><span class="cm-comment"># Calculate validation error across folds and compare against baseline</span></div>
+              <div class="cm-line">val_predictions = iowa_model.predict(val_X); mae = mean_absolute_error(val_y, val_predictions)</div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </div>
+  </main>
+
+  <script>
+    class NrLessonCard extends HTMLElement {
+      constructor() {
+        super();
+        const root = this.attachShadow({ mode: 'open' });
+        root.innerHTML = `
+          <style>
+            .card { border: 1px solid #dbeafe; background: #eff6ff; padding: 14px 16px; border-radius: 8px; margin: 16px 0; }
+            .card p { margin: 0; color: #1e3a8a; }
+          </style>
+          <div class="card">
+            <p>Shadow module summary: inspect <a href="#metrics">model validation metrics</a> before submitting predictions.</p>
+          </div>
+        `;
+      }
+    }
+    customElements.define('nr-lesson-card', NrLessonCard);
+    document.getElementById('shadow-mount').appendChild(document.createElement('nr-lesson-card'));
+
+    const lessonBody = document.getElementById('lesson-body');
+    const titleEl = document.getElementById('course-title');
+
+    document.getElementById('btn-next-lesson').addEventListener('click', () => {
+      history.pushState({ lesson: 2 }, '', '?lesson=2');
+      titleEl.textContent = 'Underfitting and Overfitting';
+      lessonBody.innerHTML = `
+        <article>
+          <h2>Lesson 2: Balancing Model Capacity</h2>
+          <p>
+            Shallow trees underfit complex signals, whereas deep trees memorize training noise.
+            Compare leaf counts via <a href="#capacity-curve">validation loss curves</a>.
+          </p>
+        </article>
+      `;
+    });
+
+    document.getElementById('btn-notes-hash').addEventListener('click', () => {
+      history.replaceState({ tab: 'notes' }, '', '?lesson=2#tab=notes');
+      lessonBody.innerHTML = `
+        <article>
+          <h2>Lesson 2 Notes: Cross-Validation</h2>
+          <p>
+            Always isolate held-out validation splits from preprocessing statistics to prevent data leakage.
+          </p>
+        </article>
+      `;
+    });
+
+    document.getElementById('tab-discussions').addEventListener('click', () => {
+      document.getElementById('tab-courses').setAttribute('aria-selected', 'false');
+      document.getElementById('tab-discussions').setAttribute('aria-selected', 'true');
+      lessonBody.innerHTML = `
+        <article>
+          <h2>Learner Discussions</h2>
+          <p>Community threads comparing random forest ensembles and gradient boosting baselines.</p>
+        </article>
+      `;
+    });
+
+    document.getElementById('tab-courses').addEventListener('click', () => {
+      document.getElementById('tab-courses').setAttribute('aria-selected', 'true');
+      document.getElementById('tab-discussions').setAttribute('aria-selected', 'false');
+    });
+  </script>
+</body>
+</html>

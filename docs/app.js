@@ -1,4 +1,5 @@
 import * as pdfjsLib from './vendor/pdfjs/pdf.min.mjs';
+import { PROVIDER_PRESETS } from './providers.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
 
@@ -11,133 +12,7 @@ const DB_VERSION = 1;
 const STORE_NAME = 'entries';
 const MAX_CACHE_ENTRIES = 20000;
 
-const PROVIDER_PRESETS = {
-  deepseek: {
-    id: 'deepseek',
-    label: 'DeepSeek（推薦 · 高性價比）',
-    protocol: 'openai',
-    baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
-    suggestedModels: ['deepseek-chat'],
-    placeholderKey: 'sk-...',
-    hint: '支援 deepseek-chat (V3)，機器學習與資料科學術語翻譯準確、速度快、成本極低。'
-  },
-  gemini: {
-    id: 'gemini',
-    label: 'Google Gemini（原生介面 · 支援免費額度）',
-    protocol: 'gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    defaultModel: 'gemini-3.5-flash-lite',
-    suggestedModels: [
-      'gemini-3.5-flash-lite',
-      'gemini-3.1-flash-lite',
-      'gemini-3.8-flash',
-      'gemini-4-hydrogen',
-      'gemini-3.6-flash',
-      'gemini-2.5-flash'
-    ],
-    placeholderKey: 'AQ... 或 AIza...',
-    hint: '使用 Google AI Studio API Key；免費額度首選 gemini-3.5-flash-lite（500 RPD），高階翻譯可選 gemini-3.8-flash / gemini-4-hydrogen。'
-  },
-  openai: {
-    id: 'openai',
-    label: 'OpenAI',
-    protocol: 'openai',
-    baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4o-mini',
-    suggestedModels: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o'],
-    placeholderKey: 'sk-...',
-    hint: '建議使用 gpt-4o-mini 或 gpt-4.1-mini。'
-  },
-  openrouter: {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    protocol: 'openai',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'google/gemini-2.5-flash',
-    suggestedModels: [
-      'google/gemini-2.5-flash',
-      'google/gemini-2.5-flash-lite',
-      'deepseek/deepseek-chat'
-    ],
-    placeholderKey: 'sk-or-...',
-    hint: '聚合多家大模型，填入對應模型 ID 即可。'
-  },
-  qwen: {
-    id: 'qwen',
-    label: '通義千問 Qwen（阿里雲百煉）',
-    protocol: 'openai',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    defaultModel: 'qwen-plus',
-    suggestedModels: ['qwen-plus', 'qwen-turbo-latest'],
-    placeholderKey: 'sk-...',
-    hint: '建議使用 qwen-plus 或 qwen-turbo-latest。'
-  },
-  siliconflow: {
-    id: 'siliconflow',
-    label: 'SiliconFlow 矽基流動',
-    protocol: 'openai',
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    defaultModel: 'deepseek-ai/DeepSeek-V3',
-    suggestedModels: ['deepseek-ai/DeepSeek-V3', 'Qwen/Qwen2.5-72B-Instruct'],
-    placeholderKey: 'sk-...',
-    hint: '可呼叫 DeepSeek-V3、Qwen2.5 等多種開源模型。'
-  },
-  zhipu: {
-    id: 'zhipu',
-    label: '智譜 GLM',
-    protocol: 'openai',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    defaultModel: 'glm-4-flash',
-    suggestedModels: ['glm-4-flash', 'glm-4-plus'],
-    placeholderKey: '...',
-    hint: 'glm-4-flash 提供免費額度。'
-  },
-  moonshot: {
-    id: 'moonshot',
-    label: 'Moonshot Kimi',
-    protocol: 'openai',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    defaultModel: 'moonshot-v1-8k',
-    suggestedModels: ['moonshot-v1-8k', 'moonshot-v1-32k'],
-    placeholderKey: 'sk-...',
-    hint: '中文語意理解流暢。'
-  },
-  anthropic: {
-    id: 'anthropic',
-    label: 'Anthropic Claude（原生 Messages API）',
-    protocol: 'anthropic',
-    baseUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-opus-5-5',
-    suggestedModels: [
-      'claude-opus-5-5',
-      'claude-sonnet-5-5',
-      'claude-haiku-5-5'
-    ],
-    placeholderKey: 'sk-ant-...',
-    hint: '請至 platform.claude.com 取得 API Key；若需節省成本，可改選 claude-sonnet-5-5 或 claude-haiku-5-5。'
-  },
-  azure: {
-    id: 'azure',
-    label: 'Azure OpenAI（v1 API · api-key）',
-    protocol: 'openai',
-    baseUrl: 'https://YOUR-RESOURCE.openai.azure.com/openai/v1',
-    defaultModel: '',
-    suggestedModels: [],
-    placeholderKey: 'Azure API Key...',
-    hint: '請將網址中的 YOUR-RESOURCE 替換為您的 Azure 資源名稱，並在模型欄位填入部署名稱（Deployment Name）。'
-  },
-  custom: {
-    id: 'custom',
-    label: '自訂 OpenAI 相容介面',
-    protocol: 'openai',
-    baseUrl: 'http://localhost:11434/v1',
-    defaultModel: 'qwen2.5:7b',
-    suggestedModels: [],
-    placeholderKey: '可留空或填金鑰',
-    hint: '支援任何 OpenAI 相容中轉站或本機端點。'
-  }
-};
+// Generated from shared/config.js by scripts/build-mobile.js (single source of truth).
 
 const LATIN_FONTS = {
   serifFontStack: 'Georgia, "Noto Serif", "Times New Roman", serif',
@@ -962,6 +837,11 @@ async function streamTranslateBatchWithCache(settings, items, docTitle, onItem, 
   if (!cleanKey && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(settings.baseUrl || '')) {
     const err = new Error('請先在「⚙ 模型與 API 設定」填入 API Key（或從電腦端掃描 QR Code 同步）');
     err.errorCode = 'NO_API_KEY';
+    throw err;
+  }
+  if (!String(settings.model || '').trim()) {
+    const err = new Error('請先在「⚙ 模型與 API 設定」選擇模型（服務商已不再預設猜測的模型名稱）');
+    err.errorCode = 'NO_MODEL';
     throw err;
   }
 
@@ -2933,11 +2813,19 @@ const BOOKMARKLET_SNIPPET = `javascript:(function(){var s=document.createElement
 function populateSettingsForm() {
   const s = state.settings;
   dom.setProvider.replaceChildren();
+  const providerGroups = new Map();
   for (const preset of Object.values(PROVIDER_PRESETS)) {
+    const groupLabel = preset.group || '其他';
+    if (!providerGroups.has(groupLabel)) {
+      const og = document.createElement('optgroup');
+      og.label = groupLabel;
+      providerGroups.set(groupLabel, og);
+      dom.setProvider.appendChild(og);
+    }
     const opt = document.createElement('option');
     opt.value = preset.id;
     opt.textContent = preset.label;
-    dom.setProvider.appendChild(opt);
+    providerGroups.get(groupLabel).appendChild(opt);
   }
   dom.setProvider.value = PROVIDER_PRESETS[s.providerId] ? s.providerId : 'custom';
   dom.setApiKey.value = s.apiKey || '';
@@ -2962,6 +2850,9 @@ function updateProviderPresetUI(providerId, overwriteFields = true) {
     dom.setModel.value = preset.defaultModel || '';
     dom.setBaseUrl.value = preset.baseUrl || '';
   }
+  dom.setModel.placeholder = preset.defaultModel
+    ? `例如 ${preset.defaultModel}`
+    : '請輸入此服務商的模型名稱（可在服務商後台查詢）';
 
   dom.modelChipsRow.replaceChildren();
   for (const m of preset.suggestedModels || []) {

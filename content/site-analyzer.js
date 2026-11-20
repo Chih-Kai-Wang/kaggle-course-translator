@@ -404,7 +404,7 @@
   }
 
   function shouldTranslateText(text, targetLangId = 'zh-TW') {
-    const clean = String(text || '').replace(/\[\[\s*[CM]\d+\s*\]\]/g, '').trim();
+    const clean = String(text || '').replace(/\[\[\s*\/?[CMLAS]\d+\s*\]\]/g, '').trim();
     if (clean.length < 2) return false;
 
     // Skip URLs, emails, file paths, and Jupyter cell prompts
@@ -460,6 +460,79 @@
     return true;
   }
 
+  const renderedSerifCache = new Map();
+  const KNOWN_SANS_RE = /sans|helvetica|arial|roboto|inter|system-ui|-apple-system|segoe|noto sans|pingfang|droid sans|verdana|tahoma|open sans|lato|montserrat/i;
+
+  function detectRenderedSerif(family) {
+    const clean = String(family || '').replace(/^['"]+|['"]+$/g, '').trim();
+    if (!clean) return false;
+    if (renderedSerifCache.has(clean)) {
+      return renderedSerifCache.get(clean);
+    }
+
+    let isSerif = false;
+    try {
+      const safeName = clean.replace(/"/g, '\\"');
+      if (document.fonts && document.fonts.check(`16px "${safeName}"`)) {
+        const W = 160;
+        const H = 180;
+        const canvas = typeof OffscreenCanvas !== 'undefined'
+          ? new OffscreenCanvas(W, H)
+          : document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+          ctx.clearRect(0, 0, W, H);
+          ctx.fillStyle = '#000';
+          ctx.textBaseline = 'top';
+          ctx.font = `400 120px "${safeName}", monospace`;
+          ctx.fillText('I', 20, 20);
+
+          const data = ctx.getImageData(0, 0, W, H).data;
+          const rowWidths = [];
+          for (let y = 0; y < H; y++) {
+            let minX = -1;
+            let maxX = -1;
+            const rowOffset = y * W * 4;
+            for (let x = 0; x < W; x++) {
+              if (data[rowOffset + x * 4 + 3] > 32) {
+                if (minX === -1) minX = x;
+                maxX = x;
+              }
+            }
+            if (minX !== -1) {
+              rowWidths.push(maxX - minX + 1);
+            }
+          }
+
+          const n = rowWidths.length;
+          if (n >= 10) {
+            const topCount = Math.max(1, Math.ceil(n * 0.1));
+            let topWidth = 0;
+            for (let i = 0; i < topCount; i++) {
+              if (rowWidths[i] > topWidth) topWidth = rowWidths[i];
+            }
+
+            const midStart = Math.floor(n * 0.3);
+            const midEnd = Math.max(midStart + 1, Math.ceil(n * 0.7));
+            const midSlice = rowWidths.slice(midStart, midEnd).sort((a, b) => a - b);
+            const midMedian = midSlice[Math.floor(midSlice.length / 2)] || 0;
+
+            if (midMedian > 0 && (topWidth / midMedian) >= 1.8) {
+              isSerif = true;
+            }
+          }
+        }
+      }
+    } catch {
+      isSerif = false;
+    }
+
+    renderedSerifCache.set(clean, isSerif);
+    return isSerif;
+  }
+
   function probeTypography(el) {
     const style = getComputedStyle(el);
     const origFontFamily = style.fontFamily || '';
@@ -472,6 +545,11 @@
       const withoutSans = ffLower.replace(/sans-serif/g, '');
       if (/(?:serif|georgia|times|garamond|palatino|charter|merriweather|newsreader|playfair|libre\s*baskerville|baskerville|cambria|minion|source\s*serif|noto\s*serif|pt\s*serif|lora|eb\s*garamond|crimson|mincho|songti|mingliu|pmingliu|simsun)/i.test(withoutSans)) {
         archetype = 'serif';
+      } else {
+        const firstFamily = origFontFamily.split(',')[0].replace(/^[\s'"]+|[\s'"]+$/g, '');
+        if (firstFamily && !KNOWN_SANS_RE.test(firstFamily) && detectRenderedSerif(firstFamily)) {
+          archetype = 'serif';
+        }
       }
     }
 
@@ -495,18 +573,31 @@
     };
   }
 
+  const PAIRED_STYLE_TAGS = new Set([
+    'B', 'STRONG', 'I', 'EM', 'U', 'MARK', 'S', 'SMALL', 'SUB', 'SUP'
+  ]);
+
   function extractBlockContent(el) {
     const placeholders = new Map();
     let codeIdx = 0;
     let mathIdx = 0;
     let linkIdx = 0;
+    let anchorIdx = 0;
+    let styleIdx = 0;
     let nestedListEl = null;
-    const parts = [];
 
-    function walk(node, insideLiRoot) {
+    function walkChildren(parent, insideLiRoot) {
+      const buf = [];
+      for (const child of parent.childNodes) {
+        walk(child, insideLiRoot, buf);
+      }
+      return buf.join('');
+    }
+
+    function walk(node, insideLiRoot, out) {
       if (!node) return;
       if (node.nodeType === Node.TEXT_NODE) {
-        parts.push(node.nodeValue);
+        out.push(node.nodeValue);
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -523,22 +614,7 @@
         const isMath = node.matches('.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference');
         const token = isMath ? `[[M${mathIdx++}]]` : `[[C${codeIdx++}]]`;
         placeholders.set(token, node);
-        parts.push(token);
-        return;
-      }
-
-      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
-        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (aText && (aText.length <= 28 || !shouldTranslateText(aText))) {
-          const token = `[[L${linkIdx++}]]`;
-          placeholders.set(token, node);
-          parts.push(token);
-          return;
-        }
-      }
-
-      if (node.tagName === 'BR') {
-        parts.push('\n');
+        out.push(token);
         return;
       }
 
@@ -546,14 +622,56 @@
         return;
       }
 
+      if (node.tagName === 'BR') {
+        out.push('\n');
+        return;
+      }
+
+      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
+        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!aText) return;
+        if (!shouldTranslateText(aText)) {
+          const token = `[[L${linkIdx++}]]`;
+          placeholders.set(token, node);
+          out.push(token);
+          return;
+        }
+        const inner = walkChildren(node, insideLiRoot);
+        if (!inner.trim()) {
+          if (inner) out.push(inner);
+          return;
+        }
+        const id = anchorIdx++;
+        const open = `[[A${id}]]`;
+        const close = `[[/A${id}]]`;
+        placeholders.set(open, node);
+        out.push(open, inner, close);
+        return;
+      }
+
+      if (PAIRED_STYLE_TAGS.has(node.tagName) && node !== el) {
+        const inner = walkChildren(node, insideLiRoot);
+        if (!inner.trim()) {
+          if (inner) out.push(inner);
+          return;
+        }
+        const id = styleIdx++;
+        const open = `[[S${id}]]`;
+        const close = `[[/S${id}]]`;
+        placeholders.set(open, node);
+        out.push(open, inner, close);
+        return;
+      }
+
       for (const child of node.childNodes) {
-        walk(child, insideLiRoot);
+        walk(child, insideLiRoot, out);
       }
     }
 
+    const parts = [];
     const isLi = el.tagName === 'LI';
     for (const child of el.childNodes) {
-      walk(child, isLi);
+      walk(child, isLi, parts);
     }
 
     let text = parts.join('').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
@@ -561,6 +679,57 @@
       text = text.replace(/\s*¶\s*$/g, '').trim();
     }
     return { text, placeholders, nestedListEl };
+  }
+
+  // Descend from a block into the single inline chain that holds all of its text (li > a > b),
+  // so the translation is rendered INSIDE the original link / emphasis and stays clickable.
+  const INLINE_DESCENT_TAGS = new Set([
+    'A', 'B', 'STRONG', 'I', 'EM', 'U', 'MARK', 'SMALL',
+    'SPAN', 'FONT', 'CITE', 'Q', 'S', 'INS', 'DEL', 'ABBR'
+  ]);
+  const FORM_CONTROL_SELECTOR = 'input, textarea, select, button, option, optgroup, label, output, meter, progress';
+
+  function resolveInlineHost(block) {
+    if (!block || block.nodeType !== Node.ELEMENT_NODE) return block;
+    const isStartLi = block.tagName === 'LI';
+    let cur = block;
+
+    while (true) {
+      let onlyChildEl = null;
+      let blocked = false;
+
+      for (const child of cur.childNodes) {
+        if (child.nodeType === Node.COMMENT_NODE) continue;
+        if (child.nodeType === Node.TEXT_NODE) {
+          if (child.nodeValue && child.nodeValue.trim().length > 0) {
+            blocked = true;
+            break;
+          }
+          continue;
+        }
+        if (child.nodeType !== Node.ELEMENT_NODE) {
+          blocked = true;
+          break;
+        }
+        if (child.matches('[data-kct-ui]')) continue;
+        if (isStartLi && (child.tagName === 'UL' || child.tagName === 'OL')) continue;
+
+        if (onlyChildEl) {
+          blocked = true;
+          break;
+        }
+        onlyChildEl = child;
+      }
+
+      if (blocked || !onlyChildEl) break;
+      if (!INLINE_DESCENT_TAGS.has(onlyChildEl.tagName)) break;
+      if (onlyChildEl.matches(INLINE_PROTECT_SELECTOR)) break;
+      if (onlyChildEl.matches(FORM_CONTROL_SELECTOR)) break;
+
+      cur = onlyChildEl;
+    }
+
+    return cur;
   }
 
   function parsePctBoxStyle(styleStr) {
@@ -864,7 +1033,7 @@
 
   function isMeaningfulLeafText(text) {
     const clean = String(text || '')
-      .replace(/\[\[\s*[CM]\d+\s*\]\]/g, '')
+      .replace(/\[\[\s*\/?[CMLAS]\d+\s*\]\]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
     if (!clean) return false;
@@ -895,8 +1064,18 @@
       for (const el of semanticCandidates) {
         if (claimedSet.has(el)) continue;
         if (shouldSkipBlock(el, scope, elementState)) continue;
+
+        const host = resolveInlineHost(el);
+        if (claimedSet.has(host) || elementState?.has(host)) continue;
+
+        let cur = host;
+        while (cur) {
+          claimedSet.add(cur);
+          if (cur === el) break;
+          cur = cur.parentElement;
+        }
         claimedSet.add(el);
-        pass1.push(el);
+        pass1.push(host);
       }
     }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NativeRead — 原版美感 AI 網頁翻譯 (Mobile & Desktop)
 // @namespace    https://chih-kai-wang.github.io/native-read/
-// @version      2.4.0
+// @version      2.5.0
 // @description  保留原網站 Serif / Sans 排版氣質的 AI 串流網頁與程式碼註解翻譯器（支援 iOS Safari Stay / Userscripts 與 Android Tampermonkey / 狐猴 / Kiwi）
 // @author       Chih-Kai Wang
 // @homepageURL  https://github.com/Chih-Kai-Wang/native-read
@@ -20,109 +20,47 @@
 (() => {
   if (globalThis.KCTConfig) return;
 
+  // Provider registry: every base URL was checked on 2026-11-21 (GET /models and POST /chat/completions
+  // answered 401/403/200, not 404). Default models are only set where they were confirmed available that day;
+  // everywhere else the user picks from the live list ("取得模型清單"), so presets cannot go stale.
   const PROVIDER_PRESETS = {
-    deepseek: {
-      id: 'deepseek',
-      label: 'DeepSeek（推薦 · 高性價比）',
-      protocol: 'openai',
-      baseUrl: 'https://api.deepseek.com/v1',
-      defaultModel: 'deepseek-chat',
-      placeholderKey: 'sk-...',
-      hint: '支援 deepseek-chat (V3)，機器學習與資料科學術語翻譯準確、速度快、成本極低。'
-    },
-    openai: {
-      id: 'openai',
-      label: 'OpenAI',
-      protocol: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      defaultModel: 'gpt-4o-mini',
-      placeholderKey: 'sk-...',
-      hint: '建議使用 gpt-4o-mini 或 gpt-4.1-mini。'
-    },
     gemini: {
       id: 'gemini',
-      label: 'Google Gemini（原生介面 · 支援免費額度）',
+      label: 'Google Gemini（原生 · 有免費額度）',
+      group: '原生介面',
       protocol: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
       defaultModel: 'gemini-3.5-flash-lite',
-      suggestedModels: [
-        'gemini-3.5-flash-lite',
-        'gemini-3.1-flash-lite',
-        'gemini-3.8-flash',
-        'gemini-4-hydrogen',
-        'gemini-3.6-flash',
-        'gemini-2.5-flash'
-      ],
+      suggestedModels: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-4-hydrogen', 'gemini-2.5-flash'],
       placeholderKey: 'AQ... 或 AIza...',
-      hint: '使用 Google AI Studio API Key；免費額度首選 gemini-3.5-flash-lite（500 RPD），高階翻譯可選 gemini-3.8-flash / gemini-4-hydrogen。'
-    },
-    qwen: {
-      id: 'qwen',
-      label: '通義千問 Qwen（阿里雲百煉）',
-      protocol: 'openai',
-      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      defaultModel: 'qwen-plus',
-      placeholderKey: 'sk-...',
-      hint: '建議使用 qwen-plus 或 qwen-turbo-latest。'
-    },
-    siliconflow: {
-      id: 'siliconflow',
-      label: 'SiliconFlow 矽基流動',
-      protocol: 'openai',
-      baseUrl: 'https://api.siliconflow.cn/v1',
-      defaultModel: 'deepseek-ai/DeepSeek-V3',
-      placeholderKey: 'sk-...',
-      hint: '可呼叫 DeepSeek-V3、Qwen2.5 等多種開源模型。'
-    },
-    moonshot: {
-      id: 'moonshot',
-      label: 'Moonshot Kimi',
-      protocol: 'openai',
-      baseUrl: 'https://api.moonshot.cn/v1',
-      defaultModel: 'moonshot-v1-8k',
-      placeholderKey: 'sk-...',
-      hint: '中文語意理解流暢。'
-    },
-    zhipu: {
-      id: 'zhipu',
-      label: '智譜 GLM',
-      protocol: 'openai',
-      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-      defaultModel: 'glm-4-flash',
-      placeholderKey: '...',
-      hint: 'glm-4-flash 提供免費額度。'
-    },
-    openrouter: {
-      id: 'openrouter',
-      label: 'OpenRouter',
-      protocol: 'openai',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      defaultModel: 'google/gemini-2.5-flash',
-      suggestedModels: [
-        'google/gemini-2.5-flash',
-        'google/gemini-2.5-flash-lite',
-        'deepseek/deepseek-chat'
-      ],
-      placeholderKey: 'sk-or-...',
-      hint: '聚合多家大模型，填入對應模型 ID 即可。'
+      hint: '使用 Google AI Studio API Key；免費額度首選 gemini-3.5-flash-lite。按「取得模型清單」可看到帳號實際可用的模型。'
     },
     anthropic: {
       id: 'anthropic',
       label: 'Anthropic Claude（原生 Messages API）',
+      group: '原生介面',
       protocol: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
       defaultModel: 'claude-opus-5-5',
-      suggestedModels: [
-        'claude-opus-5-5',
-        'claude-sonnet-5-5',
-        'claude-haiku-5-5'
-      ],
+      suggestedModels: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'],
       placeholderKey: 'sk-ant-...',
       hint: '請至 platform.claude.com 取得 API Key；若需節省成本，可改選 claude-sonnet-5-5 或 claude-haiku-5-5。'
+    },
+    openai: {
+      id: 'openai',
+      label: 'OpenAI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」選擇模型。'
     },
     azure: {
       id: 'azure',
       label: 'Azure OpenAI（v1 API · api-key）',
+      group: '國際服務',
       protocol: 'openai',
       baseUrl: 'https://YOUR-RESOURCE.openai.azure.com/openai/v1',
       defaultModel: '',
@@ -130,14 +68,313 @@
       placeholderKey: 'Azure API Key...',
       hint: '請將網址中的 YOUR-RESOURCE 替換為您的 Azure 資源名稱，並在模型欄位填入部署名稱（Deployment Name）。'
     },
-    custom: {
-      id: 'custom',
-      label: '自訂 OpenAI 相容介面 / 本機 Ollama',
+    openrouter: {
+      id: 'openrouter',
+      label: 'OpenRouter（多家模型聚合）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      defaultModel: 'google/gemini-2.5-flash',
+      suggestedModels: ['google/gemini-2.5-flash'],
+      placeholderKey: 'sk-or-...',
+      hint: '聚合數百個模型，模型清單不需金鑰即可查詢。'
+    },
+    groq: {
+      id: 'groq',
+      label: 'Groq',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'gsk_...',
+      hint: '低延遲推論；填入金鑰後按「取得模型清單」。'
+    },
+    mistral: {
+      id: 'mistral',
+      label: 'Mistral AI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.mistral.ai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    xai: {
+      id: 'xai',
+      label: 'xAI（Grok）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.x.ai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'xai-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    together: {
+      id: 'together',
+      label: 'Together AI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.together.xyz/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '開源模型託管；填入金鑰後按「取得模型清單」。'
+    },
+    fireworks: {
+      id: 'fireworks',
+      label: 'Fireworks AI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.fireworks.ai/inference/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'fw_...',
+      hint: '開源模型託管；填入金鑰後按「取得模型清單」。'
+    },
+    cerebras: {
+      id: 'cerebras',
+      label: 'Cerebras',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.cerebras.ai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'csk-...',
+      hint: '高速推論；填入金鑰後按「取得模型清單」。'
+    },
+    deepinfra: {
+      id: 'deepinfra',
+      label: 'DeepInfra',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.deepinfra.com/v1/openai',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '開源模型託管；模型清單不需金鑰即可查詢。'
+    },
+    huggingface: {
+      id: 'huggingface',
+      label: 'Hugging Face Inference Providers',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://router.huggingface.co/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'hf_...',
+      hint: '使用 Hugging Face Token；模型清單不需金鑰即可查詢。'
+    },
+    novita: {
+      id: 'novita',
+      label: 'Novita AI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.novita.ai/openai',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '開源模型託管；模型清單不需金鑰即可查詢。'
+    },
+    deepseek: {
+      id: 'deepseek',
+      label: 'DeepSeek',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.deepseek.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」選擇模型。'
+    },
+    'qwen-intl': {
+      id: 'qwen-intl',
+      label: '阿里雲百煉 Qwen（國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '國際站金鑰；填入後按「取得模型清單」。'
+    },
+    'moonshot-intl': {
+      id: 'moonshot-intl',
+      label: 'Moonshot AI / Kimi（國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.moonshot.ai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: 'platform.moonshot.ai 金鑰；填入後按「取得模型清單」。'
+    },
+    zai: {
+      id: 'zai',
+      label: 'Z.ai（智譜國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.z.ai/api/paas/v4',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    'minimax-intl': {
+      id: 'minimax-intl',
+      label: 'MiniMax（國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.minimax.io/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    'siliconflow-intl': {
+      id: 'siliconflow-intl',
+      label: 'SiliconFlow（國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.siliconflow.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    qwen: {
+      id: 'qwen',
+      label: '阿里雲百煉 Qwen（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    moonshot: {
+      id: 'moonshot',
+      label: 'Moonshot AI / Kimi（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: 'platform.moonshot.cn 金鑰；填入後按「取得模型清單」。'
+    },
+    zhipu: {
+      id: 'zhipu',
+      label: '智譜 BigModel（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    siliconflow: {
+      id: 'siliconflow',
+      label: 'SiliconFlow 矽基流動（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    volcengine: {
+      id: 'volcengine',
+      label: '火山引擎方舟 Doubao',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '模型欄位可填模型 ID 或推論接入點 ID；填入金鑰後按「取得模型清單」。'
+    },
+    qianfan: {
+      id: 'qianfan',
+      label: '百度千帆（v2 OpenAI 相容）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://qianfan.baidubce.com/v2',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'bce-v3/...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    hunyuan: {
+      id: 'hunyuan',
+      label: '騰訊混元',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    minimax: {
+      id: 'minimax',
+      label: 'MiniMax（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.minimaxi.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    stepfun: {
+      id: 'stepfun',
+      label: '階躍星辰 StepFun',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.stepfun.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    ollama: {
+      id: 'ollama',
+      label: 'Ollama（本機）',
+      group: '本機 / 自訂',
       protocol: 'openai',
       baseUrl: 'http://localhost:11434/v1',
-      defaultModel: 'qwen2.5:7b',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '可留空',
+      hint: '本機模型不需金鑰；啟動 Ollama 後按「取得模型清單」。'
+    },
+    lmstudio: {
+      id: 'lmstudio',
+      label: 'LM Studio（本機）',
+      group: '本機 / 自訂',
+      protocol: 'openai',
+      baseUrl: 'http://localhost:1234/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '可留空',
+      hint: '本機模型不需金鑰；在 LM Studio 開啟本機伺服器後按「取得模型清單」。'
+    },
+    custom: {
+      id: 'custom',
+      label: '自訂 OpenAI 相容介面',
+      group: '本機 / 自訂',
+      protocol: 'openai',
+      baseUrl: 'http://localhost:11434/v1',
+      defaultModel: '',
+      suggestedModels: [],
       placeholderKey: '可留空或填金鑰',
-      hint: '支援任何 OpenAI 相容中轉站、OneAPI 或本機 Ollama。'
+      hint: '支援任何 OpenAI 相容中轉站或自架端點；填好網址後按「取得模型清單」。'
     }
   };
 
@@ -290,11 +527,11 @@
     streamTranslation: true,
     thinkingEffort: 'fastest', // 'fastest' | 'balanced' | 'deep'
     typographyMatch: 'native', // 'native' | 'system' | 'preserve'
-    providerId: 'deepseek',
-    protocol: 'openai',
-    baseUrl: 'https://api.deepseek.com/v1',
+    providerId: 'gemini',
+    protocol: 'gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     apiKey: '',
-    model: 'deepseek-chat',
+    model: 'gemini-3.5-flash-lite',
     temperature: 0.2,
     batchSize: 20,
     maxBatchChars: 5500,
@@ -557,6 +794,120 @@
     }
 
     return result;
+  }
+
+  function buildListModelsUrl(settings, pageToken = '') {
+    const protocol = String(settings?.protocol || 'openai').trim().toLowerCase();
+    const rawBase = String(settings?.baseUrl || '').trim();
+
+    if (isAzureOpenAIEndpoint(rawBase)) {
+      return '';
+    }
+
+    try {
+      if (protocol === 'gemini') {
+        let base = (rawBase || 'https://generativelanguage.googleapis.com/v1beta')
+          .replace(/\/+$/, '')
+          .replace(/\/models\/[^/?#]+$/i, '')
+          .replace(/\/models$/i, '')
+          .replace(/\/+$/, '');
+        if (!/\/v1(beta)?$/i.test(base)) {
+          base = `${base}/v1beta`;
+        }
+        const u = new URL(`${base}/models`);
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+        u.searchParams.set('pageSize', '1000');
+        if (pageToken) {
+          u.searchParams.set('pageToken', String(pageToken));
+        }
+        return u.toString();
+      }
+
+      if (protocol === 'anthropic') {
+        const base = rawBase || 'https://api.anthropic.com/v1';
+        const parsed = new URL(base);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+        const u = new URL(`${parsed.origin}/v1/models`);
+        u.searchParams.set('limit', '1000');
+        if (pageToken) {
+          u.searchParams.set('after_id', String(pageToken));
+        }
+        return u.toString();
+      }
+
+      if (protocol === 'openai') {
+        if (!rawBase) return '';
+        const base = rawBase
+          .replace(/\/+$/, '')
+          .replace(/\/chat\/completions$/i, '')
+          .replace(/\/+$/, '');
+        if (!base) return '';
+        const u = new URL(`${base}/models`);
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+        return u.toString();
+      }
+    } catch {
+      return '';
+    }
+
+    return '';
+  }
+
+  function parseListModelsResponse(protocol, data) {
+    const proto = String(protocol || 'openai').trim().toLowerCase();
+    const ids = [];
+    let nextPageToken = '';
+
+    if (!data || typeof data !== 'object') {
+      return { ids, nextPageToken };
+    }
+
+    if (proto === 'gemini') {
+      const list = Array.isArray(data.models) ? data.models : [];
+      for (const item of list) {
+        const methods = Array.isArray(item?.supportedGenerationMethods)
+          ? item.supportedGenerationMethods
+          : [];
+        if (!methods.includes('generateContent')) continue;
+        const id = String(item?.name || '').replace(/^models\//, '').trim();
+        if (id) ids.push(id);
+      }
+      if (typeof data.nextPageToken === 'string' && data.nextPageToken.trim()) {
+        nextPageToken = data.nextPageToken.trim();
+      }
+      return { ids, nextPageToken };
+    }
+
+    if (proto === 'anthropic') {
+      const list = Array.isArray(data.data) ? data.data : [];
+      for (const item of list) {
+        const id = String(item?.id || '').trim();
+        if (id) ids.push(id);
+      }
+      if (data.has_more === true && typeof data.last_id === 'string' && data.last_id.trim()) {
+        nextPageToken = data.last_id.trim();
+      }
+      return { ids, nextPageToken };
+    }
+
+    const list = Array.isArray(data)
+      ? data
+      : Array.isArray(data.data)
+        ? data.data
+        : Array.isArray(data.models)
+          ? data.models
+          : [];
+    for (const item of list) {
+      if (typeof item === 'string') {
+        const id = item.trim();
+        if (id) ids.push(id);
+      } else if (item && typeof item === 'object') {
+        const rawId = typeof item.id === 'string' && item.id.trim() ? item.id : item.name;
+        const id = typeof rawId === 'string' ? rawId.trim() : '';
+        if (id) ids.push(id);
+      }
+    }
+    return { ids, nextPageToken: '' };
   }
 
   function resolveEndpoint(settings) {
@@ -881,6 +1232,8 @@
     extractGoogleDriveFileId,
     resolvePdfSourceUrl,
     isAzureOpenAIEndpoint,
+    buildListModelsUrl,
+    parseListModelsResponse,
     normalizeAnthropicEndpoint,
     buildProviderAuthHeaders,
     resolveAnthropicEffort,
@@ -1301,7 +1654,7 @@
   }
 
   function shouldTranslateText(text, targetLangId = 'zh-TW') {
-    const clean = String(text || '').replace(/\[\[\s*[CM]\d+\s*\]\]/g, '').trim();
+    const clean = String(text || '').replace(/\[\[\s*\/?[CMLAS]\d+\s*\]\]/g, '').trim();
     if (clean.length < 2) return false;
 
     // Skip URLs, emails, file paths, and Jupyter cell prompts
@@ -1357,6 +1710,79 @@
     return true;
   }
 
+  const renderedSerifCache = new Map();
+  const KNOWN_SANS_RE = /sans|helvetica|arial|roboto|inter|system-ui|-apple-system|segoe|noto sans|pingfang|droid sans|verdana|tahoma|open sans|lato|montserrat/i;
+
+  function detectRenderedSerif(family) {
+    const clean = String(family || '').replace(/^['"]+|['"]+$/g, '').trim();
+    if (!clean) return false;
+    if (renderedSerifCache.has(clean)) {
+      return renderedSerifCache.get(clean);
+    }
+
+    let isSerif = false;
+    try {
+      const safeName = clean.replace(/"/g, '\\"');
+      if (document.fonts && document.fonts.check(`16px "${safeName}"`)) {
+        const W = 160;
+        const H = 180;
+        const canvas = typeof OffscreenCanvas !== 'undefined'
+          ? new OffscreenCanvas(W, H)
+          : document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+          ctx.clearRect(0, 0, W, H);
+          ctx.fillStyle = '#000';
+          ctx.textBaseline = 'top';
+          ctx.font = `400 120px "${safeName}", monospace`;
+          ctx.fillText('I', 20, 20);
+
+          const data = ctx.getImageData(0, 0, W, H).data;
+          const rowWidths = [];
+          for (let y = 0; y < H; y++) {
+            let minX = -1;
+            let maxX = -1;
+            const rowOffset = y * W * 4;
+            for (let x = 0; x < W; x++) {
+              if (data[rowOffset + x * 4 + 3] > 32) {
+                if (minX === -1) minX = x;
+                maxX = x;
+              }
+            }
+            if (minX !== -1) {
+              rowWidths.push(maxX - minX + 1);
+            }
+          }
+
+          const n = rowWidths.length;
+          if (n >= 10) {
+            const topCount = Math.max(1, Math.ceil(n * 0.1));
+            let topWidth = 0;
+            for (let i = 0; i < topCount; i++) {
+              if (rowWidths[i] > topWidth) topWidth = rowWidths[i];
+            }
+
+            const midStart = Math.floor(n * 0.3);
+            const midEnd = Math.max(midStart + 1, Math.ceil(n * 0.7));
+            const midSlice = rowWidths.slice(midStart, midEnd).sort((a, b) => a - b);
+            const midMedian = midSlice[Math.floor(midSlice.length / 2)] || 0;
+
+            if (midMedian > 0 && (topWidth / midMedian) >= 1.8) {
+              isSerif = true;
+            }
+          }
+        }
+      }
+    } catch {
+      isSerif = false;
+    }
+
+    renderedSerifCache.set(clean, isSerif);
+    return isSerif;
+  }
+
   function probeTypography(el) {
     const style = getComputedStyle(el);
     const origFontFamily = style.fontFamily || '';
@@ -1369,6 +1795,11 @@
       const withoutSans = ffLower.replace(/sans-serif/g, '');
       if (/(?:serif|georgia|times|garamond|palatino|charter|merriweather|newsreader|playfair|libre\s*baskerville|baskerville|cambria|minion|source\s*serif|noto\s*serif|pt\s*serif|lora|eb\s*garamond|crimson|mincho|songti|mingliu|pmingliu|simsun)/i.test(withoutSans)) {
         archetype = 'serif';
+      } else {
+        const firstFamily = origFontFamily.split(',')[0].replace(/^[\s'"]+|[\s'"]+$/g, '');
+        if (firstFamily && !KNOWN_SANS_RE.test(firstFamily) && detectRenderedSerif(firstFamily)) {
+          archetype = 'serif';
+        }
       }
     }
 
@@ -1392,18 +1823,31 @@
     };
   }
 
+  const PAIRED_STYLE_TAGS = new Set([
+    'B', 'STRONG', 'I', 'EM', 'U', 'MARK', 'S', 'SMALL', 'SUB', 'SUP'
+  ]);
+
   function extractBlockContent(el) {
     const placeholders = new Map();
     let codeIdx = 0;
     let mathIdx = 0;
     let linkIdx = 0;
+    let anchorIdx = 0;
+    let styleIdx = 0;
     let nestedListEl = null;
-    const parts = [];
 
-    function walk(node, insideLiRoot) {
+    function walkChildren(parent, insideLiRoot) {
+      const buf = [];
+      for (const child of parent.childNodes) {
+        walk(child, insideLiRoot, buf);
+      }
+      return buf.join('');
+    }
+
+    function walk(node, insideLiRoot, out) {
       if (!node) return;
       if (node.nodeType === Node.TEXT_NODE) {
-        parts.push(node.nodeValue);
+        out.push(node.nodeValue);
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -1420,22 +1864,7 @@
         const isMath = node.matches('.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference');
         const token = isMath ? `[[M${mathIdx++}]]` : `[[C${codeIdx++}]]`;
         placeholders.set(token, node);
-        parts.push(token);
-        return;
-      }
-
-      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
-        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (aText && (aText.length <= 28 || !shouldTranslateText(aText))) {
-          const token = `[[L${linkIdx++}]]`;
-          placeholders.set(token, node);
-          parts.push(token);
-          return;
-        }
-      }
-
-      if (node.tagName === 'BR') {
-        parts.push('\n');
+        out.push(token);
         return;
       }
 
@@ -1443,14 +1872,56 @@
         return;
       }
 
+      if (node.tagName === 'BR') {
+        out.push('\n');
+        return;
+      }
+
+      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
+        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!aText) return;
+        if (!shouldTranslateText(aText)) {
+          const token = `[[L${linkIdx++}]]`;
+          placeholders.set(token, node);
+          out.push(token);
+          return;
+        }
+        const inner = walkChildren(node, insideLiRoot);
+        if (!inner.trim()) {
+          if (inner) out.push(inner);
+          return;
+        }
+        const id = anchorIdx++;
+        const open = `[[A${id}]]`;
+        const close = `[[/A${id}]]`;
+        placeholders.set(open, node);
+        out.push(open, inner, close);
+        return;
+      }
+
+      if (PAIRED_STYLE_TAGS.has(node.tagName) && node !== el) {
+        const inner = walkChildren(node, insideLiRoot);
+        if (!inner.trim()) {
+          if (inner) out.push(inner);
+          return;
+        }
+        const id = styleIdx++;
+        const open = `[[S${id}]]`;
+        const close = `[[/S${id}]]`;
+        placeholders.set(open, node);
+        out.push(open, inner, close);
+        return;
+      }
+
       for (const child of node.childNodes) {
-        walk(child, insideLiRoot);
+        walk(child, insideLiRoot, out);
       }
     }
 
+    const parts = [];
     const isLi = el.tagName === 'LI';
     for (const child of el.childNodes) {
-      walk(child, isLi);
+      walk(child, isLi, parts);
     }
 
     let text = parts.join('').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
@@ -1458,6 +1929,57 @@
       text = text.replace(/\s*¶\s*$/g, '').trim();
     }
     return { text, placeholders, nestedListEl };
+  }
+
+  // Descend from a block into the single inline chain that holds all of its text (li > a > b),
+  // so the translation is rendered INSIDE the original link / emphasis and stays clickable.
+  const INLINE_DESCENT_TAGS = new Set([
+    'A', 'B', 'STRONG', 'I', 'EM', 'U', 'MARK', 'SMALL',
+    'SPAN', 'FONT', 'CITE', 'Q', 'S', 'INS', 'DEL', 'ABBR'
+  ]);
+  const FORM_CONTROL_SELECTOR = 'input, textarea, select, button, option, optgroup, label, output, meter, progress';
+
+  function resolveInlineHost(block) {
+    if (!block || block.nodeType !== Node.ELEMENT_NODE) return block;
+    const isStartLi = block.tagName === 'LI';
+    let cur = block;
+
+    while (true) {
+      let onlyChildEl = null;
+      let blocked = false;
+
+      for (const child of cur.childNodes) {
+        if (child.nodeType === Node.COMMENT_NODE) continue;
+        if (child.nodeType === Node.TEXT_NODE) {
+          if (child.nodeValue && child.nodeValue.trim().length > 0) {
+            blocked = true;
+            break;
+          }
+          continue;
+        }
+        if (child.nodeType !== Node.ELEMENT_NODE) {
+          blocked = true;
+          break;
+        }
+        if (child.matches('[data-kct-ui]')) continue;
+        if (isStartLi && (child.tagName === 'UL' || child.tagName === 'OL')) continue;
+
+        if (onlyChildEl) {
+          blocked = true;
+          break;
+        }
+        onlyChildEl = child;
+      }
+
+      if (blocked || !onlyChildEl) break;
+      if (!INLINE_DESCENT_TAGS.has(onlyChildEl.tagName)) break;
+      if (onlyChildEl.matches(INLINE_PROTECT_SELECTOR)) break;
+      if (onlyChildEl.matches(FORM_CONTROL_SELECTOR)) break;
+
+      cur = onlyChildEl;
+    }
+
+    return cur;
   }
 
   function parsePctBoxStyle(styleStr) {
@@ -1761,7 +2283,7 @@
 
   function isMeaningfulLeafText(text) {
     const clean = String(text || '')
-      .replace(/\[\[\s*[CM]\d+\s*\]\]/g, '')
+      .replace(/\[\[\s*\/?[CMLAS]\d+\s*\]\]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
     if (!clean) return false;
@@ -1792,8 +2314,18 @@
       for (const el of semanticCandidates) {
         if (claimedSet.has(el)) continue;
         if (shouldSkipBlock(el, scope, elementState)) continue;
+
+        const host = resolveInlineHost(el);
+        if (claimedSet.has(host) || elementState?.has(host)) continue;
+
+        let cur = host;
+        while (cur) {
+          claimedSet.add(cur);
+          if (cur === el) break;
+          cur = cur.parentElement;
+        }
         claimedSet.add(el);
-        pass1.push(el);
+        pass1.push(host);
       }
     }
 
@@ -2523,23 +3055,169 @@
     }
   }
 
+  const TOKEN_SPLIT_RE = /(\[\[\s*\/?[CMLAS]\d+\s*\]\])/g;
+  const TOKEN_MATCH_RE = /^\[\[\s*(\/?)([CMLAS])(\d+)\s*\]\]$/;
+
+  function stripAllTokens(zhText) {
+    return String(zhText || '').replace(/\[\[\s*\/?[CMLAS]\d+\s*\]\]/g, '');
+  }
+
+  function validateTranslatedTokens(zhText, placeholders) {
+    const text = String(zhText || '');
+    const map = placeholders instanceof Map ? placeholders : new Map();
+
+    const atomicCounts = new Map();
+    const openCounts = new Map();
+    const closeCounts = new Map();
+
+    for (const key of map.keys()) {
+      const km = key.match(/^\[\[([CMLAS])(\d+)\]\]$/);
+      if (!km) continue;
+      const type = km[1];
+      if (type === 'A' || type === 'S') {
+        openCounts.set(key, 0);
+        closeCounts.set(key, 0);
+      } else {
+        atomicCounts.set(key, 0);
+      }
+    }
+
+    const stack = [];
+    const scanRe = /\[\[\s*(\/?)([CMLAS])(\d+)\s*\]\]/g;
+    let m;
+    while ((m = scanRe.exec(text)) !== null) {
+      const isClose = m[1] === '/';
+      const type = m[2];
+      const id = m[3];
+      const openKey = `[[${type}${id}]]`;
+
+      if (!map.has(openKey)) {
+        return { ok: false, reason: `unknown token ${m[0]}` };
+      }
+
+      if (type === 'C' || type === 'M' || type === 'L') {
+        if (isClose) {
+          return { ok: false, reason: `unexpected closing atomic token ${m[0]}` };
+        }
+        const nextCount = (atomicCounts.get(openKey) || 0) + 1;
+        if (nextCount > 1) {
+          return { ok: false, reason: `duplicate atomic token ${openKey}` };
+        }
+        atomicCounts.set(openKey, nextCount);
+      } else {
+        if (!isClose) {
+          const nextCount = (openCounts.get(openKey) || 0) + 1;
+          if (nextCount > 1) {
+            return { ok: false, reason: `duplicate opening token ${openKey}` };
+          }
+          openCounts.set(openKey, nextCount);
+          stack.push(openKey);
+        } else {
+          const nextCount = (closeCounts.get(openKey) || 0) + 1;
+          if (nextCount > 1) {
+            return { ok: false, reason: `duplicate closing token [[/${type}${id}]]` };
+          }
+          if (stack.length === 0 || stack[stack.length - 1] !== openKey) {
+            return { ok: false, reason: `mismatched or misnested closing token [[/${type}${id}]]` };
+          }
+          stack.pop();
+          closeCounts.set(openKey, nextCount);
+        }
+      }
+    }
+
+    if (stack.length > 0) {
+      return { ok: false, reason: `unclosed token ${stack[stack.length - 1]}` };
+    }
+
+    for (const [key, count] of atomicCounts.entries()) {
+      if (count !== 1) {
+        return { ok: false, reason: `missing atomic token ${key}` };
+      }
+    }
+    for (const [key, count] of openCounts.entries()) {
+      if (count !== 1 || closeCounts.get(key) !== 1) {
+        return { ok: false, reason: `missing paired token ${key}` };
+      }
+    }
+
+    return { ok: true, reason: '' };
+  }
+
+  function stripDuplicateIds(node, deep) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.hasAttribute('id')) node.removeAttribute('id');
+    if (deep) {
+      for (const desc of node.querySelectorAll('[id]')) {
+        desc.removeAttribute('id');
+      }
+    }
+  }
+
+  function appendTextWithBreaks(parent, str) {
+    if (!str) return;
+    const lines = str.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        parent.appendChild(document.createElement('br'));
+      }
+      if (lines[i]) {
+        parent.appendChild(document.createTextNode(lines[i]));
+      }
+    }
+  }
+
   function buildTranslatedFragment(zhText, placeholders) {
     const frag = document.createDocumentFragment();
-    const tokens = String(zhText || '').split(/(\[\[\s*[CML]\d+\s*\]\])/g);
+    const map = placeholders instanceof Map ? placeholders : null;
+    const stack = [{ key: null, node: frag }];
+    const tokens = String(zhText || '').split(TOKEN_SPLIT_RE);
 
     for (const part of tokens) {
       if (!part) continue;
-      const m = part.match(/^\[\[\s*([CML]\d+)\s*\]\]$/);
-      if (m && placeholders) {
-        const canonical = `[[${m[1]}]]`;
-        const origNode = placeholders.get(canonical);
-        if (origNode) {
-          frag.appendChild(origNode.cloneNode(true));
+      const m = part.match(TOKEN_MATCH_RE);
+      if (m) {
+        const isClose = m[1] === '/';
+        const type = m[2];
+        const id = m[3];
+        const openKey = `[[${type}${id}]]`;
+        const currentParent = stack[stack.length - 1].node;
+
+        if (!map || !map.has(openKey)) {
+          continue;
+        }
+
+        if (type === 'C' || type === 'M' || type === 'L') {
+          if (isClose) continue;
+          const origNode = map.get(openKey);
+          if (origNode) {
+            const clone = origNode.cloneNode(true);
+            stripDuplicateIds(clone, true);
+            currentParent.appendChild(clone);
+          }
+          continue;
+        }
+
+        if (!isClose) {
+          const origNode = map.get(openKey);
+          if (origNode) {
+            const clone = origNode.cloneNode(false);
+            stripDuplicateIds(clone, false);
+            currentParent.appendChild(clone);
+            stack.push({ key: openKey, node: clone });
+          }
+          continue;
+        } else {
+          if (stack.length > 1 && stack[stack.length - 1].key === openKey) {
+            stack.pop();
+          }
           continue;
         }
       }
-      frag.appendChild(document.createTextNode(part));
+
+      appendTextWithBreaks(stack[stack.length - 1].node, part);
     }
+
     return frag;
   }
 
@@ -3046,11 +3724,20 @@
       origWrap.appendChild(child);
     }
 
+    const validation = validateTranslatedTokens(zh, placeholders);
     const transWrap = document.createElement('span');
     transWrap.className = 'kct-trans-wrap';
     transWrap.setAttribute('data-kct-ui', 'trans');
     transWrap.setAttribute('translate', 'no');
-    transWrap.appendChild(buildTranslatedFragment(zh, placeholders));
+
+    if (validation.ok) {
+      el.removeAttribute('data-kct-structure-fallback');
+      transWrap.appendChild(buildTranslatedFragment(zh, placeholders));
+    } else {
+      console.debug('[NativeRead] structure fallback:', validation.reason);
+      el.setAttribute('data-kct-structure-fallback', '1');
+      transWrap.appendChild(buildTranslatedFragment(stripAllTokens(zh), null));
+    }
 
     if (needsInlineInjection(el)) {
       el.setAttribute('data-kct-inline-layout', '1');
@@ -3173,6 +3860,7 @@
       const tocTail = el.querySelector(':scope > [data-kct-ui="toc"]');
       if (tocTail) tocTail.remove();
       el.removeAttribute('data-kct-has-trans');
+      el.removeAttribute('data-kct-structure-fallback');
       el.removeAttribute('data-kct-inline-layout');
       el.removeAttribute('data-kct-typo');
       el.removeAttribute('data-kct-lh-lift');
@@ -3371,6 +4059,8 @@
     renderJobsWithRAF,
     clearAllInjectedTranslations,
     buildTranslatedFragment,
+    validateTranslatedTokens,
+    stripAllTokens,
     sanitizeFontFamily,
     styleAndFitPdfOverlayBlock,
     refitAllPdfOverlayBlocks,
@@ -3413,7 +4103,7 @@
   const KCTRenderer = globalThis.KCTRenderer;
   const KCTCodeOverlay = globalThis.KCTCodeOverlay;
 
-  const PAGE_STYLE_CSS = "/* Universal AI Web & Notebook Translator v2.0 - Page Typography & Mode Rules */\n/* Note: Floating control pill & selection popover are encapsulated in Shadow DOM. */\n\n:root {\n  --kct-accent: #0284c7;\n  --kct-accent-soft: rgba(2, 132, 199, 0.08);\n  --kct-hairline: rgba(148, 163, 184, 0.45);\n  --kct-border: rgba(15, 23, 42, 0.12);\n  --kct-text: #1e293b;\n  --kct-bilingual-ink: #475569;\n  --kct-bg: rgba(255, 255, 255, 0.9);\n\n  /* Default target language: Traditional Chinese (zh-TW) */\n  --kct-font-serif: \"Noto Serif TC\", \"Songti TC\", \"PMingLiU\", \"Source Han Serif TC\", Georgia, serif;\n  --kct-font-sans: \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", \"Heiti TC\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", monospace;\n}\n\nhtml.kct-lang-sc {\n  --kct-font-serif: \"Noto Serif SC\", \"Songti SC\", \"STSong\", \"SimSun\", \"Source Han Serif SC\", Georgia, serif;\n  --kct-font-sans: \"PingFang SC\", \"Noto Sans SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang SC\", \"Noto Sans SC\", \"Microsoft YaHei\", monospace;\n}\n\nhtml.kct-lang-ja {\n  --kct-font-serif: \"Hiragino Mincho ProN\", \"Yu Mincho\", \"Noto Serif JP\", \"MS PMincho\", Georgia, serif;\n  --kct-font-sans: \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"Noto Sans JP\", \"Yu Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Hiragino Sans\", \"Noto Sans JP\", monospace;\n}\n\nhtml.kct-lang-ko {\n  --kct-font-serif: \"Noto Serif KR\", \"AppleMyungjo\", \"Batang\", Georgia, serif;\n  --kct-font-sans: \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Apple SD Gothic Neo\", \"Noto Sans KR\", monospace;\n}\n\nhtml.kct-lang-latin {\n  --kct-font-serif: Georgia, \"Charter\", \"Times New Roman\", serif;\n  --kct-font-sans: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Inter\", sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace;\n}\n\nhtml.kct-page-dark,\nbody[data-jp-theme-light=\"false\"],\nhtml[data-theme=\"dark\"],\nhtml.dark,\nbody.theme-dark {\n  --kct-accent: #38bdf8;\n  --kct-accent-soft: rgba(56, 189, 248, 0.12);\n  --kct-hairline: rgba(148, 163, 184, 0.34);\n  --kct-border: rgba(255, 255, 255, 0.16);\n  --kct-text: #f1f5f9;\n  --kct-bilingual-ink: #cbd5e1;\n  --kct-bg: rgba(15, 23, 42, 0.9);\n}\n\n/* Preserve table & Infobox column widths when CJK labels sit next to long unbroken URLs */\nhtml.kct-active:not(.kct-mode-original) table th[data-kct-has-trans=\"1\"] {\n  min-width: 4.5em;\n  word-break: keep-all;\n  overflow-wrap: break-word;\n}\n\nhtml.kct-active:not(.kct-mode-original) table td[data-kct-has-trans=\"1\"],\nhtml.kct-active:not(.kct-mode-original) .infobox td {\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n/* =========================================================\n   1. Replace Mode (Native-Feel Typography Matching)\n   ========================================================= */\nhtml.kct-mode-replace .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-replace .kct-trans-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\n/* Native mode: keep original site Latin font first (when non-generic), fall back to matched Serif/Sans/Mono CJK */\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-font-mono) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-mono) !important;\n}\n\n/* System mode: uniform clean sans font */\nhtml.kct-typo-system.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\n/* Preserve mode: do not override font-family or line-height */\n\n/* Selective line-height lift ONLY on dense multi-line reading prose */\nhtml.kct-mode-replace:not(.kct-typo-preserve) [data-kct-has-trans=\"1\"][data-kct-lh-lift=\"1\"] {\n  line-height: 1.72 !important;\n}\n\n/* =========================================================\n   2. Original Mode (Instant Zero-Cost Compare)\n   ========================================================= */\nhtml.kct-mode-original .kct-trans-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-original .kct-orig-wrap {\n  display: contents;\n}\n\n/* =========================================================\n   3. Bilingual Mode (Clean Hairline Contrast)\n   ========================================================= */\nhtml.kct-mode-bilingual .kct-orig-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-bilingual .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-mono);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-mono);\n}\n\nhtml.kct-typo-system.kct-mode-bilingual .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-mode-bilingual [data-kct-inline-layout=\"1\"] > .kct-trans-wrap {\n  display: inline;\n  margin-top: 0;\n  margin-left: 0.45em;\n  padding-left: 0.45em;\n  border-left: 1px solid var(--kct-hairline);\n}\n\n/* =========================================================\n   Non-destructive Code Comment Translation\n   - Static <pre>: CSS attr() + font-size:0 swap\n   - CodeMirror 6 (.cm-editor): non-intrusive .cm-scroller overlay layer\n   ========================================================= */\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans] {\n  font-size: 0 !important;\n  letter-spacing: 0 !important;\n}\n\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans]::after {\n  content: attr(data-kct-comment-trans);\n  font-size: var(--kct-code-font-size, 13px);\n  letter-spacing: normal;\n  font-family: var(--kct-font-mono);\n}\n\n.kct-cm-layer {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 4;\n  overflow: visible;\n}\n\n.kct-cm-comment {\n  position: absolute;\n  display: flex;\n  align-items: center;\n  white-space: pre;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  font-family: var(--kct-font-mono);\n  pointer-events: none;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-cm-layer,\nhtml:not(.kct-comments-on) .kct-cm-layer,\nhtml .cm-editor.cm-focused .kct-cm-layer {\n  display: none !important;\n}\n\n/* =========================================================\n   Jupyter Code Cell Output Quick Translate Button & Result\n   ========================================================= */\n.kct-output-host {\n  position: relative;\n}\n\n.kct-output-btn {\n  all: unset;\n  box-sizing: border-box;\n  position: absolute;\n  top: 6px;\n  right: 8px;\n  z-index: 10;\n  cursor: pointer;\n  font-family: var(--kct-font-sans);\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: var(--kct-bg);\n  color: var(--kct-accent);\n  border: 1px solid var(--kct-border);\n  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);\n  opacity: 0.85;\n  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;\n}\n\n.kct-output-btn:hover {\n  opacity: 1;\n  background: var(--kct-accent);\n  color: #ffffff;\n  border-color: transparent;\n}\n\n.kct-output-trans {\n  font-family: var(--kct-font-sans);\n  color: var(--kct-text);\n  background: var(--kct-accent-soft);\n  border-left: 2px solid var(--kct-accent);\n  border-radius: 0 6px 6px 0;\n  padding: 8px 12px;\n  margin-top: 8px;\n  font-size: 13px;\n  line-height: 1.65;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n/* =========================================================\n   5. Image/Canvas-Backed PDF Text Layer Overlay (Google Drive PDF Viewer)\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] {\n  z-index: 2 !important;\n  opacity: 1 !important;\n  pointer-events: none !important;\n  overflow: visible !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > :not([data-kct-has-trans=\"1\"]),\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > [data-kct-pdf-merged=\"absorbed\"] {\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] {\n  opacity: 1 !important;\n  pointer-events: auto !important;\n  background-color: var(--kct-pdf-bg, #ffffff) !important;\n  box-shadow: 0 0 0 2px var(--kct-pdf-bg, #ffffff) !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  font-size: var(--kct-pdf-fs, 13px) !important;\n  line-height: var(--kct-pdf-lh, 1.42) !important;\n  font-weight: var(--kct-pdf-fw, 400) !important;\n  box-sizing: border-box !important;\n  margin: 0 !important;\n  padding: 1px 4px !important;\n  border-radius: 2px !important;\n  display: block !important;\n  white-space: normal !important;\n  word-break: break-word !important;\n  overflow: hidden !important;\n  transition: box-shadow 0.14s ease;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  overflow: visible !important;\n  height: auto !important;\n}\n\n/* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: contents !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  margin: 0 !important;\n  padding: 0 !important;\n  border: none !important;\n  font-size: inherit !important;\n  line-height: inherit !important;\n  font-weight: inherit !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  height: auto !important;\n  padding: 8px 10px !important;\n  border-radius: 6px !important;\n  border: 1px solid var(--kct-accent) !important;\n  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.25) !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: block !important;\n  font-size: 0.86em !important;\n  line-height: 1.4 !important;\n  opacity: 0.76 !important;\n  margin-bottom: 6px !important;\n  padding-bottom: 6px !important;\n  border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;\n}\n\n/* =========================================================\n   Google Drive PDF: table-of-contents rows\n   (translated title + native dot leader + right-aligned page number).\n   Placed last so it overrides the generic overlay / bilingual hover rules above.\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] {\n  display: flex !important;\n  align-items: baseline !important;\n  white-space: nowrap !important;\n  overflow: hidden !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap,\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: block !important;\n  flex: 0 1 auto !important;\n  min-width: 0 !important;\n  overflow: hidden !important;\n  text-overflow: ellipsis !important;\n  white-space: nowrap !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  height: auto !important;\n  padding: 1px 4px !important;\n}\n\n[data-kct-pdf-layer=\"1\"] > p > .kct-pdf-toc-tail {\n  display: none;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-pdf-toc-tail {\n  display: flex !important;\n  flex: 1 1 auto !important;\n  align-items: baseline !important;\n  min-width: 2.2em !important;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-leader {\n  flex: 1 1 auto;\n  height: 0;\n  margin: 0 0.5em;\n  border-bottom: 0.13em dotted currentColor;\n  opacity: 0.6;\n}\n\n[data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-toc-leader=\"none\"] .kct-pdf-toc-leader {\n  border-bottom-color: transparent;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-num {\n  flex: none;\n  font-variant-numeric: tabular-nums;\n}\n\n/* =========================================================\n   6. R4: On-Demand Vision Image Overlay Translation\n   ========================================================= */\n.kct-img-overlay-host {\n  position: relative;\n  line-height: 0;\n}\n\n.kct-img-overlay-layer {\n  position: absolute;\n  pointer-events: none;\n  z-index: 6;\n  overflow: hidden;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-img-overlay-layer,\n.kct-img-overlay-host > img[data-kct-img-mode=\"original\"] ~ .kct-img-overlay-layer {\n  display: none !important;\n}\n\n.kct-img-overlay-block {\n  position: absolute;\n  box-sizing: border-box;\n  background-color: var(--kct-img-bg, #ffffff);\n  box-shadow: 0 0 0 2px var(--kct-img-bg, #ffffff);\n  color: var(--kct-img-fg, #1e293b);\n  font-family: var(--kct-font-sans);\n  line-height: 1.28;\n  padding: 1px 3px;\n  border-radius: 3px;\n  display: flex;\n  align-items: center;\n  white-space: normal;\n  word-break: break-word;\n  overflow: hidden;\n  pointer-events: auto;\n}\n\n.kct-img-overlay-block.kct-img-role-title {\n  font-weight: 700;\n  line-height: 1.22;\n}\n\n.kct-img-overlay-block.kct-img-role-badge {\n  font-weight: 600;\n  justify-content: center;\n  text-align: center;\n  border-radius: 999px;\n}\n\n.kct-img-overlay-block:hover {\n  z-index: 20;\n  overflow: visible;\n  height: auto !important;\n  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--kct-accent);\n}\n";
+  const PAGE_STYLE_CSS = "/* Universal AI Web & Notebook Translator v2.0 - Page Typography & Mode Rules */\n/* Note: Floating control pill & selection popover are encapsulated in Shadow DOM. */\n\n:root {\n  --kct-accent: #0284c7;\n  --kct-accent-soft: rgba(2, 132, 199, 0.08);\n  --kct-hairline: rgba(148, 163, 184, 0.45);\n  --kct-border: rgba(15, 23, 42, 0.12);\n  --kct-text: #1e293b;\n  --kct-bilingual-ink: #475569;\n  --kct-bg: rgba(255, 255, 255, 0.9);\n\n  /* Default target language: Traditional Chinese (zh-TW) */\n  --kct-font-serif: \"Noto Serif TC\", \"Songti TC\", \"PMingLiU\", \"Source Han Serif TC\", Georgia, serif;\n  --kct-font-sans: \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", \"Heiti TC\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", monospace;\n}\n\nhtml.kct-lang-sc {\n  --kct-font-serif: \"Noto Serif SC\", \"Songti SC\", \"STSong\", \"SimSun\", \"Source Han Serif SC\", Georgia, serif;\n  --kct-font-sans: \"PingFang SC\", \"Noto Sans SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang SC\", \"Noto Sans SC\", \"Microsoft YaHei\", monospace;\n}\n\nhtml.kct-lang-ja {\n  --kct-font-serif: \"Hiragino Mincho ProN\", \"Yu Mincho\", \"Noto Serif JP\", \"MS PMincho\", Georgia, serif;\n  --kct-font-sans: \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"Noto Sans JP\", \"Yu Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Hiragino Sans\", \"Noto Sans JP\", monospace;\n}\n\nhtml.kct-lang-ko {\n  --kct-font-serif: \"Noto Serif KR\", \"AppleMyungjo\", \"Batang\", Georgia, serif;\n  --kct-font-sans: \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Apple SD Gothic Neo\", \"Noto Sans KR\", monospace;\n}\n\nhtml.kct-lang-latin {\n  --kct-font-serif: Georgia, \"Charter\", \"Times New Roman\", serif;\n  --kct-font-sans: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Inter\", sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace;\n}\n\nhtml.kct-page-dark,\nbody[data-jp-theme-light=\"false\"],\nhtml[data-theme=\"dark\"],\nhtml.dark,\nbody.theme-dark {\n  --kct-accent: #38bdf8;\n  --kct-accent-soft: rgba(56, 189, 248, 0.12);\n  --kct-hairline: rgba(148, 163, 184, 0.34);\n  --kct-border: rgba(255, 255, 255, 0.16);\n  --kct-text: #f1f5f9;\n  --kct-bilingual-ink: #cbd5e1;\n  --kct-bg: rgba(15, 23, 42, 0.9);\n}\n\n/* Preserve table & Infobox column widths when CJK labels sit next to long unbroken URLs */\nhtml.kct-active:not(.kct-mode-original) table th[data-kct-has-trans=\"1\"] {\n  min-width: 4.5em;\n  word-break: keep-all;\n  overflow-wrap: break-word;\n}\n\nhtml.kct-active:not(.kct-mode-original) table td[data-kct-has-trans=\"1\"],\nhtml.kct-active:not(.kct-mode-original) .infobox td {\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n/* =========================================================\n   1. Replace Mode (Native-Feel Typography Matching)\n   ========================================================= */\nhtml.kct-mode-replace .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-replace .kct-trans-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\n/* Native mode: keep original site Latin font first (when non-generic), fall back to matched Serif/Sans/Mono CJK */\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-font-mono) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-mono) !important;\n}\n\n/* System mode: uniform clean sans font */\nhtml.kct-typo-system.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\n/* Preserve mode: do not override font-family or line-height */\n\n/* Selective line-height lift ONLY on dense multi-line reading prose */\nhtml.kct-mode-replace:not(.kct-typo-preserve) [data-kct-has-trans=\"1\"][data-kct-lh-lift=\"1\"] {\n  line-height: 1.72 !important;\n}\n\n/* =========================================================\n   2. Original Mode (Instant Zero-Cost Compare)\n   ========================================================= */\nhtml.kct-mode-original .kct-trans-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-original .kct-orig-wrap {\n  display: contents;\n}\n\n/* =========================================================\n   3. Bilingual Mode (Clean Hairline Contrast)\n   ========================================================= */\nhtml.kct-mode-bilingual .kct-orig-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-bilingual .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-mono);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-mono);\n}\n\nhtml.kct-typo-system.kct-mode-bilingual .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-mode-bilingual [data-kct-inline-layout=\"1\"] > .kct-trans-wrap {\n  display: inline;\n  margin-top: 0;\n  margin-left: 0.45em;\n  padding-left: 0.45em;\n  border-left: 1px solid var(--kct-hairline);\n}\n\n/* =========================================================\n   Non-destructive Code Comment Translation\n   - Static <pre>: CSS attr() + font-size:0 swap\n   - CodeMirror 6 (.cm-editor): non-intrusive .cm-scroller overlay layer\n   ========================================================= */\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans] {\n  font-size: 0 !important;\n  letter-spacing: 0 !important;\n}\n\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans]::after {\n  content: attr(data-kct-comment-trans);\n  font-size: var(--kct-code-font-size, 13px);\n  letter-spacing: normal;\n  font-family: var(--kct-font-mono);\n}\n\n.kct-cm-layer {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 4;\n  overflow: visible;\n}\n\n.kct-cm-comment {\n  position: absolute;\n  display: flex;\n  align-items: center;\n  white-space: pre;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  font-family: var(--kct-font-mono);\n  pointer-events: none;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-cm-layer,\nhtml:not(.kct-comments-on) .kct-cm-layer,\nhtml .cm-editor.cm-focused .kct-cm-layer {\n  display: none !important;\n}\n\n/* =========================================================\n   Jupyter Code Cell Output Quick Translate Button & Result\n   ========================================================= */\n.kct-output-host {\n  position: relative;\n}\n\n.kct-output-btn {\n  all: unset;\n  box-sizing: border-box;\n  position: absolute;\n  top: 6px;\n  right: 8px;\n  z-index: 10;\n  cursor: pointer;\n  font-family: var(--kct-font-sans);\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: var(--kct-bg);\n  color: var(--kct-accent);\n  border: 1px solid var(--kct-border);\n  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);\n  opacity: 0.85;\n  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;\n}\n\n.kct-output-btn:hover {\n  opacity: 1;\n  background: var(--kct-accent);\n  color: #ffffff;\n  border-color: transparent;\n}\n\n.kct-output-trans {\n  font-family: var(--kct-font-sans);\n  color: var(--kct-text);\n  background: var(--kct-accent-soft);\n  border-left: 2px solid var(--kct-accent);\n  border-radius: 0 6px 6px 0;\n  padding: 8px 12px;\n  margin-top: 8px;\n  font-size: 13px;\n  line-height: 1.65;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n/* =========================================================\n   5. Image/Canvas-Backed PDF Text Layer Overlay (Google Drive PDF Viewer)\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] {\n  z-index: 2 !important;\n  opacity: 1 !important;\n  pointer-events: none !important;\n  overflow: visible !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > :not([data-kct-has-trans=\"1\"]),\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > [data-kct-pdf-merged=\"absorbed\"] {\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] {\n  opacity: 1 !important;\n  pointer-events: auto !important;\n  background-color: var(--kct-pdf-bg, #ffffff) !important;\n  box-shadow: 0 0 0 2px var(--kct-pdf-bg, #ffffff) !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  font-size: var(--kct-pdf-fs, 13px) !important;\n  line-height: var(--kct-pdf-lh, 1.42) !important;\n  font-weight: var(--kct-pdf-fw, 400) !important;\n  box-sizing: border-box !important;\n  margin: 0 !important;\n  padding: 1px 4px !important;\n  border-radius: 2px !important;\n  display: block !important;\n  white-space: normal !important;\n  word-break: break-word !important;\n  overflow: hidden !important;\n  transition: box-shadow 0.14s ease;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  overflow: visible !important;\n  height: auto !important;\n}\n\n/* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: contents !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  margin: 0 !important;\n  padding: 0 !important;\n  border: none !important;\n  font-size: inherit !important;\n  line-height: inherit !important;\n  font-weight: inherit !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  height: auto !important;\n  padding: 8px 10px !important;\n  border-radius: 6px !important;\n  border: 1px solid var(--kct-accent) !important;\n  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.25) !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: block !important;\n  font-size: 0.86em !important;\n  line-height: 1.4 !important;\n  opacity: 0.76 !important;\n  margin-bottom: 6px !important;\n  padding-bottom: 6px !important;\n  border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;\n}\n\n/* =========================================================\n   Google Drive PDF: table-of-contents rows\n   (translated title + native dot leader + right-aligned page number).\n   Placed last so it overrides the generic overlay / bilingual hover rules above.\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] {\n  display: flex !important;\n  align-items: baseline !important;\n  white-space: nowrap !important;\n  overflow: hidden !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap,\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: block !important;\n  flex: 0 1 auto !important;\n  min-width: 0 !important;\n  overflow: hidden !important;\n  text-overflow: ellipsis !important;\n  white-space: nowrap !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  height: auto !important;\n  padding: 1px 4px !important;\n}\n\n[data-kct-pdf-layer=\"1\"] > p > .kct-pdf-toc-tail {\n  display: none;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-pdf-toc-tail {\n  display: flex !important;\n  flex: 1 1 auto !important;\n  align-items: baseline !important;\n  min-width: 2.2em !important;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-leader {\n  flex: 1 1 auto;\n  height: 0;\n  margin: 0 0.5em;\n  border-bottom: 0.13em dotted currentColor;\n  opacity: 0.6;\n}\n\n[data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-toc-leader=\"none\"] .kct-pdf-toc-leader {\n  border-bottom-color: transparent;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-num {\n  flex: none;\n  font-variant-numeric: tabular-nums;\n}\n\n/* =========================================================\n   6. R4: On-Demand Vision Image Overlay Translation\n   ========================================================= */\n.kct-img-overlay-host {\n  position: relative;\n  line-height: 0;\n}\n\n.kct-img-overlay-layer {\n  position: absolute;\n  pointer-events: none;\n  z-index: 6;\n  overflow: hidden;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-img-overlay-layer,\n.kct-img-overlay-host > img[data-kct-img-mode=\"original\"] ~ .kct-img-overlay-layer {\n  display: none !important;\n}\n\n.kct-img-overlay-block {\n  position: absolute;\n  box-sizing: border-box;\n  background-color: var(--kct-img-bg, #ffffff);\n  box-shadow: 0 0 0 2px var(--kct-img-bg, #ffffff);\n  color: var(--kct-img-fg, #1e293b);\n  font-family: var(--kct-font-sans);\n  line-height: 1.28;\n  padding: 1px 3px;\n  border-radius: 3px;\n  display: flex;\n  align-items: center;\n  white-space: normal;\n  word-break: break-word;\n  overflow: hidden;\n  pointer-events: auto;\n}\n\n.kct-img-overlay-block.kct-img-role-title {\n  font-weight: 700;\n  line-height: 1.22;\n}\n\n.kct-img-overlay-block.kct-img-role-badge {\n  font-weight: 600;\n  justify-content: center;\n  text-align: center;\n  border-radius: 999px;\n}\n\n.kct-img-overlay-block:hover {\n  z-index: 20;\n  overflow: visible;\n  height: auto !important;\n  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--kct-accent);\n}\n\n/* =========================================================\n   Structure guard: when a translation lost a link or protected node,\n   keep the clickable original visible next to the translation.\n   ========================================================= */\nhtml.kct-mode-replace [data-kct-structure-fallback=\"1\"] > .kct-orig-wrap {\n  display: contents !important;\n}\n\nhtml.kct-mode-replace [data-kct-structure-fallback=\"1\"] > .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n";
 
   // ============================================================
   // 1. Storage Adapter (GM_getValue / GM_setValue + localStorage)
@@ -3628,7 +4318,7 @@
       pageContext?.title ? `Page topic: ${String(pageContext.title).slice(0, 120)}` : '',
       langGuide,
       'Rules:',
-      '1. Keep ALL placeholders ([[C0]], [[C1]], [[M0]]) exact and untranslated in natural positions.',
+      '1. Keep atomic placeholders [[C0]] (code), [[M0]] (math/citations), [[L0]] (untranslatable link) verbatim; paired tags [[A0]]...[[/A0]] (link) and [[S0]]...[[/S0]] (bold/italic/emphasis) must each appear exactly once, wrapping the TRANSLATED words that correspond to the original wrapped words, properly nested, never translated/renamed/re-numbered/removed; do not add tags that were not in the input.',
       '2. Keep code identifiers, package/function names, URLs, and abbreviations intact.',
       '3. For "kind":"comment", keep the leading "# " prefix.',
       '4. Output STRICT NDJSON: one JSON object per line in the format {"i":0,"t":"..."} matching every input index i.',
@@ -3802,6 +4492,11 @@
     if (!cleanKey && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(settings.baseUrl || '')) {
       const err = new Error('請先點擊 ⚙ 設定 API Key');
       err.errorCode = 'NO_API_KEY';
+      throw err;
+    }
+    if (!String(settings.model || '').trim()) {
+      const err = new Error('請先點擊 ⚙ 設定並填入模型名稱');
+      err.errorCode = 'NO_MODEL';
       throw err;
     }
 

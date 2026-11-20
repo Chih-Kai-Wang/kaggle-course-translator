@@ -1,109 +1,47 @@
 (() => {
   if (globalThis.KCTConfig) return;
 
+  // Provider registry: every base URL was checked on 2026-11-21 (GET /models and POST /chat/completions
+  // answered 401/403/200, not 404). Default models are only set where they were confirmed available that day;
+  // everywhere else the user picks from the live list ("取得模型清單"), so presets cannot go stale.
   const PROVIDER_PRESETS = {
-    deepseek: {
-      id: 'deepseek',
-      label: 'DeepSeek（推薦 · 高性價比）',
-      protocol: 'openai',
-      baseUrl: 'https://api.deepseek.com/v1',
-      defaultModel: 'deepseek-chat',
-      placeholderKey: 'sk-...',
-      hint: '支援 deepseek-chat (V3)，機器學習與資料科學術語翻譯準確、速度快、成本極低。'
-    },
-    openai: {
-      id: 'openai',
-      label: 'OpenAI',
-      protocol: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      defaultModel: 'gpt-4o-mini',
-      placeholderKey: 'sk-...',
-      hint: '建議使用 gpt-4o-mini 或 gpt-4.1-mini。'
-    },
     gemini: {
       id: 'gemini',
-      label: 'Google Gemini（原生介面 · 支援免費額度）',
+      label: 'Google Gemini（原生 · 有免費額度）',
+      group: '原生介面',
       protocol: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
       defaultModel: 'gemini-3.5-flash-lite',
-      suggestedModels: [
-        'gemini-3.5-flash-lite',
-        'gemini-3.1-flash-lite',
-        'gemini-3.8-flash',
-        'gemini-4-hydrogen',
-        'gemini-3.6-flash',
-        'gemini-2.5-flash'
-      ],
+      suggestedModels: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-4-hydrogen', 'gemini-2.5-flash'],
       placeholderKey: 'AQ... 或 AIza...',
-      hint: '使用 Google AI Studio API Key；免費額度首選 gemini-3.5-flash-lite（500 RPD），高階翻譯可選 gemini-3.8-flash / gemini-4-hydrogen。'
-    },
-    qwen: {
-      id: 'qwen',
-      label: '通義千問 Qwen（阿里雲百煉）',
-      protocol: 'openai',
-      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      defaultModel: 'qwen-plus',
-      placeholderKey: 'sk-...',
-      hint: '建議使用 qwen-plus 或 qwen-turbo-latest。'
-    },
-    siliconflow: {
-      id: 'siliconflow',
-      label: 'SiliconFlow 矽基流動',
-      protocol: 'openai',
-      baseUrl: 'https://api.siliconflow.cn/v1',
-      defaultModel: 'deepseek-ai/DeepSeek-V3',
-      placeholderKey: 'sk-...',
-      hint: '可呼叫 DeepSeek-V3、Qwen2.5 等多種開源模型。'
-    },
-    moonshot: {
-      id: 'moonshot',
-      label: 'Moonshot Kimi',
-      protocol: 'openai',
-      baseUrl: 'https://api.moonshot.cn/v1',
-      defaultModel: 'moonshot-v1-8k',
-      placeholderKey: 'sk-...',
-      hint: '中文語意理解流暢。'
-    },
-    zhipu: {
-      id: 'zhipu',
-      label: '智譜 GLM',
-      protocol: 'openai',
-      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-      defaultModel: 'glm-4-flash',
-      placeholderKey: '...',
-      hint: 'glm-4-flash 提供免費額度。'
-    },
-    openrouter: {
-      id: 'openrouter',
-      label: 'OpenRouter',
-      protocol: 'openai',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      defaultModel: 'google/gemini-2.5-flash',
-      suggestedModels: [
-        'google/gemini-2.5-flash',
-        'google/gemini-2.5-flash-lite',
-        'deepseek/deepseek-chat'
-      ],
-      placeholderKey: 'sk-or-...',
-      hint: '聚合多家大模型，填入對應模型 ID 即可。'
+      hint: '使用 Google AI Studio API Key；免費額度首選 gemini-3.5-flash-lite。按「取得模型清單」可看到帳號實際可用的模型。'
     },
     anthropic: {
       id: 'anthropic',
       label: 'Anthropic Claude（原生 Messages API）',
+      group: '原生介面',
       protocol: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
       defaultModel: 'claude-opus-5-5',
-      suggestedModels: [
-        'claude-opus-5-5',
-        'claude-sonnet-5-5',
-        'claude-haiku-5-5'
-      ],
+      suggestedModels: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'],
       placeholderKey: 'sk-ant-...',
       hint: '請至 platform.claude.com 取得 API Key；若需節省成本，可改選 claude-sonnet-5-5 或 claude-haiku-5-5。'
+    },
+    openai: {
+      id: 'openai',
+      label: 'OpenAI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」選擇模型。'
     },
     azure: {
       id: 'azure',
       label: 'Azure OpenAI（v1 API · api-key）',
+      group: '國際服務',
       protocol: 'openai',
       baseUrl: 'https://YOUR-RESOURCE.openai.azure.com/openai/v1',
       defaultModel: '',
@@ -111,14 +49,313 @@
       placeholderKey: 'Azure API Key...',
       hint: '請將網址中的 YOUR-RESOURCE 替換為您的 Azure 資源名稱，並在模型欄位填入部署名稱（Deployment Name）。'
     },
-    custom: {
-      id: 'custom',
-      label: '自訂 OpenAI 相容介面 / 本機 Ollama',
+    openrouter: {
+      id: 'openrouter',
+      label: 'OpenRouter（多家模型聚合）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      defaultModel: 'google/gemini-2.5-flash',
+      suggestedModels: ['google/gemini-2.5-flash'],
+      placeholderKey: 'sk-or-...',
+      hint: '聚合數百個模型，模型清單不需金鑰即可查詢。'
+    },
+    groq: {
+      id: 'groq',
+      label: 'Groq',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'gsk_...',
+      hint: '低延遲推論；填入金鑰後按「取得模型清單」。'
+    },
+    mistral: {
+      id: 'mistral',
+      label: 'Mistral AI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.mistral.ai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    xai: {
+      id: 'xai',
+      label: 'xAI（Grok）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.x.ai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'xai-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    together: {
+      id: 'together',
+      label: 'Together AI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.together.xyz/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '開源模型託管；填入金鑰後按「取得模型清單」。'
+    },
+    fireworks: {
+      id: 'fireworks',
+      label: 'Fireworks AI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.fireworks.ai/inference/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'fw_...',
+      hint: '開源模型託管；填入金鑰後按「取得模型清單」。'
+    },
+    cerebras: {
+      id: 'cerebras',
+      label: 'Cerebras',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.cerebras.ai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'csk-...',
+      hint: '高速推論；填入金鑰後按「取得模型清單」。'
+    },
+    deepinfra: {
+      id: 'deepinfra',
+      label: 'DeepInfra',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.deepinfra.com/v1/openai',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '開源模型託管；模型清單不需金鑰即可查詢。'
+    },
+    huggingface: {
+      id: 'huggingface',
+      label: 'Hugging Face Inference Providers',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://router.huggingface.co/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'hf_...',
+      hint: '使用 Hugging Face Token；模型清單不需金鑰即可查詢。'
+    },
+    novita: {
+      id: 'novita',
+      label: 'Novita AI',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.novita.ai/openai',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '開源模型託管；模型清單不需金鑰即可查詢。'
+    },
+    deepseek: {
+      id: 'deepseek',
+      label: 'DeepSeek',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.deepseek.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」選擇模型。'
+    },
+    'qwen-intl': {
+      id: 'qwen-intl',
+      label: '阿里雲百煉 Qwen（國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '國際站金鑰；填入後按「取得模型清單」。'
+    },
+    'moonshot-intl': {
+      id: 'moonshot-intl',
+      label: 'Moonshot AI / Kimi（國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.moonshot.ai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: 'platform.moonshot.ai 金鑰；填入後按「取得模型清單」。'
+    },
+    zai: {
+      id: 'zai',
+      label: 'Z.ai（智譜國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.z.ai/api/paas/v4',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    'minimax-intl': {
+      id: 'minimax-intl',
+      label: 'MiniMax（國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.minimax.io/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    'siliconflow-intl': {
+      id: 'siliconflow-intl',
+      label: 'SiliconFlow（國際站）',
+      group: '國際服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.siliconflow.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    qwen: {
+      id: 'qwen',
+      label: '阿里雲百煉 Qwen（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    moonshot: {
+      id: 'moonshot',
+      label: 'Moonshot AI / Kimi（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: 'platform.moonshot.cn 金鑰；填入後按「取得模型清單」。'
+    },
+    zhipu: {
+      id: 'zhipu',
+      label: '智譜 BigModel（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    siliconflow: {
+      id: 'siliconflow',
+      label: 'SiliconFlow 矽基流動（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    volcengine: {
+      id: 'volcengine',
+      label: '火山引擎方舟 Doubao',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '模型欄位可填模型 ID 或推論接入點 ID；填入金鑰後按「取得模型清單」。'
+    },
+    qianfan: {
+      id: 'qianfan',
+      label: '百度千帆（v2 OpenAI 相容）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://qianfan.baidubce.com/v2',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'bce-v3/...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    hunyuan: {
+      id: 'hunyuan',
+      label: '騰訊混元',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'sk-...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    minimax: {
+      id: 'minimax',
+      label: 'MiniMax（中國站）',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.minimaxi.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    stepfun: {
+      id: 'stepfun',
+      label: '階躍星辰 StepFun',
+      group: '中國大陸服務',
+      protocol: 'openai',
+      baseUrl: 'https://api.stepfun.com/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '...',
+      hint: '填入金鑰後按「取得模型清單」。'
+    },
+    ollama: {
+      id: 'ollama',
+      label: 'Ollama（本機）',
+      group: '本機 / 自訂',
       protocol: 'openai',
       baseUrl: 'http://localhost:11434/v1',
-      defaultModel: 'qwen2.5:7b',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '可留空',
+      hint: '本機模型不需金鑰；啟動 Ollama 後按「取得模型清單」。'
+    },
+    lmstudio: {
+      id: 'lmstudio',
+      label: 'LM Studio（本機）',
+      group: '本機 / 自訂',
+      protocol: 'openai',
+      baseUrl: 'http://localhost:1234/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: '可留空',
+      hint: '本機模型不需金鑰；在 LM Studio 開啟本機伺服器後按「取得模型清單」。'
+    },
+    custom: {
+      id: 'custom',
+      label: '自訂 OpenAI 相容介面',
+      group: '本機 / 自訂',
+      protocol: 'openai',
+      baseUrl: 'http://localhost:11434/v1',
+      defaultModel: '',
+      suggestedModels: [],
       placeholderKey: '可留空或填金鑰',
-      hint: '支援任何 OpenAI 相容中轉站、OneAPI 或本機 Ollama。'
+      hint: '支援任何 OpenAI 相容中轉站或自架端點；填好網址後按「取得模型清單」。'
     }
   };
 
@@ -271,11 +508,11 @@
     streamTranslation: true,
     thinkingEffort: 'fastest', // 'fastest' | 'balanced' | 'deep'
     typographyMatch: 'native', // 'native' | 'system' | 'preserve'
-    providerId: 'deepseek',
-    protocol: 'openai',
-    baseUrl: 'https://api.deepseek.com/v1',
+    providerId: 'gemini',
+    protocol: 'gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     apiKey: '',
-    model: 'deepseek-chat',
+    model: 'gemini-3.5-flash-lite',
     temperature: 0.2,
     batchSize: 20,
     maxBatchChars: 5500,
@@ -538,6 +775,120 @@
     }
 
     return result;
+  }
+
+  function buildListModelsUrl(settings, pageToken = '') {
+    const protocol = String(settings?.protocol || 'openai').trim().toLowerCase();
+    const rawBase = String(settings?.baseUrl || '').trim();
+
+    if (isAzureOpenAIEndpoint(rawBase)) {
+      return '';
+    }
+
+    try {
+      if (protocol === 'gemini') {
+        let base = (rawBase || 'https://generativelanguage.googleapis.com/v1beta')
+          .replace(/\/+$/, '')
+          .replace(/\/models\/[^/?#]+$/i, '')
+          .replace(/\/models$/i, '')
+          .replace(/\/+$/, '');
+        if (!/\/v1(beta)?$/i.test(base)) {
+          base = `${base}/v1beta`;
+        }
+        const u = new URL(`${base}/models`);
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+        u.searchParams.set('pageSize', '1000');
+        if (pageToken) {
+          u.searchParams.set('pageToken', String(pageToken));
+        }
+        return u.toString();
+      }
+
+      if (protocol === 'anthropic') {
+        const base = rawBase || 'https://api.anthropic.com/v1';
+        const parsed = new URL(base);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+        const u = new URL(`${parsed.origin}/v1/models`);
+        u.searchParams.set('limit', '1000');
+        if (pageToken) {
+          u.searchParams.set('after_id', String(pageToken));
+        }
+        return u.toString();
+      }
+
+      if (protocol === 'openai') {
+        if (!rawBase) return '';
+        const base = rawBase
+          .replace(/\/+$/, '')
+          .replace(/\/chat\/completions$/i, '')
+          .replace(/\/+$/, '');
+        if (!base) return '';
+        const u = new URL(`${base}/models`);
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+        return u.toString();
+      }
+    } catch {
+      return '';
+    }
+
+    return '';
+  }
+
+  function parseListModelsResponse(protocol, data) {
+    const proto = String(protocol || 'openai').trim().toLowerCase();
+    const ids = [];
+    let nextPageToken = '';
+
+    if (!data || typeof data !== 'object') {
+      return { ids, nextPageToken };
+    }
+
+    if (proto === 'gemini') {
+      const list = Array.isArray(data.models) ? data.models : [];
+      for (const item of list) {
+        const methods = Array.isArray(item?.supportedGenerationMethods)
+          ? item.supportedGenerationMethods
+          : [];
+        if (!methods.includes('generateContent')) continue;
+        const id = String(item?.name || '').replace(/^models\//, '').trim();
+        if (id) ids.push(id);
+      }
+      if (typeof data.nextPageToken === 'string' && data.nextPageToken.trim()) {
+        nextPageToken = data.nextPageToken.trim();
+      }
+      return { ids, nextPageToken };
+    }
+
+    if (proto === 'anthropic') {
+      const list = Array.isArray(data.data) ? data.data : [];
+      for (const item of list) {
+        const id = String(item?.id || '').trim();
+        if (id) ids.push(id);
+      }
+      if (data.has_more === true && typeof data.last_id === 'string' && data.last_id.trim()) {
+        nextPageToken = data.last_id.trim();
+      }
+      return { ids, nextPageToken };
+    }
+
+    const list = Array.isArray(data)
+      ? data
+      : Array.isArray(data.data)
+        ? data.data
+        : Array.isArray(data.models)
+          ? data.models
+          : [];
+    for (const item of list) {
+      if (typeof item === 'string') {
+        const id = item.trim();
+        if (id) ids.push(id);
+      } else if (item && typeof item === 'object') {
+        const rawId = typeof item.id === 'string' && item.id.trim() ? item.id : item.name;
+        const id = typeof rawId === 'string' ? rawId.trim() : '';
+        if (id) ids.push(id);
+      }
+    }
+    return { ids, nextPageToken: '' };
   }
 
   function resolveEndpoint(settings) {
@@ -862,6 +1213,8 @@
     extractGoogleDriveFileId,
     resolvePdfSourceUrl,
     isAzureOpenAIEndpoint,
+    buildListModelsUrl,
+    parseListModelsResponse,
     normalizeAnthropicEndpoint,
     buildProviderAuthHeaders,
     resolveAnthropicEffort,

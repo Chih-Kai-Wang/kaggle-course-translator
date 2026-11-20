@@ -17,6 +17,9 @@ const {
   isFilePdfUrl,
   isPdfUrl,
   buildProviderAuthHeaders,
+  buildListModelsUrl,
+  parseListModelsResponse,
+  isAzureOpenAIEndpoint,
   buildAnthropicMessagesBody,
   extractAnthropicText,
   extractAnthropicStreamDelta
@@ -62,6 +65,26 @@ function redactApiKey(text, apiKey) {
   const cleanKey = sanitizeApiKey(apiKey);
   if (!out || cleanKey.length < 6) return out;
   return out.split(cleanKey).join('[REDACTED]');
+}
+
+// A model must be chosen explicitly (presets no longer ship guessed defaults).
+function assertModelConfigured(settings) {
+  if (String(settings?.model || '').trim()) return;
+  const err = new Error('尚未選擇模型：請到設定頁按「取得模型清單」後選擇模型，或直接輸入模型名稱');
+  err.errorCode = 'NO_MODEL';
+  err.noRetry = true;
+  err.noSplit = true;
+  throw err;
+}
+
+// Point users with a retired model (e.g. an old saved default) to the live model list.
+function withModelHint(message, status) {
+  const text = String(message || '');
+  const looksLikeModelError =
+    /model[^\n]{0,40}(not[ _]?found|does not exist|not exist|deprecated|decommissioned|retired|not supported|invalid|unavailable|下线|下線|不存在|已停用)/i.test(text) ||
+    /(no such model|unknown model|model_not_found|invalid model)/i.test(text);
+  if (!looksLikeModelError || (status && ![400, 404, 410, 422].includes(status))) return text;
+  return `此模型可能已停用或名稱有誤，請到設定頁按「取得模型清單」重新選擇。${text}`;
 }
 
 function isContextLengthError(errText) {
@@ -132,7 +155,7 @@ function buildRoleAndTopicLines(pageContext) {
 }
 
 const PLACEHOLDER_PRESERVE_RULE =
-  '1. Keep ALL placeholders verbatim and untranslated in natural positions: [[C0]], [[C1]] (inline code), [[M0]], [[M1]] (math/citations), [[L0]], [[L1]] (inline clickable links). Never alter digits or brackets.';
+  '1. Keep atomic placeholders [[C0]] (code), [[M0]] (math/citations), [[L0]] (untranslatable link) verbatim; paired tags [[A0]]…[[/A0]] (link) and [[S0]]…[[/S0]] (bold/italic/emphasis) must each appear exactly once, wrapping the TRANSLATED words that correspond to the original wrapped words, properly nested, never translated, renamed, re-numbered, or removed; do not add tags that were not in the input.';
 
 function buildSystemPrompt(settings, pageContext) {
   const lang = resolveTargetLanguage(settings);
@@ -568,6 +591,7 @@ function buildOpenAIRequestBody(settings, endpoint, messages, { expectJson = fal
 }
 
 async function callLLMChat(settings, messages, expectJson = true, externalSignal = null) {
+  assertModelConfigured(settings);
   const endpoint = resolveEndpoint(settings);
   if (!endpoint) {
     throw new Error('API 地址無效，請檢查設定中的 Base URL');
@@ -651,7 +675,7 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
             });
           } else {
             const safeErrText = redactApiKey(errText, settings.apiKey);
-            const badReq = new Error(`HTTP 400: ${safeErrText.slice(0, 260)}`);
+            const badReq = new Error(withModelHint(`HTTP 400: ${safeErrText.slice(0, 260)}`, 400));
             badReq.httpStatus = 400;
             badReq.errorCode = 'HTTP_400';
             badReq.noSplit = !isContextLengthError(safeErrText);
@@ -674,7 +698,7 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
           sleepAfterAttemptMs = 700 * attempt;
           continue;
         }
-        const httpErr = new Error(`HTTP ${status}: ${safeErrBody.slice(0, 280) || response.statusText}`);
+        const httpErr = new Error(withModelHint(`HTTP ${status}: ${safeErrBody.slice(0, 280) || response.statusText}`, status));
         httpErr.httpStatus = status;
         httpErr.errorCode = `HTTP_${status}`;
         httpErr.noRetry = true;
@@ -995,6 +1019,7 @@ function extractStreamTextDelta(protocol, chunkObj) {
 }
 
 async function streamTranslateItems(settings, items, pageContext, onItem, externalSignal = null) {
+  assertModelConfigured(settings);
   if (!items || items.length === 0) return 0;
 
   const endpoint = resolveStreamEndpoint(settings);
@@ -1104,7 +1129,7 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
             });
           } else {
             const safeErrText = redactApiKey(errText, settings.apiKey);
-            const badReq = new Error(`HTTP 400: ${safeErrText.slice(0, 260)}`);
+            const badReq = new Error(withModelHint(`HTTP 400: ${safeErrText.slice(0, 260)}`, 400));
             badReq.httpStatus = 400;
             badReq.errorCode = 'HTTP_400';
             badReq.noSplit = !isContextLengthError(safeErrText);
@@ -1127,7 +1152,7 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
           sleepAfterAttemptMs = 700 * attempt;
           continue;
         }
-        const httpErr = new Error(`HTTP ${status}: ${safeErrBody.slice(0, 280) || response.statusText}`);
+        const httpErr = new Error(withModelHint(`HTTP ${status}: ${safeErrBody.slice(0, 280) || response.statusText}`, status));
         httpErr.httpStatus = status;
         httpErr.errorCode = `HTTP_${status}`;
         httpErr.noRetry = true;
@@ -1474,7 +1499,7 @@ async function translateItemsWithFallback(settings, items, pageContext = null, e
     const single = items[0];
     const singleRule = single.kind === 'comment'
       ? `You are a Python & technical translator. Translate this single-line # comment into ${lang.promptName}. Preserve the leading "# " prefix and output only the translated comment line.`
-      : `You are a web & technical translator. Translate the user text into ${lang.promptName}. Strictly preserve placeholders like [[C0]] (code), [[M0]] (math/citations), [[L0]] (inline links) verbatim and output only the translation.`;
+      : `You are a web & technical translator. Translate the user text into ${lang.promptName}. Keep atomic placeholders [[C0]] (code), [[M0]] (math/citations), [[L0]] (untranslatable link) verbatim; paired tags [[A0]]…[[/A0]] (link) and [[S0]]…[[/S0]] (bold/italic/emphasis) must each appear exactly once wrapping the translated words corresponding to the original wrapped words, properly nested, never translated/renamed/re-numbered/removed, without adding new tags; output only the translation.`;
     const plain = await callLLMChat(
       settings,
       [
@@ -1588,11 +1613,185 @@ async function handleTranslateSingle(text, mode = 'selection', pageContext = nul
   return { ok: true, zh: String(zh || '').trim() };
 }
 
+const MODEL_LIST_CACHE_KEY = 'nr_model_list_v1';
+const MODEL_LIST_MAX_CACHE_ENTRIES = 20;
+const MODEL_LIST_MAX_PAGES = 5;
+const MODEL_LIST_MAX_ITEMS = 500;
+const MODEL_LIST_TIMEOUT_MS = 10000;
+
+async function saveModelListCache(cacheKey, models) {
+  try {
+    const stored = await chrome.storage.local.get(MODEL_LIST_CACHE_KEY);
+    const map =
+      stored?.[MODEL_LIST_CACHE_KEY] && typeof stored[MODEL_LIST_CACHE_KEY] === 'object'
+        ? { ...stored[MODEL_LIST_CACHE_KEY] }
+        : {};
+
+    map[cacheKey] = {
+      models,
+      fetchedAt: Date.now()
+    };
+
+    const entries = Object.entries(map).sort(
+      (a, b) => (Number(a[1]?.fetchedAt) || 0) - (Number(b[1]?.fetchedAt) || 0)
+    );
+    while (entries.length > MODEL_LIST_MAX_CACHE_ENTRIES) {
+      const [oldestKey] = entries.shift();
+      delete map[oldestKey];
+    }
+
+    await chrome.storage.local.set({ [MODEL_LIST_CACHE_KEY]: map });
+  } catch {
+    // Ignore storage cache write failures
+  }
+}
+
+async function handleListModels(settingsOverride) {
+  const saved = await getSettings();
+  const merged = { ...saved, ...(settingsOverride || {}) };
+  const protocol = String(merged.protocol || 'openai').trim().toLowerCase();
+  const cleanKey = sanitizeApiKey(merged.apiKey);
+
+  if (isAzureOpenAIEndpoint(merged.baseUrl)) {
+    return {
+      ok: false,
+      errorCode: 'AZURE_DEPLOYMENTS',
+      error: 'Azure OpenAI 請在模型欄位填入「部署名稱」，無法從此 API 列出部署。'
+    };
+  }
+
+  if (!cleanKey && !isLocalEndpoint(merged.baseUrl)) {
+    return {
+      ok: false,
+      errorCode: 'MISSING_API_KEY',
+      error: '請先填寫 API Key'
+    };
+  }
+
+  const firstUrl = buildListModelsUrl(merged, '');
+  if (!firstUrl) {
+    return {
+      ok: false,
+      errorCode: 'INVALID_URL',
+      error: 'API Base URL 格式不正確，無法查詢模型清單'
+    };
+  }
+
+  const normalizedBase = firstUrl.split('?')[0].replace(/\/models$/i, '');
+  const cacheKey = `${protocol}|${normalizedBase}`;
+  const headers = buildProviderAuthHeaders(merged, cleanKey);
+
+  const collected = new Set();
+  let pageToken = '';
+  const maxPages = protocol === 'openai' ? 1 : MODEL_LIST_MAX_PAGES;
+
+  try {
+    for (let page = 0; page < maxPages; page++) {
+      const url = page === 0 ? firstUrl : buildListModelsUrl(merged, pageToken);
+      if (!url) break;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), MODEL_LIST_TIMEOUT_MS);
+
+      let response;
+      try {
+        response = await fetch(url, {
+          method: 'GET',
+          headers,
+          signal: controller.signal
+        });
+      } catch (fetchErr) {
+        if (fetchErr?.name === 'AbortError') {
+          return {
+            ok: false,
+            errorCode: 'TIMEOUT',
+            error: '取得模型清單逾時（超過 10 秒），請檢查網路或 API Base URL'
+          };
+        }
+        return {
+          ok: false,
+          errorCode: 'NETWORK_ERROR',
+          error: redactApiKey(
+            `網路連線失敗：${fetchErr?.message || '無法連線至服務商'}`,
+            cleanKey
+          )
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!response.ok) {
+        const status = response.status;
+        if (status === 401 || status === 403) {
+          return {
+            ok: false,
+            errorCode: 'AUTH_ERROR',
+            error: `API Key 無效或沒有權限查詢模型清單（HTTP ${status}）`
+          };
+        }
+        if (status === 404) {
+          return {
+            ok: false,
+            errorCode: 'NOT_SUPPORTED',
+            error: '此服務商不支援列出模型（HTTP 404），請直接輸入模型名稱'
+          };
+        }
+        const errBody = await response.text().catch(() => '');
+        const snippet = redactApiKey(errBody.slice(0, 200).trim(), cleanKey);
+        return {
+          ok: false,
+          errorCode: `HTTP_${status}`,
+          error: snippet
+            ? `查詢模型清單失敗（HTTP ${status}）：${snippet}`
+            : `查詢模型清單失敗（HTTP ${status}）`
+        };
+      }
+
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        return {
+          ok: false,
+          errorCode: 'INVALID_JSON',
+          error: '服務商回傳格式非有效 JSON，無法解析模型清單'
+        };
+      }
+
+      const parsed = parseListModelsResponse(protocol, data);
+      for (const id of parsed.ids) {
+        collected.add(id);
+      }
+
+      if (!parsed.nextPageToken || parsed.nextPageToken === pageToken) {
+        break;
+      }
+      pageToken = parsed.nextPageToken;
+    }
+
+    const models = Array.from(collected)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, MODEL_LIST_MAX_ITEMS);
+
+    await saveModelListCache(cacheKey, models);
+    return { ok: true, models };
+  } catch (err) {
+    return {
+      ok: false,
+      errorCode: 'UNKNOWN_ERROR',
+      error: redactApiKey(err?.message || '取得模型清單時發生未知錯誤', cleanKey)
+    };
+  }
+}
+
 async function handleTestConnection(settingsOverride) {
   const saved = await getSettings();
   const merged = { ...saved, ...(settingsOverride || {}) };
   if (!sanitizeApiKey(merged.apiKey) && !isLocalEndpoint(merged.baseUrl)) {
     return { ok: false, error: '請先填寫 API Key' };
+  }
+  if (!String(merged.model || '').trim()) {
+    return { ok: false, error: '請先選擇模型：按「取得模型清單」後從模型欄位選擇，或直接輸入模型名稱' };
   }
 
   const lang = resolveTargetLanguage(merged);
@@ -3297,6 +3496,7 @@ function parseVisionBlocksJson(rawContent) {
 }
 
 async function callVisionImageLLM(settings, systemPrompt, userPrompt, mimeType, base64Data) {
+  assertModelConfigured(settings);
   const endpoint = resolveEndpoint(settings);
   if (!endpoint) {
     throw makeVisionError('API 地址無效，請檢查設定中的 Base URL', 'INVALID_ENDPOINT');
@@ -3736,6 +3936,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             break;
           }
           const res = await handleTestConnection(message.settings);
+          sendResponse(res);
+          break;
+        }
+        case 'LIST_MODELS': {
+          if (!isExtensionSender(sender)) {
+            sendResponse({ ok: false, errorCode: 'UNAUTHORIZED', error: '拒絕未授權來源呼叫' });
+            break;
+          }
+          const res = await handleListModels(message.settings);
           sendResponse(res);
           break;
         }

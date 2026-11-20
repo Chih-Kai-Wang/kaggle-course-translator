@@ -480,3 +480,28 @@ html.kct-mode-original .kct-img-overlay-layer,
   height: auto !important;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--kct-accent);
 }
+
+/* =========================================================
+   Structure guard: when a translation lost a link or protected node,
+   keep the clickable original visible next to the translation.
+   ========================================================= */
+html.kct-mode-replace [data-kct-structure-fallback="1"] > .kct-orig-wrap {
+  display: contents !important;
+}
+
+html.kct-mode-replace [data-kct-structure-fallback="1"] > .kct-trans-wrap {
+  display: block;
+  color: var(--kct-bilingual-ink);
+  margin-top: 0.35em;
+  padding-left: 10px;
+  border-left: 2px solid var(--kct-hairline);
+  font-size: 0.94em;
+  line-height: 1.7;
+  font-weight: 400;
+  line-break: strict;
+  font-kerning: normal;
+  text-wrap: pretty;
+  text-autospace: normal;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}

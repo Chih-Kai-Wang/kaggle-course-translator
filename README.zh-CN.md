@@ -2,7 +2,7 @@
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
-**NativeRead (v2.4.0)** 是一款基于 Manifest V3 的浏览器扩展程序与移动端 PWA，可在保留原始页面排版与布局的前提下，翻译网页、PDF、代码注释及嵌入式信息图。它默认保持静默，仅在需要时使用你自己的 LLM API 密钥按需运行，并逐段流式输出译文，不打断阅读节奏。
+**NativeRead (v2.5.0)** 是一款基于 Manifest V3 的浏览器扩展程序与移动端 PWA，可在保留原始页面排版与布局的前提下，翻译网页、PDF、代码注释及嵌入式信息图。它默认保持静默，仅在需要时使用你自己的 LLM API 密钥按需运行，并逐段流式输出译文，不打断阅读节奏。
 
 ---
 
@@ -29,30 +29,52 @@
    ```
 2. 打开 `chrome://extensions/`（或 `edge://extensions/`）并开启 **Developer mode**（开发者模式）。
 3. 点击 **Load unpacked**（加载已解压的扩展程序），选择克隆下来的 `native-read` 目录。
-4. 点击工具栏中的 **NativeRead** 图标 → **Options**，选择模型提供商，输入你的 API 密钥，点击 **Test Connection**，然后保存。
-5. 在任意网页或 PDF 标签页中按下 **`Alt+T`**、点击弹出窗口按钮或使用右键菜单即可触发翻译。点击弹出窗口或悬浮胶囊上的 `☆` / `★`，可将当前域名加入或移出自动翻译白名单。
+4. 点击 **NativeRead** 工具栏图标 → **Options**，选择模型提供商并输入 API 密钥，点击 **Fetch model list** 选择模型，然后点击 **Test Connection** 并保存。
+5. 在任意网页或 PDF 标签页中按下 **`Alt+T`**（macOS 上为 **⌥ Option+T**；弹出窗口会显示您配置的快捷键，可在 `chrome://extensions/shortcuts` 自定义）、点击弹出窗口按钮或使用右键菜单即可触发翻译。点击弹出窗口或悬浮胶囊上的 `☆` / `★`，可将当前域名加入或移出自动翻译白名单。
 
 ### 支持的模型提供商
 
-配置位于 `shared/config.js`（`PROVIDER_PRESETS`）。本地端点（`localhost`、`127.0.0.1`、`0.0.0.0`）无需 API 密钥。
+在 `shared/config.js`（`PROVIDER_PRESETS`）中配置为包含四大分组、共 32 个预设的数据驱动注册表（在选项页面和 PWA 中通过 `<optgroup>` 渲染，其中 `scripts/build-mobile.js` 会从同一数据源生成 `docs/providers.js`）。用户可从已配置的端点实时获取可用模型，本地端点（`localhost`、`127.0.0.1`、`0.0.0.0`）无需 API 密钥，任何其他 OpenAI 兼容服务均可通过 `custom` 使用。
 
-| 提供商 ID | 协议 | 默认 Base URL | 默认模型 |
+| 分组 | 提供商 ID | 协议 | Base URL |
 | --- | --- | --- | --- |
-| `deepseek` | OpenAI | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| `gemini` | Gemini Native | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.5-flash-lite` |
-| `qwen` | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| `siliconflow` | OpenAI | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` |
-| `moonshot` | OpenAI | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
-| `openrouter` | OpenAI | `https://openrouter.ai/api/v1` | `google/gemini-2.5-flash` |
-| `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` | `claude-opus-5-5` |
-| `azure` | OpenAI (api-key header) | `https://YOUR-RESOURCE.openai.azure.com/openai/v1` | Deployment name |
-| `custom` | OpenAI | `http://localhost:11434/v1` | `qwen2.5:7b` |
+| 原生 | `gemini` | Gemini Native | `https://generativelanguage.googleapis.com/v1beta` |
+| 原生 | `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` |
+| 国际 | `openai` | OpenAI | `https://api.openai.com/v1` |
+| 国际 | `azure` | OpenAI (api-key header) | `https://YOUR-RESOURCE.openai.azure.com/openai/v1` |
+| 国际 | `openrouter` | OpenAI | `https://openrouter.ai/api/v1` |
+| 国际 | `groq` | OpenAI | `https://api.groq.com/openai/v1` |
+| 国际 | `mistral` | OpenAI | `https://api.mistral.ai/v1` |
+| 国际 | `xai` | OpenAI | `https://api.x.ai/v1` |
+| 国际 | `together` | OpenAI | `https://api.together.xyz/v1` |
+| 国际 | `fireworks` | OpenAI | `https://api.fireworks.ai/inference/v1` |
+| 国际 | `cerebras` | OpenAI | `https://api.cerebras.ai/v1` |
+| 国际 | `deepinfra` | OpenAI | `https://api.deepinfra.com/v1/openai` |
+| 国际 | `huggingface` | OpenAI | `https://router.huggingface.co/v1` |
+| 国际 | `novita` | OpenAI | `https://api.novita.ai/openai` |
+| 国际 | `deepseek` | OpenAI | `https://api.deepseek.com/v1` |
+| 国际 | `qwen-intl` | OpenAI | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| 国际 | `moonshot-intl` | OpenAI | `https://api.moonshot.ai/v1` |
+| 国际 | `zai` | OpenAI | `https://api.z.ai/api/paas/v4` |
+| 国际 | `minimax-intl` | OpenAI | `https://api.minimax.io/v1` |
+| 国际 | `siliconflow-intl` | OpenAI | `https://api.siliconflow.com/v1` |
+| 中国大陆 | `qwen` | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 中国大陆 | `moonshot` | OpenAI | `https://api.moonshot.cn/v1` |
+| 中国大陆 | `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` |
+| 中国大陆 | `siliconflow` | OpenAI | `https://api.siliconflow.cn/v1` |
+| 中国大陆 | `volcengine` | OpenAI | `https://ark.cn-beijing.volces.com/api/v3` |
+| 中国大陆 | `qianfan` | OpenAI | `https://qianfan.baidubce.com/v2` |
+| 中国大陆 | `hunyuan` | OpenAI | `https://api.hunyuan.cloud.tencent.com/v1` |
+| 中国大陆 | `minimax` | OpenAI | `https://api.minimaxi.com/v1` |
+| 中国大陆 | `stepfun` | OpenAI | `https://api.stepfun.com/v1` |
+| 本地与自定义 | `ollama` | OpenAI | `http://localhost:11434/v1` |
+| 本地与自定义 | `lmstudio` | OpenAI | `http://localhost:1234/v1` |
+| 本地与自定义 | `custom` | OpenAI | `http://localhost:11434/v1` |
 
-- **Anthropic Claude (`anthropic`)**：在扩展程序、用户脚本和 PWA 中均使用原生 Messages API（支持 SSE 流式传输、批量/单条翻译、Test Connection 以及通过 base64 image 块进行按需图片翻译），推荐模型为 `claude-sonnet-5-5` 和 `claude-haiku-5-5`。会检查 `stop_reason`，以便将拒答情况转化为清晰的错误提示。
-- **Azure OpenAI (`azure`)**：支持 `*.openai.azure.com`、`*.services.ai.azure.com` 和 `*.cognitiveservices.azure.com` 端点；在模型字段填写你的部署名称，API 密钥会自动通过 `api-key` 请求头发送。
-- **验证说明**：Anthropic Claude 和 Azure OpenAI 的支持已通过离线夹具测试（端点、请求头、请求体以及响应/流解析），但尚未针对线上真实 API 进行测试。
+- **模型选择与实时列表**：`gemini` 为默认提供商，且仅 `gemini`（`gemini-3.5-flash-lite`）、`anthropic`（`claude-opus-5-5`）和 `openrouter`（`google/gemini-2.5-flash`）保留默认模型；其余所有预设默认留空，以便你通过 **Fetch model list** 获取并选择模型（`LIST_MODELS` 会查询 Gemini `GET /v1beta/models` 中支持 `generateContent` 的模型、Anthropic `GET /v1/models` 及其 `after_id` 分页，或 OpenAI 兼容的 `GET {baseUrl}/models`）。若当前模型不在列表中会发出警告；模型为空时在翻译或测试前会提示选择模型；遇到 400/404/410/422 模型未找到或已弃用错误时，会提示重新选择而不会覆盖已保存的设置。
+- **Anthropic Claude (`anthropic`)**：在扩展程序、用户脚本和 PWA 中均使用原生 Messages API（支持 SSE 流式传输、批量/单条翻译、Test Connection 以及通过 base64 image 块进行按需图片翻译），推荐模型为 `claude-sonnet-5-5` 和 `claude-haiku-5-5`，并会检查 `stop_reason` 以便将拒答情况转化为清晰的错误提示。
+- **Azure OpenAI (`azure`)**：支持 `*.openai.azure.com`、`*.services.ai.azure.com` 和 `*.cognitiveservices.azure.com` 端点；在模型字段填写你的部署名称（不参与实时模型列表获取），API 密钥会自动通过 `api-key` 请求头发送。
+- **验证说明**：除 `azure` 模板网址与本地 `ollama`／`lmstudio`／`custom` 端点外，每个云端预设的 Base URL 均已进行在线端点可用性探测；而 Anthropic Claude 和 Azure OpenAI 的请求/响应支持已通过离线夹具测试（端点、请求头、请求体以及响应/流解析），尚未针对线上真实 API 进行测试。
 - **目标语言**：`zh-TW`（默认）、`zh-CN`、`ja`、`ko`、`es`、`fr`、`de`、`vi`、`pt`，以及自定义语言提示词。
 - **思考深度 (`thinkingEffort`)**：`fastest`（默认）、`balanced` 或 `deep`。会自动将 Gemini 3.x/4.x 映射为 `thinkingLevel`（`MINIMAL` / `LOW` / `MEDIUM`），将 Gemini 2.5 Flash 映射为 `thinkingBudget`（`0` / `512` / `2048`），将 OpenAI `o1`/`o3`/`o4` 映射为 `reasoning_effort: "low"`，在 `fastest` 模式下为 DashScope `qwen3` 设置 `enable_thinking: false` 并从响应中剥离 `thought` 部分，以及在支持的 Anthropic Claude 模型上设置 `output_config.effort`（`low` / `medium` / `high`），且不发送 `temperature`、`top_p`、`top_k` 或 thinking 配置。
 
@@ -111,7 +133,7 @@ flowchart TD
         C1 --> C2["collectUniversalCandidateElements + queryAllDeep (Shadow DOM)"]
         C2 --> C3["shouldSkipBlock / isMeaningfulLeafText / shouldTranslateText"]
         C3 -->|"跳过"| SKIP["UI 界面 / 代码 / 目标语言 (0 Tokens)"]
-        C3 -->|"保留"| C4["extractBlockContent ([[C#]] [[M#]] [[L#]] 保护)"]
+        C3 -->|"保留"| C4["resolveInlineHost + extractBlockContent ([[C#]] [[M#]] [[L#]] 与 [[A#]] [[S#]] 标签)"]
         C1 -->|"Drive PDF"| C5["preparePdfOverlayLayers + detectPdfTocEntries"]
         C1 -->|"代码块"| C6["content/code-overlay.js：collectCodeComments + 输出按钮"]
     end
@@ -146,9 +168,9 @@ flowchart TD
   - *第一遍*：收集语义块（`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`），跳过嵌套容器，仅认领叶子级正文块。
   - *第二遍*：针对现代 SPA 遍历 `DIV`、`SPAN`、`A`、`LABEL` 和 `BUTTON` 叶子候选节点，排除 Shadow DOM 宿主、包含块级子元素或交互控件的元素（`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`）、纯元数据计数器（`PURE_METADATA_REGEX`）以及仅包裹 `<a href>` 链接的 `div`/`span` 包装节点。两遍结果按 DOM 文档顺序（`compareDocumentPosition`）合并。
 - **Shadow DOM 遍历 (`queryAllDeep`, `ensureShadowModeStyle`)**：遍历深度最多 5 层的开放 `shadowRoot` 树，跳过代码编辑器与 UI 节点（`SHADOW_SKIP_SELECTOR`），并注入 `:host-context(html.kct-mode-*)` 规则，使替换 / 原文 / 双语切换在 Shadow DOM 内部同样生效。
-- **行内保护占位符 (`extractBlockContent`, `buildTranslatedFragment`)**：将行内代码（`code, kbd, var`）替换为 `[[C#]]`，将数学公式与引用（`.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`）替换为 `[[M#]]`，将短小或无需翻译的 `<a href>` 链接（`<= 28` 字符）替换为 `[[L#]]`。渲染器通过克隆原始 DOM 节点（`cloneNode(true)`）将其还原到 `DocumentFragment` 中。
+- **行内结构与保护占位符 (`extractBlockContent`, `buildTranslatedFragment`, `resolveInlineHost`, `validateTranslatedTokens`)**：生成原子占位符 `[[C#]]`（行内代码 `code, kbd, var`）、`[[M#]]`（数学公式与引用 `.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`）与 `[[L#]]`（无需翻译的 `<a href>` 链接，如标识符、URL 或引用标记），以及成对标签 `[[A#]]…[[/A#]]`（可翻译的可点击链接）和 `[[S#]]…[[/S#]]`（行内强调：bold/strong/italic/em/u/mark/s/small/sub/sup）；`buildTranslatedFragment` 将原子占位符以深克隆（`cloneNode(true)`）、成对标签以浅克隆（`cloneNode(false)`，保留 `href`/`class` 并剥离 `id`）还原到 `DocumentFragment` 中。当块的文本位于单一内联链（如 `li > a > b`）中时，`resolveInlineHost` 会向下定位到该节点，使译文直接渲染在原始链接或强调元素内，而无需依赖模型。渲染前，`validateTranslatedTokens` 会验证每个占位符是否仅出现一次且成对标签嵌套平衡；否则该块将以 `data-kct-structure-fallback="1"` 渲染，在译文旁保留可点击的原文，避免静默丢失链接。
 - **语言过滤 (`shouldTranslateText`)**：过滤掉 URL、邮箱、文件路径、Jupyter `In[]`/`Out[]` 提示符、单 token 的 ASCII 代码标识符，以及基于 Unicode 脚本比例判断已为目标语言的文本（对于 `zh-TW`/`zh-CN`，当汉字比例 `>= 0.55` 且拉丁词数 `< 6` 时跳过，但仍会翻译假名比例 `>= 0.12` 的日语文本）。
-- **字体基因配对 (`probeTypography`, `sanitizeFontFamily`, `content/content.css`)**：根据计算后的 `fontFamily` 将每个块归类为 `serif`、`sans` 或 `mono`，剥离通用 CSS 兜底字体族（`serif`、`sans-serif`、`monospace`、`system-ui` 等），在 `--kct-orig-font` 中保留最多 5 个站点原生拉丁字体，并追加对应的目标语言字体栈（`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`）。对于未截断且 `lineHeight / fontSize < 1.62` 的密集正文块，选择性地将行高提升至 `line-height: 1.72`（`data-kct-lh-lift="1"`）。
+- **字体基因配对 (`probeTypography`, `detectRenderedSerif`, `sanitizeFontFamily`, `content/content.css`)**：根据计算后的 `fontFamily` 将每个块归类为 `serif`、`sans` 或 `mono`——当站点字体无法通过名称识别时（例如声明了 `sans-serif` 回退的 `CMS` Computer Modern 网页字体），`detectRenderedSerif` 会在画布上绘制 `"I"` 以检测衬线（按字体族缓存），从而让衬线站点匹配衬线 CJK 字体——随后剥离通用 CSS 兜底字体族（`serif`、`sans-serif`、`monospace`、`system-ui` 等），在 `--kct-orig-font` 中保留最多 5 个站点原生拉丁字体，并追加对应的目标语言字体栈（`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`）。对于未截断且 `lineHeight / fontSize < 1.62` 的密集正文块，选择性地将行高提升至 `line-height: 1.72`（`data-kct-lh-lift="1"`）。
 
 ### 2.2 双 PDF 原生排版管线
 
@@ -183,7 +205,7 @@ NativeRead 针对 PDF 在浏览器中的两种渲染方式，维护了两条专�
 native-read/
 ├── manifest.json                 # MV3 清单、版本号唯一来源、权限、Alt+T 快捷键
 ├── shared/
-│   ├── config.js                 # Schema v5 配置、提供商预设、思考深度配置、URL/PDF 辅助函数
+│   ├── config.js                 # Schema v5 设置、32 个提供商注册表（PROVIDER_PRESETS）、思考配置、URL/PDF 辅助函数
 │   └── cache-db.js               # IndexedDB kct_cache_db_v2 20,000 条目 LRU 缓存
 ├── background/
 │   └── service-worker.js         # 动态注入器、SSE/NDJSON 流式器、429 限流器、视觉引擎、#nr_sync 校验
@@ -199,7 +221,8 @@ native-read/
 ├── icons/                        # 扩展程序图标（16 / 48 / 128 px）
 ├── scripts/
 │   └── build-mobile.js           # 写入版本号；生成用户脚本、meta.js、version.json、Android ZIP、PDF.js/图标
-├── docs/                         # GitHub Pages 移动端 PWA（index.html, app.js, app.css, sw.js, 生成的构建产物）
+├── docs/                         # GitHub Pages 移动端 PWA（index.html、app.js、app.css、sw.js、生成的 providers.js 与构建包）
+├── tests/                        # 离线回归测试夹具（包含用于链接/强调保留的 tests/fixtures/inline-structure/）
 ├── LICENSE                       # MIT 协议
 └── README*.md                    # 多语言产品、架构与安全文档
 ```
@@ -213,9 +236,10 @@ native-read/
 | **本地存储** | 扩展程序设置与 API 密钥仅存储在 `chrome.storage.local`（`kct_settings_v1`）；PWA 设置存储在 `localStorage`；用户脚本设置存储在 `GM_getValue`/`GM_setValue`（回退至 `localStorage`）。翻译缓存本地保存在 IndexedDB（`kct_cache_db_v2`）中，可随时清除。 |
 | **网络端点** | 扩展程序与用户脚本的流量直接发送至你配置的 LLM 端点——包括所选的 `api.anthropic.com` 或 Azure OpenAI 主机——API 密钥严格置于 HTTP 请求头中（`x-goog-api-key`、`Authorization: Bearer`、Anthropic 的 `x-api-key` + `anthropic-version: 2026-10-21` + `anthropic-dangerous-direct-browser-access: true`，或 Azure 的 `api-key`），并在错误消息中脱敏（`redactApiKey`）。远程 PDF 与按需图片均由 Service Worker 直接从其源 URL 获取。 |
 | **更新检查** | 打开扩展程序弹出窗口时（且 `checkForUpdates` 已开启，默认开启），最多每 24 小时获取一次 `https://chih-kai-wang.github.io/native-read/version.json`（缓存在 `chrome.storage.local` 的 `nr_update_check_v1` 下，5 s 超时，`credentials: 'omit'`，无额外权限，无后台定时器）。JSON 载荷经过严格校验且绝不用作 URL；更新链接硬编码指向 GitHub README。在 Options 中取消勾选 `checkForUpdates` 即可完全关闭。 |
+| **模型列表** | 在 Options 中点击 **Fetch model list** 会直接向所配置的提供商发送 `LIST_MODELS` 请求（仅限扩展程序，`isExtensionSender`；请求 `GET /v1beta/models`、`GET /v1/models` 或 `GET {baseUrl}/models`，超时 10 秒，Azure 除外），并将返回的模型 ID（绝不包含 API 密钥，最多缓存 20 个端点）缓存在 `chrome.storage.local` 的 `nr_model_list_v1` 中。 |
 | **`#nr_sync` 片段处理** | 同步载荷仅存在于 URL 的 `#` 片段中（绝不使用 `?query`），浏览器不会在 HTTP 请求中传输该片段。`background/service-worker.js` 仅接受来自扩展程序源或 `https://chih-kai-wang.github.io/native-read` 的 `#nr_sync`，除非包含显式 `apiKey`，否则拒绝端点变更（`baseUrl` / `protocol` / `providerId`），校验 `http:`/`https:` 协议，并立即通过 `history.replaceState` 清除该片段。 |
-| **零 `innerHTML` DOM 安全** | 所有译文字符串、弹窗和叠加层均通过 `document.createTextNode` 和 `.textContent` 写入。行内占位符（`[[C#]]`、`[[M#]]`、`[[L#]]`）仅还原克隆自原有 DOM 的节点。 |
-| **MV3 CSP 与 PDF.js 加固** | `viewer/pdf-viewer.js` 与 `docs/app.js` 均使用本地打包的 PDF.js，并设置 `isEvalSupported: false`。特权 Service Worker 操作（`ENSURE_AND_COMMAND`、`TEST_CONNECTION`、`OPEN_PDF_VIEWER`、`GET_SW_DEBUG`、`CLEAR_CACHE`）强制校验 `isExtensionSender(sender)`。 |
+| **零 `innerHTML` DOM 安全** | 所有译文字符串、弹窗和叠加层均通过 `document.createTextNode` 和 `.textContent` 写入。原子占位符（`[[C#]]`、`[[M#]]`、`[[L#]]`）仅还原克隆自原有 DOM 的节点，成对标签（`[[A#]]`、`[[S#]]`）仅重建原有元素的浅克隆（`cloneNode(false)`），且 `validateTranslatedTokens` 结构守卫会在不匹配时保留原文可见，确保链接永不丢失。 |
+| **MV3 CSP 与 PDF.js 加固** | `viewer/pdf-viewer.js` 与 `docs/app.js` 均使用本地打包的 PDF.js，并设置 `isEvalSupported: false`。特权 Service Worker 操作（`ENSURE_AND_COMMAND`、`TEST_CONNECTION`、`LIST_MODELS`、`OPEN_PDF_VIEWER`、`GET_SW_DEBUG`、`CLEAR_CACHE`）强制校验 `isExtensionSender(sender)`。 |
 | **UI 与二维码隔离** | 悬浮胶囊、划词弹窗、图片悬停触发器以及用户脚本控件均隔离在 Shadow DOM（`all: initial`）中。同步二维码在 Options 页面本地生成，不调用任何外部二维码服务。 |
 
 > **关于移动端 PWA (`docs/app.js`) 的说明**：对于 PDF URL，NativeRead 会解析 Google Drive 链接并仅使用浏览器直接获取（15 s 完整下载超时，不使用 `api.allorigins.win` 中继，并提供“在新标签页中打开 PDF”回退按钮及本地文件引导），确保私有 PDF URL/字节绝不会发送至第三方中继。在 PWA 可选的 **Web URL** 标签页中，跨源公开文章提取（`fetchReadableArticleFromUrl`）目前使用 `r.jina.ai`（并带有 `api.allorigins.win` 回退）；若你在移动端要求零第三方中继，请直接在 Web 标签页粘贴文章正文，或改用用户脚本 / Android 扩展程序。

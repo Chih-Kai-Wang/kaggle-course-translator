@@ -182,7 +182,11 @@ function applyPreset(presetId) {
   if (!preset) return;
   document.getElementById('protocol-select').value = preset.protocol;
   document.getElementById('baseurl-input').value = preset.baseUrl;
-  document.getElementById('model-input').value = preset.defaultModel;
+  const modelInput = document.getElementById('model-input');
+  modelInput.value = preset.defaultModel || '';
+  modelInput.placeholder = preset.defaultModel
+    ? `例如 ${preset.defaultModel}`
+    : '請按「取得模型清單」選擇，或直接輸入模型名稱';
   document.getElementById('apikey-input').placeholder = preset.placeholderKey;
   document.getElementById('provider-hint').textContent = preset.hint;
   updateModelSuggestions(preset);
@@ -647,11 +651,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   const providerSelect = document.getElementById('provider-select');
+  const providerGroups = new Map();
   for (const preset of Object.values(PROVIDER_PRESETS)) {
+    const groupLabel = preset.group || '其他';
+    if (!providerGroups.has(groupLabel)) {
+      const og = document.createElement('optgroup');
+      og.label = groupLabel;
+      providerGroups.set(groupLabel, og);
+      providerSelect.appendChild(og);
+    }
     const opt = document.createElement('option');
     opt.value = preset.id;
     opt.textContent = preset.label;
-    providerSelect.appendChild(opt);
+    providerGroups.get(groupLabel).appendChild(opt);
   }
 
   const settings = await getSettings();
@@ -781,6 +793,49 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.getElementById('btn-save')?.addEventListener('click', async () => {
     await handleSave('save-status');
+  });
+
+  document.getElementById('btn-list-models')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-list-models');
+    const statusEl = document.getElementById('model-list-status');
+    const datalist = document.getElementById('model-suggestions');
+    const modelInput = document.getElementById('model-input');
+    if (!btn || !statusEl || !datalist) return;
+
+    const form = readFormValues();
+    btn.disabled = true;
+    statusEl.hidden = false;
+    statusEl.textContent = '正在取得模型清單...';
+
+    try {
+      await ensureHostPermissionIfNeeded(form.baseUrl);
+      const res = await chrome.runtime.sendMessage({
+        type: 'LIST_MODELS',
+        settings: form
+      });
+
+      if (res?.ok && Array.isArray(res.models)) {
+        datalist.replaceChildren();
+        for (const id of res.models) {
+          const opt = document.createElement('option');
+          opt.value = id;
+          datalist.appendChild(opt);
+        }
+
+        let msg = `已取得 ${res.models.length} 個可用模型，點模型欄位即可選擇`;
+        const currentModel = String(modelInput?.value || '').trim();
+        if (currentModel && !res.models.includes(currentModel)) {
+          msg += ` · 目前填寫的「${currentModel}」不在清單中，可能已停用`;
+        }
+        statusEl.textContent = msg;
+      } else {
+        statusEl.textContent = res?.error || '取得模型清單失敗';
+      }
+    } catch (err) {
+      statusEl.textContent = `取得模型清單失敗：${err?.message || '無法連線至背景服務'}`;
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   document.getElementById('btn-test')?.addEventListener('click', async () => {

@@ -1,0 +1,116 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [11 0 R 13 0 R] >>
+endobj
+3 0 obj
+<< /Title (Structured Attention for Multi-Column Document Parsing) /Producer (NativeRead E2E PDF 1.4 Generator) >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+10 0 obj
+<< /Length 2459 >>
+stream
+BT /F2 17 Tf 1 0 0 1 92 734 Tm (Structured Attention for Multi-Column Document Parsing) Tj ET
+BT /F4 10 Tf 1 0 0 1 85 700 Tm (Alice Researcher) Tj ET
+BT /F3 10 Tf 1 0 0 1 85 686 Tm (Stanford University) Tj ET
+BT /F5 9 Tf 1 0 0 1 85 672 Tm (alice@stanford.edu) Tj ET
+BT /F4 10 Tf 1 0 0 1 345 700 Tm (Bob Scientist) Tj ET
+BT /F3 10 Tf 1 0 0 1 345 686 Tm (University of Toronto) Tj ET
+BT /F5 9 Tf 1 0 0 1 345 672 Tm (bob@utoronto.ca) Tj ET
+BT /F2 13 Tf 1 0 0 1 54 634 Tm (Abstract) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 616 Tm (Document layout recovery requires separating) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 602 Tm (adjacent columns without merging unrelated) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 588 Tm (headings or mathematical expressions.) Tj ET
+BT /F2 13 Tf 1 0 0 1 318 634 Tm (1. Introduction) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 616 Tm (Academic papers interleave two-column) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 602 Tm (prose with centered equations and vector) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 588 Tm (figures that must never be overlapped.) Tj ET
+BT /F5 10 Tf 1 0 0 1 190 544 Tm (Attention\(Q, K, V\) = softmax\(Q * K^T / sqrt\(d_k\)\) * V) Tj ET
+BT /F2 13 Tf 1 0 0 1 54 506 Tm (2. Column Segmentation) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 488 Tm (Using horizontal X-projection profiles,) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 474 Tm (we detect continuous vertical gutters) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 460 Tm (wider than 1.5 times median font size.) Tj ET
+BT /F2 13 Tf 1 0 0 1 318 506 Tm (3. Experimental Setup) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 488 Tm (We evaluate across diverse single-column) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 474 Tm (and two-column manuscripts under strict) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 460 Tm (pixel-overlap invariants.) Tj ET
+0.93 0.96 0.99 rg 130 285 352 120 re f
+0.15 0.30 0.55 RG 1.2 w 130 285 352 120 re S
+0.20 0.45 0.80 rg 160 325 96 42 re f
+0.20 0.45 0.80 rg 356 325 96 42 re f
+0.15 0.30 0.55 RG 1.5 w 256 346 m 356 346 l S
+1 1 1 rg
+BT /F2 10 Tf 1 0 0 1 186 342 Tm (Encoder) Tj ET
+0 0 0 rg
+1 1 1 rg
+BT /F2 10 Tf 1 0 0 1 384 342 Tm (Softmax) Tj ET
+0 0 0 rg
+BT /F1 9 Tf 1 0 0 1 136 266 Tm (Figure 1: Two-stage encoder and softmax projection architecture.) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 232 Tm (Left column continues below the figure) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 218 Tm (with clean reading-order preservation.) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 232 Tm (Right column follows after left column) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 218 Tm (completes its vertical reading band.) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R /F4 7 0 R /F5 8 0 R /F6 9 0 R >> >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 681 >>
+stream
+BT /F2 13 Tf 1 0 0 1 54 728 Tm (4. Ablation Results) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 708 Tm (Prior studies on neural parsing) Tj ET
+BT /F3 7 Tf 1 0 0 1 186 711 Tm (1) Tj ET
+BT /F3 10 Tf 1 0 0 1 194 708 Tm (showed that) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 694 Tm (superscript citations stay inline without) Tj ET
+BT /F3 10 Tf 1 0 0 1 54 680 Tm (splitting the host paragraph into fragments.) Tj ET
+BT /F2 13 Tf 1 0 0 1 318 728 Tm (5. Reproducibility) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 708 Tm (All synthetic benchmarks run deterministically) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 694 Tm (with fixed geometry bounds and zero external) Tj ET
+BT /F3 10 Tf 1 0 0 1 318 680 Tm (network dependencies.) Tj ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R /F4 7 0 R /F5 8 0 R /F6 9 0 R >> >> /Contents 12 0 R >>
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000129 00000 n 
+0000000259 00000 n 
+0000000356 00000 n 
+0000000458 00000 n 
+0000000557 00000 n 
+0000000655 00000 n 
+0000000750 00000 n 
+0000000817 00000 n 
+0000003328 00000 n 
+0000003506 00000 n 
+0000004238 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R /Info 3 0 R >>
+startxref
+4416
+%%EOF

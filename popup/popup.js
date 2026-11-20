@@ -8,7 +8,24 @@ const {
   isPdfUrl
 } = globalThis.KCTConfig;
 
-const IDLE_STATUS_TEXT = '待命 · Alt+T 翻譯';
+// Shortcut label shown in the UI: the shortcut actually configured in the browser
+// (on macOS Chrome reports Alt as ⌥ Option, e.g. "⌥T"); empty when the user removed it.
+const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+let shortcutLabel = IS_MAC ? '⌥T' : 'Alt+T';
+
+async function loadShortcutLabel() {
+  try {
+    const commands = await chrome.commands.getAll();
+    const cmd = commands.find((c) => c.name === 'toggle-translate-page');
+    if (cmd) shortcutLabel = String(cmd.shortcut || '').trim();
+  } catch (_) {
+    // keep the platform default
+  }
+}
+
+function idleStatusText() {
+  return shortcutLabel ? `待命 · ${shortcutLabel} 翻譯` : '待命 · 可於 chrome://extensions/shortcuts 設定快捷鍵';
+}
 const PDF_READY_STATUS_TEXT = '偵測到 PDF 文件';
 const PDF_OPENED_STATUS_TEXT = '已開啟 PDF 閱讀器';
 const UNSUPPORTED_STATUS_TEXT = '此頁面不支援翻譯';
@@ -86,7 +103,7 @@ function updateActionButtonsForTab() {
   }
 
   if (primaryBtn) {
-    primaryBtn.textContent = '立即翻譯此頁面 (Alt+T)';
+    primaryBtn.textContent = shortcutLabel ? `立即翻譯此頁面 (${shortcutLabel})` : '立即翻譯此頁面';
   }
   setActionButtonsDisabled(!activeTabInjectable);
 }
@@ -185,7 +202,7 @@ async function queryActiveTabStatus() {
     );
     if (!res?.ok) {
       lastKnownTranslated = 0;
-      setStatusText(IDLE_STATUS_TEXT);
+      setStatusText(idleStatusText());
       return null;
     }
     lastKnownTranslated = Number(res.totalTranslated) || 0;
@@ -198,13 +215,13 @@ async function queryActiveTabStatus() {
     } else if (res.totalTranslated > 0) {
       setStatusText(`已譯 ${res.totalTranslated} 項`);
     } else {
-      setStatusText(IDLE_STATUS_TEXT);
+      setStatusText(idleStatusText());
     }
     return res;
   } catch (_) {
     // Uninjected tab is normal in on-demand mode
     lastKnownTranslated = 0;
-    setStatusText(IDLE_STATUS_TEXT);
+    setStatusText(idleStatusText());
     return null;
   }
 }
@@ -412,6 +429,7 @@ async function checkForExtensionUpdate(settings) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  await loadShortcutLabel();
   const langSel = document.getElementById('lang-select');
   for (const lang of Object.values(TARGET_LANGUAGES)) {
     const opt = document.createElement('option');

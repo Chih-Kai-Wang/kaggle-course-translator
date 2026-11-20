@@ -1,0 +1,95 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [11 0 R 13 0 R] >>
+endobj
+3 0 obj
+<< /Title (Mixed TOC and Benchmark Table Fixture) /Producer (NativeRead E2E PDF 1.4 Generator) >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+10 0 obj
+<< /Length 834 >>
+stream
+BT /F2 16 Tf 1 0 0 1 60 726 Tm (Table of Contents) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 684 Tm (1. Introduction ........................................................................ 1) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 662 Tm (2. System Architecture ................................................................. 4) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 640 Tm (3. Geometric Segmentation ............................................................ 9) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 618 Tm (4. Streaming Transport ................................................................ 14) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 596 Tm (5. Security Model ...................................................................... 19) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 574 Tm (6. Evaluation Benchmarks ............................................................ 25) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R /F4 7 0 R /F5 8 0 R /F6 9 0 R >> >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 1014 >>
+stream
+BT /F2 15 Tf 1 0 0 1 60 726 Tm (Benchmark Latency Comparison) Tj ET
+BT /F3 11 Tf 1 0 0 1 60 698 Tm (Table 1 summarizes throughput and memory overhead across model sizes.) Tj ET
+0.25 0.25 0.25 RG 0.8 w
+60 560 480 112 re S
+60 644 m 540 644 l S
+60 616 m 540 616 l S
+60 588 m 540 588 l S
+240 560 m 240 672 l S
+390 560 m 390 672 l S
+BT /F2 10 Tf 1 0 0 1 72 654 Tm (Model Name) Tj ET
+BT /F2 10 Tf 1 0 0 1 254 654 Tm (Tokens/sec) Tj ET
+BT /F2 10 Tf 1 0 0 1 404 654 Tm (Memory \(MB\)) Tj ET
+BT /F3 10 Tf 1 0 0 1 72 626 Tm (Nano-Edge-1B) Tj ET
+BT /F3 10 Tf 1 0 0 1 254 626 Tm (412.5) Tj ET
+BT /F3 10 Tf 1 0 0 1 404 626 Tm (780) Tj ET
+BT /F3 10 Tf 1 0 0 1 72 598 Tm (Flash-Core-7B) Tj ET
+BT /F3 10 Tf 1 0 0 1 254 598 Tm (184.2) Tj ET
+BT /F3 10 Tf 1 0 0 1 404 598 Tm (3420) Tj ET
+BT /F3 10 Tf 1 0 0 1 72 570 Tm (Pro-Dense-32B) Tj ET
+BT /F3 10 Tf 1 0 0 1 254 570 Tm (62.8) Tj ET
+BT /F3 10 Tf 1 0 0 1 404 570 Tm (14200) Tj ET
+BT /F1 9 Tf 1 0 0 1 60 536 Tm (Table 1: Synthetic throughput measured on single-node runtime.) Tj ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R /F4 7 0 R /F5 8 0 R /F6 9 0 R >> >> /Contents 12 0 R >>
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000129 00000 n 
+0000000242 00000 n 
+0000000339 00000 n 
+0000000441 00000 n 
+0000000540 00000 n 
+0000000638 00000 n 
+0000000733 00000 n 
+0000000800 00000 n 
+0000001685 00000 n 
+0000001863 00000 n 
+0000002929 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R /Info 3 0 R >>
+startxref
+3107
+%%EOF

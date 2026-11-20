@@ -141,23 +141,169 @@
     }
   }
 
+  const TOKEN_SPLIT_RE = /(\[\[\s*\/?[CMLAS]\d+\s*\]\])/g;
+  const TOKEN_MATCH_RE = /^\[\[\s*(\/?)([CMLAS])(\d+)\s*\]\]$/;
+
+  function stripAllTokens(zhText) {
+    return String(zhText || '').replace(/\[\[\s*\/?[CMLAS]\d+\s*\]\]/g, '');
+  }
+
+  function validateTranslatedTokens(zhText, placeholders) {
+    const text = String(zhText || '');
+    const map = placeholders instanceof Map ? placeholders : new Map();
+
+    const atomicCounts = new Map();
+    const openCounts = new Map();
+    const closeCounts = new Map();
+
+    for (const key of map.keys()) {
+      const km = key.match(/^\[\[([CMLAS])(\d+)\]\]$/);
+      if (!km) continue;
+      const type = km[1];
+      if (type === 'A' || type === 'S') {
+        openCounts.set(key, 0);
+        closeCounts.set(key, 0);
+      } else {
+        atomicCounts.set(key, 0);
+      }
+    }
+
+    const stack = [];
+    const scanRe = /\[\[\s*(\/?)([CMLAS])(\d+)\s*\]\]/g;
+    let m;
+    while ((m = scanRe.exec(text)) !== null) {
+      const isClose = m[1] === '/';
+      const type = m[2];
+      const id = m[3];
+      const openKey = `[[${type}${id}]]`;
+
+      if (!map.has(openKey)) {
+        return { ok: false, reason: `unknown token ${m[0]}` };
+      }
+
+      if (type === 'C' || type === 'M' || type === 'L') {
+        if (isClose) {
+          return { ok: false, reason: `unexpected closing atomic token ${m[0]}` };
+        }
+        const nextCount = (atomicCounts.get(openKey) || 0) + 1;
+        if (nextCount > 1) {
+          return { ok: false, reason: `duplicate atomic token ${openKey}` };
+        }
+        atomicCounts.set(openKey, nextCount);
+      } else {
+        if (!isClose) {
+          const nextCount = (openCounts.get(openKey) || 0) + 1;
+          if (nextCount > 1) {
+            return { ok: false, reason: `duplicate opening token ${openKey}` };
+          }
+          openCounts.set(openKey, nextCount);
+          stack.push(openKey);
+        } else {
+          const nextCount = (closeCounts.get(openKey) || 0) + 1;
+          if (nextCount > 1) {
+            return { ok: false, reason: `duplicate closing token [[/${type}${id}]]` };
+          }
+          if (stack.length === 0 || stack[stack.length - 1] !== openKey) {
+            return { ok: false, reason: `mismatched or misnested closing token [[/${type}${id}]]` };
+          }
+          stack.pop();
+          closeCounts.set(openKey, nextCount);
+        }
+      }
+    }
+
+    if (stack.length > 0) {
+      return { ok: false, reason: `unclosed token ${stack[stack.length - 1]}` };
+    }
+
+    for (const [key, count] of atomicCounts.entries()) {
+      if (count !== 1) {
+        return { ok: false, reason: `missing atomic token ${key}` };
+      }
+    }
+    for (const [key, count] of openCounts.entries()) {
+      if (count !== 1 || closeCounts.get(key) !== 1) {
+        return { ok: false, reason: `missing paired token ${key}` };
+      }
+    }
+
+    return { ok: true, reason: '' };
+  }
+
+  function stripDuplicateIds(node, deep) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.hasAttribute('id')) node.removeAttribute('id');
+    if (deep) {
+      for (const desc of node.querySelectorAll('[id]')) {
+        desc.removeAttribute('id');
+      }
+    }
+  }
+
+  function appendTextWithBreaks(parent, str) {
+    if (!str) return;
+    const lines = str.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        parent.appendChild(document.createElement('br'));
+      }
+      if (lines[i]) {
+        parent.appendChild(document.createTextNode(lines[i]));
+      }
+    }
+  }
+
   function buildTranslatedFragment(zhText, placeholders) {
     const frag = document.createDocumentFragment();
-    const tokens = String(zhText || '').split(/(\[\[\s*[CML]\d+\s*\]\])/g);
+    const map = placeholders instanceof Map ? placeholders : null;
+    const stack = [{ key: null, node: frag }];
+    const tokens = String(zhText || '').split(TOKEN_SPLIT_RE);
 
     for (const part of tokens) {
       if (!part) continue;
-      const m = part.match(/^\[\[\s*([CML]\d+)\s*\]\]$/);
-      if (m && placeholders) {
-        const canonical = `[[${m[1]}]]`;
-        const origNode = placeholders.get(canonical);
-        if (origNode) {
-          frag.appendChild(origNode.cloneNode(true));
+      const m = part.match(TOKEN_MATCH_RE);
+      if (m) {
+        const isClose = m[1] === '/';
+        const type = m[2];
+        const id = m[3];
+        const openKey = `[[${type}${id}]]`;
+        const currentParent = stack[stack.length - 1].node;
+
+        if (!map || !map.has(openKey)) {
+          continue;
+        }
+
+        if (type === 'C' || type === 'M' || type === 'L') {
+          if (isClose) continue;
+          const origNode = map.get(openKey);
+          if (origNode) {
+            const clone = origNode.cloneNode(true);
+            stripDuplicateIds(clone, true);
+            currentParent.appendChild(clone);
+          }
+          continue;
+        }
+
+        if (!isClose) {
+          const origNode = map.get(openKey);
+          if (origNode) {
+            const clone = origNode.cloneNode(false);
+            stripDuplicateIds(clone, false);
+            currentParent.appendChild(clone);
+            stack.push({ key: openKey, node: clone });
+          }
+          continue;
+        } else {
+          if (stack.length > 1 && stack[stack.length - 1].key === openKey) {
+            stack.pop();
+          }
           continue;
         }
       }
-      frag.appendChild(document.createTextNode(part));
+
+      appendTextWithBreaks(stack[stack.length - 1].node, part);
     }
+
     return frag;
   }
 
@@ -664,11 +810,20 @@
       origWrap.appendChild(child);
     }
 
+    const validation = validateTranslatedTokens(zh, placeholders);
     const transWrap = document.createElement('span');
     transWrap.className = 'kct-trans-wrap';
     transWrap.setAttribute('data-kct-ui', 'trans');
     transWrap.setAttribute('translate', 'no');
-    transWrap.appendChild(buildTranslatedFragment(zh, placeholders));
+
+    if (validation.ok) {
+      el.removeAttribute('data-kct-structure-fallback');
+      transWrap.appendChild(buildTranslatedFragment(zh, placeholders));
+    } else {
+      console.debug('[NativeRead] structure fallback:', validation.reason);
+      el.setAttribute('data-kct-structure-fallback', '1');
+      transWrap.appendChild(buildTranslatedFragment(stripAllTokens(zh), null));
+    }
 
     if (needsInlineInjection(el)) {
       el.setAttribute('data-kct-inline-layout', '1');
@@ -791,6 +946,7 @@
       const tocTail = el.querySelector(':scope > [data-kct-ui="toc"]');
       if (tocTail) tocTail.remove();
       el.removeAttribute('data-kct-has-trans');
+      el.removeAttribute('data-kct-structure-fallback');
       el.removeAttribute('data-kct-inline-layout');
       el.removeAttribute('data-kct-typo');
       el.removeAttribute('data-kct-lh-lift');
@@ -989,6 +1145,8 @@
     renderJobsWithRAF,
     clearAllInjectedTranslations,
     buildTranslatedFragment,
+    validateTranslatedTokens,
+    stripAllTokens,
     sanitizeFontFamily,
     styleAndFitPdfOverlayBlock,
     refitAllPdfOverlayBlocks,
