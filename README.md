@@ -1,160 +1,184 @@
-# NativeRead — 原版美感 AI 網頁與 PDF 翻譯（v2.2.0 電腦＆手機全平台版）
+# NativeRead
 
-> 讓外文網頁與 PDF 白皮書讀起來像母語原版一樣自然 —— **預設靜默按需啟動、統一通用 DOM 遍歷（支援現代 SPA `div`/`span`、Shadow DOM、跨域 `<iframe>` 與程式碼編輯器）、SSE 串流逐段上屏、母語級字體基因配對、內建本機 PDF.js 原位翻譯閱讀器，並完整支援 Android 與 iOS 手機端（PWA / Userscript / Android 擴充包 / 零打字 QR Code 金鑰同步）**。
+**English** · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
-適用於所有桌面與手機端瀏覽器（Chrome、Edge、Brave、**Ego Lite**、Android **狐猴 Lemur / Kiwi / Edge / Firefox / Tampermonkey**，以及 **iPhone / iPad Safari**），零第三方伺服器中轉，直接使用你自己的 **Google Gemini / DeepSeek / OpenAI / OpenRouter / 本機 Ollama** API Key。
+**NativeRead (v2.2.0)** is a Manifest V3 browser extension and mobile PWA that translates web pages, PDFs, code comments, and embedded infographics while preserving the original page typography and layout. It stays silent by default, runs on demand with your own LLM API key, and streams translations paragraph by paragraph without breaking reading rhythm.
 
 ---
 
-## 核心特色
+## 1. Product Overview & Quick Start
 
-| 核心能力 | 實際做法 | 閱讀體驗 |
+### Key Capabilities
+
+| Feature | How It Works | Reading Experience |
 | --- | --- | --- |
-| **預設靜默・按需注入** | 零靜態常駐 `content_scripts`，未啟動的網站 100% 不注入任何腳本 | 日常瀏覽 0 負擔、0 懸浮球干擾、0 意外 API 消耗 |
-| **統一通用 DOM 遍歷** | 不依賴硬編碼站點清單：以 DOM 元件能力驅動，結合語意區塊、現代 SPA `div`/`span`/`a` 葉子文字掃描、開放式 Shadow DOM 與跨域 `<iframe>` | Wikipedia、MDN、GitHub、X/Twitter、Reddit、Notion、Kaggle 課程與各式 Web App 皆走同一條乾淨管線 |
-| **母語級原版字體配對** | 逐區塊探測原文計算樣式（Serif / Sans / Mono），保留原站西文字體在前，後方補配對應的母語明體／黑體／等寬字體與溫和行高保護 | 襯線文章自然配明體、現代網站保留原英數字體＋清晰黑體，絕不亂加框線破版 |
-| **內建原版 PDF 翻譯閱讀器** | 內建本機 Apache-2.0 `PDF.js`（零外部 CDN），偵測 PDF 分頁按 `Alt+T` 或拖曳本機 `.pdf` 開啟；支援**原位覆蓋／雙欄對照／原版**三模式 | 雙欄論文與 Kaggle 白皮書自動切欄合併段落、取樣原紙張／色塊底色覆蓋，**圖表、架構圖與公式原封不動保留** |
-| **SSE 串流＋視口懶載入** | Gemini `:streamGenerateContent?alt=sse` / OpenAI `stream: true` 逐行 NDJSON ＋ `IntersectionObserver` 捲動按需翻譯 | 首段最快 `< 1s` 上屏，長文與數十頁 PDF 捲到哪翻到哪，省下 50–80% Token |
-| **思考強度分級控制** | 支援 `極速（最低思考）`／`平衡（Low）`／`深度（Medium）`，自動對應各模型最低思考檔位並過濾 `thought` 片段 | 維持高品質翻譯同時壓低首字延遲與思考 Token 費用 |
-| **IndexedDB 本機快取** | 20,000 筆高容量本機 LRU 快取（網頁與 PDF 共享快取引擎） | 重訪已讀頁面與重開 PDF 毫秒命中、不重複扣款 |
+| **Silent-by-Default Web Translation** | Zero static `content_scripts`; dynamically injects via `chrome.scripting` on demand (`Alt+T`, popup button, context menu, or per-site allowlist `autoTranslateHosts`). | Zero overhead, zero floating UI, and zero API usage on sites you do not translate. |
+| **Built-in PDF.js Reader** | Bundles local Apache-2.0 `PDF.js` (`vendor/pdfjs/`) inside `viewer/pdf-viewer.html`; supports remote PDFs, Google Drive links, and local `.pdf` drag-and-drop. | Switch between **Overlay**, **Split**, and **Original** modes (`1` / `2` / `3`); figures, tables, and displayed equations remain intact. |
+| **Google Drive PDF In-Page Overlay** | Detects `.ndfHFb-c4YZDc-cYSp0e-DARUcf` viewer layers in place, merges same-column text boxes, rebuilds TOC dot leaders, and measures native glyph metrics from page rasters. | Translates multi-page Drive PDFs directly inside Google Drive without leaving the tab. |
+| **On-Demand Image & Infographic Overlay** | Strictly on demand via right-click (**NativeRead Translate Image Text**) or hover pill (**譯圖**) on images `>= 200x140` px; never auto-scans page images. | Replaces text blocks in place using sampled background/foreground colors while preserving 3D diagrams and illustrations. |
+| **Code Comments & Notebook Outputs** | Non-destructive CSS `attr()` swap for static `<pre>` blocks (Pygments, Prism, Highlight.js, GitHub `.pl-c`), read-only overlay for CodeMirror 6 (`.cm-editor`), and quick-translate buttons on Jupyter outputs. | Code stays editable and runnable; overlays hide automatically when you focus an editor or switch to original mode. |
+| **Mobile & Cross-Platform** | Ships a standalone mobile PWA (`docs/`), a universal Userscript (`docs/nativeread.user.js`), an Android extension ZIP (`docs/nativeread-android-extension.zip`), and local QR-code `#nr_sync` sync. | Full translation workflow on iOS Safari and Android browsers without re-typing API keys. |
 
----
+### Quick Start (Desktop Extension)
 
-## 統一架構圖
+Requires Chromium 119+ (Chrome, Edge, Brave, or compatible browsers).
 
-```mermaid
-flowchart TD
-    Trigger["觸發入口：Alt+T / 彈窗按鈕 / 右鍵選單 / 站點白名單"] --> SW["Service Worker (background/service-worker.js)"]
-    SW -->|"一般網頁（按需動態注入）"| Content["統一內容協調器 (content/content.js)"]
-    SW -->|"PDF 文件（URL 或本機拖曳）"| PDF["NativeRead PDF 閱讀器 (viewer/pdf-viewer.js + vendor/pdfjs)"]
-    Content --> Analyzer["統一 DOM 與字體決策引擎 (content/site-analyzer.js)"]
-    Analyzer -->|"文字區塊 (語意 + div/span SPA + Shadow DOM)"| Queue["視口優先懶載入佇列 (IntersectionObserver)"]
-    Analyzer -->|"程式碼註解與執行輸出 (<pre> / CodeMirror 6)"| CodeOverlay["通用程式碼註解層 (content/code-overlay.js)"]
-    CodeOverlay --> Queue
-    Queue --> Port["長連線 Port: kct-stream"]
-    PDF -->|"逐頁幾何切欄與段落萃取"| Port
-    Port --> Cache{"IndexedDB 快取 (shared/cache-db.js)"}
-    Cache -->|"命中"| Render["原版排版渲染器 (網頁 rAF / PDF 原位覆蓋＆雙欄)"]
-    Cache -->|"未命中"| Stream["SSE 串流＋跨頁框 429 自適應限流器"]
-    Stream -->|"每行 NDJSON 即時推送"| Render
-```
-
----
-
-## 主要功能一覽
-
-### 1. 全網站按需翻譯與單站白名單
-- **三種即時啟動方式**（免重新整理頁面）：
-  - 快捷鍵：**`Alt+T`**（macOS 亦為 `Option+T`；已譯網頁再按可快速在「純譯文 ↔ 原文」間切換；在 PDF 分頁按則直接開啟 PDF 原版翻譯閱讀器）。
-  - 工具列彈窗：點擊 **「立即翻譯此頁面」**（或 PDF 分頁上的 **「翻譯此 PDF（原版排版閱讀器）」**），並支援強制重譯、一鍵還原與底部快速入口「PDF 閱讀器」。
-  - 頁面右鍵選單：**「翻譯此頁面（NativeRead）」** 或選取文字後點 **「AI 翻譯選取文字」**。
-- **單站自動翻譯白名單**：可在彈窗頂部或右下角 Shadow DOM 懸浮列點擊 **`☆ / ★`**，只讓常逛的網域（例如 `www.kaggle.com`、`docs.python.org`）自動啟動翻譯。
-
-### 2. 原版 PDF 翻譯閱讀器（支援 Kaggle 白皮書、arXiv 論文與本機 PDF）
-- **三模式一鍵切換**（快捷鍵 `1 / 2 / 3`）：
-  1. **原位譯文（預設）**：保留原 PDF 畫布上的插圖、圖表與公式，自動取樣段落周邊底色與對比色，將母語明體／黑體譯文自動縮放貼合在原段落位置；點擊任一段落可彈出原文對照與一鍵複製。
-  2. **雙欄對照**：左側完整保留原 PDF 畫布，右側同步排版譯文卡片。
-  3. **原版**：一鍵隱藏覆蓋層檢視純原始 PDF。
-- **雙欄學術論文切欄保護**：幾何段落分析會偵測多欄間距與縮排，正確保持左右雙欄獨立閱讀順序。
-- **支援線上與本機檔案**：透過擴充權限直接抓取跨網域 PDF，也可隨時將電腦上的 `.pdf` 直接拖曳進閱讀器視窗。
-
-### 3. 通用程式碼註解與互動編輯器支援
-- 任何網站上的靜態 `<pre>`（Pygments、Prism、Highlight.js、GitHub `.pl-c` 等 `#` / `//` 註解）皆支援非破壞性註解翻譯，保留行內程式碼與數學公式（KaTeX / MathJax）。
-- 針對 CodeMirror 6（如 JupyterLab / Kaggle Exercise）採用分離式唯讀疊加層顯示譯文註解；點擊編輯或切回原文自動隱藏，不改動底層程式碼或干擾執行與驗證。
-- 偵測到程式執行輸出（如 Notebook Hint / Traceback）時提供「**譯**」按鈕一鍵翻譯並簡述可能原因。
-
-### 4. 多服務商與思考強度控制
-- **Google Gemini 原生介面（推薦）**：支援 `gemini-3.5-flash-lite`、`gemini-3.6-flash`、`gemini-3.8-flash`、`gemini-4-hydrogen`、`gemini-2.5-flash` 等，自動配置最低必要思考強度（`MINIMAL` / `LOW` / `thinkingBudget: 0`）。
-- **OpenAI 相容端點**：內建 DeepSeek、OpenAI、通義千問 Qwen、SiliconFlow、Moonshot Kimi、智譜 GLM、OpenRouter，以及本機 **Ollama**（`http://localhost:11434/v1`）。
-
-### 5. 手機與平板全平台支援（Android & iOS）
-- **零打字掃碼／連結同步 API Key（`#nr_sync`）**：於電腦端設定頁點擊「**產生手機一鍵同步連結 & QR Code**」（由本機純 JS Canvas 繪製 ISO/IEC 18004 QR Code，金鑰僅編碼於不會傳送至伺服器的 URL `#` Fragment），手機掃描後 **0.1 秒自動匯入 API Key 與偏好並清除網址列**。
-- **三種手機使用方式（任選或並用）**：
-  1. **NativeRead 手機版 PWA（免換瀏覽器 · Android Chrome & iOS Safari 皆可「加到主畫面」）**：
-     - 網址：`https://chih-kai-wang.github.io/native-read/`
-     - 內建**手機版 PDF.js 原位覆蓋／上下對照白皮書翻譯器**、**網址／文章原版翻譯器**、離線 App Shell 與本機 IndexedDB 快取。
-  2. **全平台 Userscript 單檔腳本（`nativeread.user.js`）**：
-     - 安裝網址：`https://chih-kai-wang.github.io/native-read/nativeread.user.js`
-     - 適用於 **Android**（Tampermonkey / 狐猴 Lemur / Kiwi / Firefox / Via）與 **iPhone / iPad Safari**（搭配免費的 *Stay* 或 *Userscripts* 擴充）；頁緣顯示可上下拖曳的透明 `NR` 觸控膠囊，點一下即可在任何網頁啟動原版串流翻譯與頁內設定面板。
-  3. **Android 擴充瀏覽器安裝包（`nativeread-android-extension.zip`）**：
-     - 下載網址：`https://chih-kai-wang.github.io/native-read/nativeread-android-extension.zip`
-     - 適用於 **狐猴瀏覽器（Lemur Browser）、Kiwi Browser、Quetta、Microsoft Edge Android**，完整具備手機觸控選字（`touchend` / `selectionchange`）劃詞翻譯、可拖曳懸浮列與手機滿版 PDF 閱讀器。
-
----
-
-## 安裝與快速上手
-
-### 1. 載入未封裝擴充功能
-1. Clone 本倉庫：
+1. Clone the repository:
    ```bash
    git clone https://github.com/Chih-Kai-Wang/native-read.git
    ```
-2. 在瀏覽器開啟 `chrome://extensions/`（Edge 為 `edge://extensions/`）。
-3. 開啟右上角 **開發人員模式（Developer mode）**。
-4. 點擊 **載入未封裝項目（Load unpacked）**，選擇 `native-read` 資料夾。
+2. Open `chrome://extensions/` (or `edge://extensions/`) and enable **Developer mode**.
+3. Click **Load unpacked** and select the cloned `native-read` directory.
+4. Click the **NativeRead** toolbar icon → **Options**, choose a model provider, enter your API key, click **Test Connection**, and save.
+5. Trigger translation on any web page or PDF tab with **`Alt+T`**, the popup button, or the right-click menu. Click `☆` / `★` in the popup or floating pill to add/remove the current domain from your auto-translate allowlist.
 
-### 2. 設定 API Key 與偏好
-1. 點擊工具列上的 **NativeRead** 圖示 → **模型與 API 設定 ↗**。
-2. 選擇服務商（例如 **Google Gemini** 或 **DeepSeek**），填入 API Key 並點擊 **測試連線**，確認成功後 **儲存設定**。
-3. 依個人喜好調整目標語言（預設繁體中文・台灣）、原版字體配對、思考強度與自動翻譯白名單。
+### Supported Model Providers
+
+Configured in `shared/config.js` (`PROVIDER_PRESETS`). Local endpoints (`localhost`, `127.0.0.1`, `0.0.0.0`) do not require an API key.
+
+| Provider ID | Protocol | Default Base URL | Default Model |
+| --- | --- | --- | --- |
+| `deepseek` | OpenAI | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| `gemini` | Gemini Native | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.5-flash-lite` |
+| `qwen` | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
+| `siliconflow` | OpenAI | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` |
+| `moonshot` | OpenAI | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
+| `openrouter` | OpenAI | `https://openrouter.ai/api/v1` | `google/gemini-2.5-flash` |
+| `custom` | OpenAI | `http://localhost:11434/v1` | `qwen2.5:7b` |
+
+- **Target languages**: `zh-TW` (default), `zh-CN`, `ja`, `ko`, `es`, `fr`, `de`, `vi`, `pt`, plus custom language prompts.
+- **Thinking effort (`thinkingEffort`)**: `fastest` (default), `balanced`, or `deep`. Automatically maps Gemini 3.x/4.x to `thinkingLevel` (`MINIMAL` / `LOW` / `MEDIUM`), Gemini 2.5 Flash to `thinkingBudget` (`0` / `512` / `2048`), OpenAI `o1`/`o3`/`o4` to `reasoning_effort: "low"`, and DashScope `qwen3` to `enable_thinking: false` in `fastest` mode while stripping `thought` parts from responses.
+
+### Mobile & Cross-Platform Support
+
+- **Mobile PWA (`https://chih-kai-wang.github.io/native-read/`)**: Installable to the Home Screen on iOS Safari and Android Chrome. Includes a mobile PDF.js reader (overlay / split / original), a Web URL & direct-paste article translator, an offline App Shell (`docs/sw.js`), and local IndexedDB caching.
+- **Universal Userscript (`https://chih-kai-wang.github.io/native-read/nativeread.user.js`)**: Runs in iOS Safari (via *Stay* or *Userscripts*) and Android browsers (*Tampermonkey*, *Lemur*, *Kiwi*, *Firefox*). Injects a draggable Shadow DOM `NR` edge tab and falls back to `GM_xmlhttpRequest` when strict page CSPs block `fetch`.
+- **Android Extension ZIP (`https://chih-kai-wang.github.io/native-read/nativeread-android-extension.zip`)**: Full MV3 package for Chromium-based Android browsers (*Lemur*, *Kiwi*, *Quetta*, *Edge Android*) with touch selection translation (`touchend` / `selectionchange`).
+- **Local QR-Code `#nr_sync` Sync**: Generate a sync link and QR code in the desktop Options page; scanning it on mobile imports your provider, API key, model, and preferences into the PWA, Userscript, or Android extension and immediately wipes the URL fragment.
 
 ---
 
-## 隱私與安全
+## 2. Technical Architecture
 
-- **零第三方中轉伺服器**：請求皆由瀏覽器背景 Service Worker 直接送往您設定的模型端點，API Key 僅置於 HTTP Header，永不出現在 URL 或日誌。
-- **完全本機儲存**：設定存於 `chrome.storage.local`，譯文快取存於本機 IndexedDB，隨時可一鍵清除。
-- **嚴格 MV3 CSP 與零 XSS**：停用 PDF.js `eval` 探測（`isEvalSupported: false`）、無內嵌腳本、所有譯文與 UI 均採 `createTextNode` / `textContent` 安全寫入，Service Worker 關鍵控制訊息強制驗證擴充來源（`isExtensionSender`），懸浮列與劃詞彈窗完全隔離於 **Shadow DOM**。
+```mermaid
+flowchart TD
+    Trigger["Trigger: Alt+T / Popup / Context Menu / Allowlist"] --> SW["Service Worker (background/service-worker.js)"]
+    SW -->|"Web page (dynamic inject)"| Content["Content Coordinator (content/content.js)"]
+    SW -->|"PDF tab or local file"| PDF["PDF.js Reader (viewer/pdf-viewer.js)"]
+    SW -->|"Image right-click / hover"| Vision["Vision Pipeline (OffscreenCanvas + Multimodal)"]
+    Content --> Analyzer["Local Decision Model (content/site-analyzer.js)"]
+    Analyzer -->|"Semantic + SPA leaf + Shadow DOM"| Queue["Viewport Lazy Queue (IntersectionObserver)"]
+    Analyzer -->|"Code comments & outputs"| Code["Code Overlay (content/code-overlay.js)"]
+    Code --> Queue
+    Queue --> Port["Long-Lived Port: kct-stream"]
+    PDF -->|"XY-Cut paragraphs + math guard"| Port
+    Port --> Cache{"IndexedDB LRU Cache (kct_cache_db_v2)"}
+    Cache -->|"Hit"| Render["Native Renderer (rAF / PDF Overlay / Split)"]
+    Cache -->|"Miss"| Stream["SSE NDJSON Stream + 429 Adaptive Limiter"]
+    Stream -->|"Incremental items"| Render
+    Vision --> Cache
+    Vision --> ImgOverlay["Image Overlay Layer (content/renderer.js)"]
+```
 
----
+### 2.1 Local Zero-Latency Decision Model
 
-## 專案結構
+All page segmentation, filtering, and typography decisions run locally in `content/site-analyzer.js` and `content/renderer.js` with zero extra LLM calls:
+
+- **Main-content detection (`findContentRoots`, `scoreReadabilityContainer`)**: Prioritizes embedded Jupyter/notebook cells (`LESSON_CELL_SELECTOR`), Google Drive PDF viewer pages (`.ndfHFb-c4YZDc-cYSp0e-DARUcf`), and semantic containers (`article`, `main`, `[role="main"]`, `.markdown-body`, `.prose`, `#mw-content-text`). Containers are scored by `textLen + pCount * 40`, penalized when `linkRatio > 0.55`, boosted `1.25x` for article/doc containers, and refined to tighter inner containers when they retain `>= 65%` of text. Top-level `#firstHeading` / `h1` headings are preserved.
+- **Two-pass DOM scan (`collectUniversalCandidateElements`)**:
+  - *Pass 1*: Collects semantic blocks (`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`), skipping nested containers so only leaf prose blocks are claimed.
+  - *Pass 2*: Walks `DIV`, `SPAN`, `A`, `LABEL`, and `BUTTON` leaf candidates for modern SPAs, rejecting Shadow DOM hosts, elements with block children or interactive controls (`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`), pure metadata counters (`PURE_METADATA_REGEX`), and wrapper `div`/`span` nodes that only enclose `<a href>` links. Both passes are merged in DOM document order (`compareDocumentPosition`).
+- **Shadow DOM traversal (`queryAllDeep`, `ensureShadowModeStyle`)**: Traverses open `shadowRoot` trees up to depth 5 while skipping code editors and UI nodes (`SHADOW_SKIP_SELECTOR`), and injects `:host-context(html.kct-mode-*)` rules so Replace / Original / Bilingual switching works inside Shadow DOM.
+- **Inline protection tokens (`extractBlockContent`, `buildTranslatedFragment`)**: Replaces inline code (`code, kbd, var`) with `[[C#]]`, math and citations (`.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`) with `[[M#]]`, and short/non-translatable `<a href>` links (`<= 28` chars) with `[[L#]]`. The renderer restores each token by cloning the original DOM node (`cloneNode(true)`) into a `DocumentFragment`.
+- **Language filtering (`shouldTranslateText`)**: Filters out URLs, emails, file paths, Jupyter `In[]`/`Out[]` prompts, single-token ASCII code identifiers, and text already written in the target language using Unicode script ratios (for `zh-TW`/`zh-CN`, skips Han ratio `>= 0.55` with `< 6` Latin words while still translating Japanese text with Kana ratio `>= 0.12`).
+- **Font-gene pairing (`probeTypography`, `sanitizeFontFamily`, `content/content.css`)**: Classifies each block as `serif`, `sans`, or `mono` from computed `fontFamily`, strips generic CSS catch-all families (`serif`, `sans-serif`, `monospace`, `system-ui`, etc.) so up to 5 site-specific Latin fonts remain in `--kct-orig-font`, and appends the matching target-language stack (`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`). Dense unclamped prose blocks with `lineHeight / fontSize < 1.62` receive a selective `line-height: 1.72` lift (`data-kct-lh-lift="1"`).
+
+### 2.2 Dual PDF Native-Layout Pipelines
+
+NativeRead maintains two specialized PDF pipelines tailored to how PDFs are rendered in the browser:
+
+| Stage | Built-in PDF.js Reader (`viewer/pdf-viewer.js`) | Google Drive In-Page Overlay (`site-analyzer.js` + `renderer.js`) |
+| --- | --- | --- |
+| **Text & Geometry Source** | `pdfPage.getTextContent()` transformed to CSS viewport coordinates; skips rotated text (`\|angle\| > 0.25`). | Percentage-positioned hidden `<p>` nodes inside `.ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-bN97Pc-haAclf`. |
+| **Column & Paragraph Grouping** | Baseline row clustering, geometric superscript/subscript absorption, contiguous gutter column splitting, de-hyphenation, and recursive XY-Cut reading order (Y-Cut → X-Cut → interior X-valley straddler split). | Cross-group same-column merging (`leftDiff <= 3.6%`, `hRatio <= 0.36`), de-hyphenation, and `nearestBelowTop` safe-height clamping; absorbed `<p>` nodes hidden via `data-kct-pdf-merged="absorbed"`. |
+| **Math & TOC Handling** | Skips displayed equations (`isDisplayedMathBlock`), protects inline math with `[[M#]]`, and normalizes leaked LaTeX to Unicode (`cleanLatexMathInText`). | `detectPdfTocEntries` finds `>= 3` right-aligned TOC rows (within `1.2%`), translates only titles, and rebuilds native flex rows with CSS dotted leaders (`.kct-pdf-toc-leader`) and tabular page numbers. |
+| **Typography & Weight Sizing** | Reads PDF font metadata (`isSerif`, `isBold`, `isItalic`, `isMono`, `isMathFont`) from `styles` and `commonObjs`. | `ensurePdfLayerTypography` measures x-height ink bands (`0.53` Latin / `0.88` CJK) and stroke ratios (`>= 1.3x` median = bold) directly from page `<img>` rasters, clustering near-equal sizes (`1.08x` tolerance) to a shared median. |
+| **Color & Collision Protection** | Single `ctx.getImageData` per page samples perimeter median `bg` + WCAG contrast `fg`; `refineMaxHeightWithCanvasInk` scans below each paragraph to avoid overlapping figures/rules and detects compact diagram labels. | `samplePdfImageColors` samples perimeter median `bg` and contrast-adjusted `fg` from each page `<img>` (bound to `img.currentSrc \|\| img.src`), with `2px` box-shadow halo and `:hover` expansion. |
+| **Display Modes** | **Overlay**, **Split** (canvas + translated cards), **Original**, plus click-to-compare popover. | **Replace**, **Original**, and **Bilingual** (compact in-place overlay that expands into a bilingual card on hover). |
+
+### 2.3 On-Demand Multimodal Image Overlay Pipeline
+
+1. **Explicit user trigger**: Activated only when the user right-clicks an image (**NativeRead 翻譯圖片文字**) or clicks the hover pill (**譯圖**) on content images `>= 200x140` px (excluding nav/header/footer and Google Drive PDF page rasters).
+2. **Background fetch & downscaling (`background/service-worker.js`)**: `prepareImagePayloadForVision` downloads `http(s):` images from the Service Worker (avoiding page Canvas CORS taint; 16 MB cap, 20 s timeout, magic-byte MIME sniffing) or accepts `data:` URLs for local/blob images. Using `createImageBitmap` + `OffscreenCanvas`, it creates a `~480px` alpha-preserving sample buffer and re-encodes images exceeding `1600px` or `4 MB`.
+3. **Structured Vision inference & color sampling**: `callVisionImageLLM` sends a single multimodal request (Gemini `inlineData` or OpenAI `image_url`, 60 s timeout) returning `{"blocks":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","role":"title|badge|body"}]}` in 0–1000 coordinates. `sampleImageBoxColors` computes modal perimeter `bg` and WCAG-checked interior `fg` for each box, and caches the result in IndexedDB by both SHA-256 digest and normalized URL.
+4. **In-place overlay rendering (`content/renderer.js`)**: `renderImageVisionOverlay` wraps the `<img>` in `.kct-img-overlay-host`, aligns `.kct-img-overlay-layer` to exact image dimensions, places each block with adaptive font shrinking (`fitVisionOverlayBlock`), and lets users toggle **原圖 / 顯示譯圖** on demand.
+
+### 2.4 Streaming, Viewport Lazy Loading, Rate Limiting & LRU Cache
+
+- **SSE / NDJSON streaming & resilient fallback**: Content scripts and the PDF viewer connect over a long-lived `kct-stream` port. The Service Worker streams Gemini (`:streamGenerateContent?alt=sse`) or OpenAI (`stream: true`) NDJSON lines (`{"i":0,"t":"..."}`), parsed incrementally via `createIncrementalJsonScanner`. Missing items or broken streams fall back to batch JSON (`TRANSLATE_BATCH`) with recursive bisection (`translateItemsWithFallback`, up to depth 3).
+- **rAF micro-batching & viewport lazy loading**: Streamed web translations flush through `renderJobsWithRAF` in slices of up to `15` items per animation frame (`scheduler.yield()` between slices when supported). Off-screen blocks are deferred via `IntersectionObserver` (`rootMargin: 600px 0px` for web; `500px 0px` for PDF.js), queued viewport-first with up to `3` concurrent batch workers (`batchSize: 20`, `maxBatchChars: 5500`).
+- **Cross-frame 429 adaptive rate limiter**: `background/service-worker.js` enforces a global concurrency cap of `3` across frames. On HTTP `429`, it parses `Retry-After` / `retryDelay`, triggers a 90 s adaptive pacing window (concurrency `1`, `4.3s` inter-request gap) plus global cooldown, and separates daily/zero quota exhaustion (`QUOTA_EXCEEDED`) from temporary RPM limits (`RATE_LIMITED`).
+- **IndexedDB LRU cache (`shared/cache-db.js`)**: Stores up to `20,000` entries in `kct_cache_db_v2` (store `entries`, indexed by `ts`), keyed by `protocol:model:thinkingEffort:targetLang:customLang:glossaryHash`. Cache hits debounce-touch `ts` (`60s` threshold, `250ms` debounce) so overflow eviction removes least-recently-used records.
+
+### 2.5 Project Structure
 
 ```text
 native-read/
-├── manifest.json                 # Manifest V3 清單、Alt+T 快捷鍵與按需動態注入權限
+├── manifest.json                 # MV3 manifest, permissions, Alt+T command (no static content_scripts)
 ├── shared/
-│   ├── config.js                 # Schema v5 設定、模型與思考強度解析、多語字體堆疊、PDF 判定與白名單工具
-│   └── cache-db.js               # IndexedDB 本機 20,000 筆 LRU 快取層
+│   ├── config.js                 # Schema v5 settings, provider presets, thinking config, URL/PDF helpers
+│   └── cache-db.js               # IndexedDB kct_cache_db_v2 20,000-entry LRU cache
 ├── background/
-│   └── service-worker.js         # 按需注入器、PDF 閱讀器啟動、右鍵選單、SSE/NDJSON 串流與 429 自適應限流器
+│   └── service-worker.js         # Dynamic injector, SSE/NDJSON streamer, 429 limiter, Vision engine, #nr_sync guard
 ├── content/
-│   ├── site-analyzer.js          # 統一 DOM 決策引擎（語意區塊 + div/span SPA 葉子掃描 + Shadow DOM + 字體探測）
-│   ├── code-overlay.js           # 通用程式碼註解層（靜態 pre / CodeMirror 6 疊加層 / Output 快捷翻譯）
-│   ├── renderer.js               # 原版排版安全渲染器（字體基因配對、智慧行高保護、rAF 分幀寫入與還原）
-│   ├── content.js                # 視口優先懶載入協調器、kct-stream 串流客戶端與 Shadow DOM 懸浮／劃詞 UI
-│   └── content.css               # 頁面層 Serif / Sans / Mono 字體映射、行高保護與模式切換樣式
-├── viewer/
-│   ├── pdf-viewer.html           # NativeRead 本機 PDF 原版翻譯閱讀器頁面
-│   ├── pdf-viewer.css            # 玻璃工具列、原位覆蓋、雙欄對照與深淺色主題樣式
-│   └── pdf-viewer.js             # PDF.js 渲染、雙欄幾何段落萃取、周邊底色取樣、自動字級適配與 SSE 串流
-├── vendor/pdfjs/                 # Apache-2.0 官方 pdfjs-dist 本機模組（pdf.min.mjs / pdf.worker.min.mjs）
-├── popup/                        # 全網與 PDF 通用控制面板（單站白名單與閱讀器入口）
-├── options/                      # 進階設定頁（思考強度、排版風格、白名單、API 與 IndexedDB 快取）
-├── icons/                        # 擴充功能圖示（16 / 48 / 128 px）
+│   ├── site-analyzer.js          # Local decision model (Readability, 2-pass SPA, Shadow DOM, Drive PDF merge/TOC)
+│   ├── code-overlay.js           # Static <pre> comment swap, CodeMirror 6 overlay, Jupyter output translator
+│   ├── renderer.js               # Safe DOM renderer, font-gene pairing, Drive PDF raster metrics, image overlays
+│   ├── content.js                # Viewport lazy queue, kct-stream client, Shadow DOM pill/selection/image UI
+│   └── content.css               # Replace/Original/Bilingual modes, font stacks, Drive PDF & image overlay styles
+├── viewer/                       # Built-in PDF.js reader (pdf-viewer.html / .css / .js)
+├── popup/                        # Extension popup controls, allowlist toggle, PDF reader launcher
+├── options/                      # Settings page, provider/model config, glossary, local QR sync, cache controls
+├── icons/                        # Extension icons (16 / 48 / 128 px)
+├── scripts/
+│   └── build-mobile.js           # Generates docs/nativeread.user.js, Android ZIP, and copies PDF.js/icons
+├── docs/                         # GitHub Pages mobile PWA (index.html, app.js, app.css, sw.js, generated bundles)
 ├── LICENSE                       # MIT License
-└── README.md
+└── README*.md                    # Multilingual product, architecture, and security documentation
 ```
 
 ---
 
-## 更新日誌
+## 3. Privacy & Security Architecture
 
-- **`v2.2.0`（Android & iOS 手機全平台版）**：
-  - 新增 **NativeRead 手機版 PWA**（`docs/`，支援加入主畫面、手機端 PDF 原位／上下對照白皮書翻譯器與網址文章閱讀器）。
-  - 新增 **全平台獨立 Userscript（`docs/nativeread.user.js`）** 與 **Android 擴充功能安裝包（`docs/nativeread-android-extension.zip`）** 自動化建置腳本（`scripts/build-mobile.js`）。
-  - 新增電腦端設定頁 **本機 Canvas QR Code 與 `#nr_sync` 零打字手機金鑰同步**（支援 PWA、Userscript 與 Android 擴充瀏覽器自動攔截匯入）。
-  - 全面適配手機觸控體驗：觸控選字（`touchend` / `selectionchange`）劃詞翻譯、懸浮列手機安全區域與邊緣上下拖曳、PDF 閱讀器手機螢幕自適應滿版與上下對照排版。
-- **`v2.1.0`（NativeRead 正式正名）**：
-  - 正式更名為 **NativeRead（`native-read`）**。
-  - 移除硬編碼站點清單與 Notebook 特殊架構分流，升級為統一元件能力驅動架構（`code-overlay.js`），新增通用 `div`/`span`/`a` 現代 SPA 葉子文字安全遍歷。
-  - 內建本機 **PDF.js 原版翻譯閱讀器**，支援 Kaggle 白皮書、雙欄學術論文與本機拖曳 PDF 的原位覆蓋／雙欄對照／原版切換與依頁懶載入串流翻譯。
-  - 強化安全與效能（Service Worker 來源驗證、PDF.js 停用 eval 探測、單頁單次畫布取樣與字體 CSS 注入過濾）。
-- **`v2.0.0`**：全網站預設靜默按需動態注入、SSE 串流逐段上屏、視口優先懶載入、原版字體基因配對、三段思考強度控制、Shadow DOM 隔離 UI 與 IndexedDB 快取。
-- **`v1.x`**：Kaggle Learn / JupyterLab / CodeMirror 6 專用翻譯、原生 Gemini 3.x 支援與 429 自適應限流。
+| Area | Implementation |
+| --- | --- |
+| **Local Storage** | Extension settings and API keys live only in `chrome.storage.local` (`kct_settings_v1`); PWA settings live in `localStorage`; Userscript settings live in `GM_getValue`/`GM_setValue` (`localStorage` fallback). Translation caches live locally in IndexedDB (`kct_cache_db_v2`) and can be cleared anytime. |
+| **Network Endpoints** | Extension and Userscript traffic goes directly to your configured LLM endpoint with API keys placed strictly in HTTP headers (`x-goog-api-key` or `Authorization: Bearer`) and redacted from error messages (`redactApiKey`). Remote PDFs and on-demand images are fetched directly from their source URLs by the Service Worker. |
+| **`#nr_sync` Fragment Handling** | Sync payloads live exclusively in the URL `#` fragment (never `?query`), which browsers do not transmit in HTTP requests. `background/service-worker.js` accepts `#nr_sync` only from the extension origin or `https://chih-kai-wang.github.io/native-read`, rejects endpoint mutations (`baseUrl` / `protocol` / `providerId`) unless an explicit `apiKey` is included, validates `http:`/`https:` schemes, and immediately clears the fragment with `history.replaceState`. |
+| **Zero-`innerHTML` DOM Safety** | All translated strings, popovers, and overlays are written via `document.createTextNode` and `.textContent`. Inline placeholders (`[[C#]]`, `[[M#]]`, `[[L#]]`) restore only cloned pre-existing DOM nodes. |
+| **MV3 CSP & PDF.js Hardening** | PDF.js is bundled locally with `isEvalSupported: false` in both `viewer/pdf-viewer.js` and `docs/app.js`. Privileged Service Worker actions (`ENSURE_AND_COMMAND`, `TEST_CONNECTION`, `OPEN_PDF_VIEWER`, `GET_SW_DEBUG`, `CLEAR_CACHE`) enforce `isExtensionSender(sender)`. |
+| **UI & QR Isolation** | Floating pills, selection popovers, image hover triggers, and Userscript controls are isolated inside Shadow DOM (`all: initial`). Sync QR codes are generated locally in the Options page without calling external QR services. |
+
+> **Note on the Mobile PWA (`docs/app.js`)**: For PDF URLs, NativeRead's policy is direct browser fetch only—removing the legacy `api.allorigins.win` CORS proxy fallback in favor of direct fetch with timeout and local-file download guidance so private PDF URLs/bytes are never sent to a third-party relay. In the PWA's optional **Web URL** tab, cross-origin public article extraction (`fetchReadableArticleFromUrl`) currently uses `r.jina.ai` (with an `api.allorigins.win` fallback); if you require zero third-party relays on mobile, paste article text directly in the Web tab or use the Userscript / Android extension instead.
 
 ---
 
-## 授權條款
+## Development
 
-本專案採用 [MIT License](LICENSE) 開源釋出；`vendor/pdfjs/` 內含之 PDF.js 遵循 Apache-2.0 License（見 [vendor/pdfjs/LICENSE](vendor/pdfjs/LICENSE)）。
+Build mobile distribution artifacts and run syntax checks across all JavaScript files:
+
+```bash
+node scripts/build-mobile.js
+for f in shared/*.js background/*.js content/*.js popup/*.js options/*.js viewer/*.js scripts/*.js docs/app.js docs/sw.js docs/nativeread.user.js; do node --check "$f" || exit 1; done
+```
+
+`docs/nativeread.user.js`, `docs/nativeread-android-extension.zip`, `docs/vendor/pdfjs/`, `docs/icons/`, and `docs/.nojekyll` are generated by `scripts/build-mobile.js`—edit the source modules under `shared/`, `content/`, `viewer/`, and `docs/app.js`, then re-run the build script.
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE). Bundled PDF.js (`vendor/pdfjs/` and `docs/vendor/pdfjs/`) is licensed under the Apache-2.0 License (see [docs/vendor/pdfjs/LICENSE](docs/vendor/pdfjs/LICENSE)).

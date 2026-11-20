@@ -1276,6 +1276,9 @@ function buildAndroidExtensionZip() {
   if (fs.existsSync(zipPath)) {
     fs.unlinkSync(zipPath);
   }
+  const readmeFiles = fs
+    .readdirSync(ROOT)
+    .filter((name) => /^README(\.[A-Za-z0-9_-]+)?\.md$/.test(name));
   const itemsToInclude = [
     'manifest.json',
     'shared',
@@ -1287,7 +1290,7 @@ function buildAndroidExtensionZip() {
     'vendor',
     'icons',
     'LICENSE',
-    'README.md'
+    ...readmeFiles
   ].filter((rel) => fs.existsSync(path.join(ROOT, rel)));
 
   execFileSync('zip', ['-rq', zipPath, ...itemsToInclude], { cwd: ROOT });

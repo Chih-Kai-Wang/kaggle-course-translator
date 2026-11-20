@@ -108,6 +108,7 @@
         <p id="pdfErrorDetail" class="nr-card-desc"></p>
         <div class="nr-btn-group">
           <button id="pdfRetryUrlBtn" type="button" class="nr-secondary-btn" hidden>重試網址</button>
+          <button id="pdfOpenSourceBtn" type="button" class="nr-secondary-btn" hidden>在新分頁開啟 PDF</button>
           <button id="pdfErrorOpenFileBtn" type="button" class="nr-primary-btn">改選本機 PDF 檔案</button>
         </div>
       </div>
@@ -198,7 +199,7 @@
           <h3 class="nr-install-title">1. 全平台 Userscript 腳本 (<code>nativeread.user.js</code>)</h3>
         </div>
         <p class="nr-card-desc">
-          預設 100% 零干擾，僅在網頁右下角顯示極簡半透明 <strong>NR</strong> 邊緣標籤；點擊即可展開翻譯膠囊、切換「譯文／原文／雙語」、管理自動翻譯白名單與 API Key。內建 CSP 自動穿透（<code>GM_xmlhttpRequest</code> 備援）。
+          預設零干擾，僅在網頁右下角顯示極簡 <strong>NR</strong> 標籤；點擊即可展開翻譯膠囊、切換「譯文／原文／雙語」與管理白名單。
         </p>
         <ul class="nr-guide-list">
           <li><strong>iOS Safari</strong>：安裝免費開源的 <strong>Stay 2</strong> 或 <strong>Userscripts</strong> App → 點擊下方按鈕即可一鍵匯入腳本。</li>
@@ -253,7 +254,7 @@
         <div class="nr-pill-tag">Zero-Typing Sync Ready</div>
         <h2 class="nr-section-title">⚙ AI 模型與翻譯偏好設定</h2>
         <p class="nr-card-desc">
-          所有 API Key 僅儲存於您的手機本機瀏覽器（<code>localStorage</code> 與 <code>IndexedDB</code> 快取），直連官方模型端點，絕不經過任何第三方伺服器。您也可以從電腦版 NativeRead 點擊「📱 手機同步」掃描 QR Code 一秒免打字匯入！
+          支援從電腦版 NativeRead 點擊「📱 手機同步」掃描 QR Code 一秒免打字匯入設定。
         </p>
 
         <form id="settingsForm" class="nr-settings-form" autocomplete="off">
@@ -357,19 +358,19 @@
   <nav class="nr-bottom-nav" aria-label="主導覽列">
     <button type="button" class="nr-nav-tab is-active" data-tab="pdf">
       <span class="nr-nav-icon">📄</span>
-      <span class="nr-nav-label">PDF 白皮書翻譯</span>
+      <span class="nr-nav-label">PDF 閱讀</span>
     </button>
     <button type="button" class="nr-nav-tab" data-tab="web">
       <span class="nr-nav-icon">🌐</span>
-      <span class="nr-nav-label">網頁／文章原版翻譯</span>
+      <span class="nr-nav-label">網頁翻譯</span>
     </button>
     <button type="button" class="nr-nav-tab" data-tab="install">
       <span class="nr-nav-icon">📲</span>
-      <span class="nr-nav-label">手機瀏覽器外掛安裝</span>
+      <span class="nr-nav-label">瀏覽器外掛</span>
     </button>
     <button type="button" class="nr-nav-tab" data-tab="settings">
       <span class="nr-nav-icon">⚙</span>
-      <span class="nr-nav-label">模型與 API 設定</span>
+      <span class="nr-nav-label">模型設定</span>
     </button>
   </nav>
 

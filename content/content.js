@@ -83,6 +83,14 @@
   let selPopoverEl = null;
   let currentSelectionText = '';
 
+  // R4: On-Demand Vision Image Overlay UI refs
+  let imgHoverHostEl = null;
+  let imgHoverShadow = null;
+  let imgHoverBtnEl = null;
+  let currentHoveredImg = null;
+  let lastContextImg = null;
+  const busyVisionImages = new WeakSet();
+
   function getPageContext() {
     return {
       pageType: pageInfo.pageType,
@@ -1597,6 +1605,239 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') removeSelectionUI();
     });
+
+    setupImageOverlayListeners();
+  }
+
+  // =========================================================
+  // R4: On-Demand Vision Image Overlay Trigger & Handler
+  // =========================================================
+  function isEligibleDiagramImage(img) {
+    if (!img || img.tagName !== 'IMG' || !img.isConnected) return false;
+    if (img.classList.contains('ndfHFb-c4YZDc-cYSp0e-DARUcf-RJLb9c')) return false;
+    if (img.closest('[data-kct-ui], nav, header, footer, [role="navigation"]')) return false;
+    const rect = img.getBoundingClientRect();
+    return rect.width >= 200 && rect.height >= 140;
+  }
+
+  function extractLocalImageDataUrl(img) {
+    if (!img) return '';
+    const src = img.currentSrc || img.src || '';
+    if (src.startsWith('data:image/')) return src;
+    try {
+      const w = Math.min(1600, img.naturalWidth || img.width || 0);
+      const h = Math.min(1600, img.naturalHeight || img.height || 0);
+      if (w < 32 || h < 32) return '';
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      return canvas.toDataURL('image/jpeg', 0.88);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function ensureImageHoverPill() {
+    if (imgHoverHostEl && imgHoverHostEl.isConnected) return;
+    imgHoverHostEl = document.createElement('div');
+    imgHoverHostEl.id = 'kct-img-pill-host';
+    imgHoverHostEl.setAttribute('data-kct-ui', 'img-pill-host');
+    imgHoverShadow = imgHoverHostEl.attachShadow({ mode: 'open' });
+
+    const styleEl = document.createElement('style');
+    styleEl.textContent = `
+      :host {
+        all: initial;
+        position: fixed;
+        z-index: 2147482990;
+        pointer-events: none;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", sans-serif;
+      }
+      .kct-img-btn {
+        pointer-events: auto;
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(15, 23, 42, 0.82);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        color: #f8fafc;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
+        padding: 6px 10px;
+        border-radius: 999px;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.25);
+        transition: background 0.15s ease, transform 0.12s ease;
+      }
+      .kct-img-btn:hover {
+        background: #0284c7;
+        transform: translateY(-1px);
+      }
+      .kct-img-btn[disabled] {
+        opacity: 0.75;
+        cursor: wait;
+      }
+    `;
+    imgHoverBtnEl = document.createElement('button');
+    imgHoverBtnEl.type = 'button';
+    imgHoverBtnEl.className = 'kct-img-btn';
+    imgHoverBtnEl.textContent = '譯圖';
+
+    imgHoverBtnEl.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!currentHoveredImg) return;
+      if (currentHoveredImg.getAttribute('data-kct-img-translated') === '1') {
+        const curMode = currentHoveredImg.getAttribute('data-kct-img-mode') || 'translated';
+        const nextMode = curMode === 'original' ? 'translated' : 'original';
+        currentHoveredImg.setAttribute('data-kct-img-mode', nextMode);
+        updateImageHoverPillLabel(currentHoveredImg);
+        return;
+      }
+      translateSingleImageElement(currentHoveredImg);
+    });
+
+    imgHoverShadow.append(styleEl, imgHoverBtnEl);
+    (document.body || document.documentElement).appendChild(imgHoverHostEl);
+  }
+
+  function updateImageHoverPillLabel(img) {
+    if (!imgHoverBtnEl || !img) return;
+    if (busyVisionImages.has(img)) {
+      imgHoverBtnEl.disabled = true;
+      imgHoverBtnEl.textContent = '譯圖中...';
+      return;
+    }
+    imgHoverBtnEl.disabled = false;
+    if (img.getAttribute('data-kct-img-translated') === '1') {
+      const mode = img.getAttribute('data-kct-img-mode') || 'translated';
+      imgHoverBtnEl.textContent = mode === 'original' ? '顯示譯圖' : '原圖';
+    } else {
+      imgHoverBtnEl.textContent = '譯圖';
+    }
+  }
+
+  function positionImageHoverPill(img) {
+    if (!img || !img.isConnected) return;
+    ensureImageHoverPill();
+    const rect = img.getBoundingClientRect();
+    if (rect.width < 120 || rect.height < 80 || rect.bottom < 0 || rect.top > window.innerHeight) {
+      if (imgHoverHostEl) imgHoverHostEl.style.display = 'none';
+      return;
+    }
+    updateImageHoverPillLabel(img);
+    imgHoverHostEl.style.display = 'block';
+    const top = Math.max(8, Math.min(window.innerHeight - 40, Math.round(rect.top + 10)));
+    const left = Math.max(8, Math.min(window.innerWidth - 88, Math.round(rect.right - 74)));
+    imgHoverHostEl.style.top = `${top}px`;
+    imgHoverHostEl.style.left = `${left}px`;
+  }
+
+  function hideImageHoverPill() {
+    if (imgHoverHostEl) {
+      imgHoverHostEl.style.display = 'none';
+    }
+  }
+
+  async function translateSingleImageElement(imgEl, fallbackSrcUrl = '') {
+    if (!imgEl || busyVisionImages.has(imgEl)) return;
+    const srcUrl = (imgEl.currentSrc || imgEl.src || fallbackSrcUrl || '').trim();
+    const dataUrl = (!/^https?:\/\//i.test(srcUrl) || srcUrl.startsWith('blob:'))
+      ? extractLocalImageDataUrl(imgEl)
+      : '';
+
+    busyVisionImages.add(imgEl);
+    if (currentHoveredImg === imgEl) updateImageHoverPillLabel(imgEl);
+
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'TRANSLATE_IMAGE',
+        srcUrl: /^https?:\/\//i.test(srcUrl) ? srcUrl : '',
+        dataUrl,
+        width: imgEl.naturalWidth || imgEl.width || 0,
+        height: imgEl.naturalHeight || imgEl.height || 0,
+        pageContext: getPageContext()
+      });
+
+      if (!res?.ok) {
+        state.lastErrorMsg = res?.error || '圖片翻譯失敗';
+        updateWidgetUI();
+        return;
+      }
+
+      if (Array.isArray(res.blocks) && res.blocks.length > 0 && Renderer.renderImageVisionOverlay) {
+        Renderer.renderImageVisionOverlay(imgEl, res.blocks);
+      } else {
+        state.lastErrorMsg = '圖片中未偵測到需翻譯的外文段落';
+        updateWidgetUI();
+      }
+    } catch (err) {
+      state.lastErrorMsg = err?.message || '圖片翻譯失敗';
+      updateWidgetUI();
+    } finally {
+      busyVisionImages.delete(imgEl);
+      if (currentHoveredImg === imgEl) updateImageHoverPillLabel(imgEl);
+    }
+  }
+
+  function findImageBySrcUrl(srcUrl) {
+    if (lastContextImg && lastContextImg.isConnected) {
+      const ctxSrc = lastContextImg.currentSrc || lastContextImg.src || '';
+      if (!srcUrl || ctxSrc === srcUrl) return lastContextImg;
+    }
+    const imgs = Array.from(document.querySelectorAll('img'));
+    if (srcUrl) {
+      const exact = imgs.find((i) => i.currentSrc === srcUrl || i.src === srcUrl);
+      if (exact) return exact;
+      const partial = imgs.find((i) => (i.currentSrc || i.src || '').includes(srcUrl));
+      if (partial) return partial;
+    }
+    return currentHoveredImg || lastContextImg || null;
+  }
+
+  function setupImageOverlayListeners() {
+    document.addEventListener('contextmenu', (e) => {
+      const target = e.target;
+      if (target && target.tagName === 'IMG') {
+        lastContextImg = target;
+      } else if (target && target.closest) {
+        const host = target.closest('.kct-img-overlay-host');
+        if (host) {
+          lastContextImg = host.querySelector('img');
+        }
+      }
+    }, { capture: true, passive: true });
+
+    document.addEventListener('mouseover', (e) => {
+      if (!pageActive) return;
+      const path = e.composedPath ? e.composedPath() : [e.target];
+      if (path.some((n) => n === imgHoverHostEl)) return;
+      const target = e.target;
+      let img = null;
+      if (target?.tagName === 'IMG') {
+        img = target;
+      } else if (target?.closest) {
+        const host = target.closest('.kct-img-overlay-host');
+        if (host) img = host.querySelector('img');
+      }
+      if (img && isEligibleDiagramImage(img)) {
+        currentHoveredImg = img;
+        positionImageHoverPill(img);
+      }
+    }, { passive: true });
+
+    document.addEventListener('mouseout', (e) => {
+      if (!currentHoveredImg) return;
+      const rel = e.relatedTarget;
+      if (rel && (rel === imgHoverHostEl || rel === currentHoveredImg || rel.closest?.('.kct-img-overlay-host'))) {
+        return;
+      }
+      hideImageHoverPill();
+    }, { passive: true });
   }
 
   // =========================================================
@@ -1819,6 +2060,21 @@
             if (isTopFrame() && !localSelection && document.activeElement?.tagName === 'IFRAME') break;
             const coords = getSelectionAnchorCoords();
             showSelectionPopover(coords.x, coords.y, text);
+            break;
+          }
+
+          case 'TRANSLATE_IMAGE': {
+            const targetImg = findImageBySrcUrl(message.srcUrl || '');
+            if (targetImg) {
+              if (!pageActive) {
+                pageActive = true;
+                Renderer.applyDisplayModeClass(state.settings);
+                if (isTopFrame() && state.settings?.showFloatingBall !== false) {
+                  createFloatingWidget();
+                }
+              }
+              await translateSingleImageElement(targetImg, message.srcUrl || '');
+            }
             break;
           }
         }

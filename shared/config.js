@@ -416,7 +416,16 @@
     'proceedings.mlr.press'
   ]);
 
-  function isPdfUrl(url) {
+  function isFileUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    try {
+      return new URL(url).protocol === 'file:';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isFilePdfUrl(url) {
     if (!url || typeof url !== 'string') return false;
     let parsed;
     try {
@@ -424,7 +433,21 @@
     } catch (_) {
       return false;
     }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'file:') {
+    if (parsed.protocol !== 'file:') return false;
+    const pathname = parsed.pathname || '';
+    if (/\.html?$/i.test(pathname)) return false;
+    return /\.pdf$/i.test(pathname);
+  }
+
+  function isRemotePdfUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (_) {
+      return false;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return false;
     }
     const host = parsed.hostname.toLowerCase();
@@ -439,6 +462,10 @@
       if (k.toLowerCase() === 'format' && v.toLowerCase() === 'pdf') return true;
     }
     return false;
+  }
+
+  function isPdfUrl(url, { includeFile = true } = {}) {
+    return isRemotePdfUrl(url) || (includeFile && isFilePdfUrl(url));
   }
 
   function extractGoogleDriveFileId(url) {
@@ -583,6 +610,9 @@
     isHostWhitelisted,
     toggleHostWhitelist,
     isInjectableUrl,
+    isFileUrl,
+    isFilePdfUrl,
+    isRemotePdfUrl,
     isPdfUrl,
     extractGoogleDriveFileId,
     resolvePdfSourceUrl,

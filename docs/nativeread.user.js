@@ -431,7 +431,16 @@
     'proceedings.mlr.press'
   ]);
 
-  function isPdfUrl(url) {
+  function isFileUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    try {
+      return new URL(url).protocol === 'file:';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isFilePdfUrl(url) {
     if (!url || typeof url !== 'string') return false;
     let parsed;
     try {
@@ -439,7 +448,21 @@
     } catch (_) {
       return false;
     }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'file:') {
+    if (parsed.protocol !== 'file:') return false;
+    const pathname = parsed.pathname || '';
+    if (/\.html?$/i.test(pathname)) return false;
+    return /\.pdf$/i.test(pathname);
+  }
+
+  function isRemotePdfUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (_) {
+      return false;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return false;
     }
     const host = parsed.hostname.toLowerCase();
@@ -454,6 +477,10 @@
       if (k.toLowerCase() === 'format' && v.toLowerCase() === 'pdf') return true;
     }
     return false;
+  }
+
+  function isPdfUrl(url, { includeFile = true } = {}) {
+    return isRemotePdfUrl(url) || (includeFile && isFilePdfUrl(url));
   }
 
   function extractGoogleDriveFileId(url) {
@@ -598,6 +625,9 @@
     isHostWhitelisted,
     toggleHostWhitelist,
     isInjectableUrl,
+    isFileUrl,
+    isFilePdfUrl,
+    isRemotePdfUrl,
     isPdfUrl,
     extractGoogleDriveFileId,
     resolvePdfSourceUrl,
@@ -706,13 +736,13 @@
     '[itemprop="articleBody"]'
   ].join(', ');
 
-  const INLINE_PROTECT_SELECTOR = 'code, kbd, var, .katex, .MathJax, mjx-container';
+  const INLINE_PROTECT_SELECTOR = 'code, kbd, var, .katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference';
 
   const SHADOW_SKIP_SELECTOR = '[data-kct-ui], script, style, svg, pre, code, noscript, template, iframe, .cm-editor, .CodeMirror, .monaco-editor';
 
   const PROSE_TAGS = new Set(['P', 'LI', 'BLOCKQUOTE', 'DD', 'FIGCAPTION']);
 
-  const LEAF_CANDIDATE_TAGS = new Set(['DIV', 'SPAN', 'A', 'LABEL']);
+  const LEAF_CANDIDATE_TAGS = new Set(['DIV', 'SPAN', 'A', 'LABEL', 'BUTTON']);
 
   const CHILD_BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, ul, ol, blockquote, table, td, th, section, article, main, nav, aside, header, footer, form, div, pre, hr, iframe, figure, figcaption, details, summary, dl, dt, dd, fieldset, dialog';
 
@@ -866,11 +896,15 @@
     }
 
     // Dedicated multi-page document viewer containers (e.g. Google Drive PDF Viewer)
+    const gdrivePages = Array.from(document.querySelectorAll('.ndfHFb-c4YZDc-cYSp0e-DARUcf'));
+    if (gdrivePages.length > 0) {
+      return [document.body];
+    }
     const gdrivePdfRoot = document.querySelector(
       '.ndfHFb-c4YZDc-cYSp0e-DARUcf-gSKZZ, .ndfHFb-c4YZDc-cYSp0e-s2gQvd'
     );
     if (gdrivePdfRoot && isElementVisible(gdrivePdfRoot)) {
-      return [gdrivePdfRoot];
+      return [document.body];
     }
 
     // Dedicated embedded rendered-cell containers (e.g. Jupyter / Notebook outputs)
@@ -917,6 +951,10 @@
 
         const dedupedWinners = dedupeTopmost(winners);
         if (dedupedWinners.length > 0) {
+          const topH1 = document.querySelector('#firstHeading, main h1, article h1, [role="main"] h1');
+          if (topH1 && isElementVisible(topH1) && !dedupedWinners.some((w) => w.contains(topH1))) {
+            return [topH1, ...dedupedWinners];
+          }
           return dedupedWinners;
         }
       }
@@ -1102,6 +1140,7 @@
     const placeholders = new Map();
     let codeIdx = 0;
     let mathIdx = 0;
+    let linkIdx = 0;
     let nestedListEl = null;
     const parts = [];
 
@@ -1122,11 +1161,21 @@
       }
 
       if (node.matches(INLINE_PROTECT_SELECTOR)) {
-        const isMath = node.matches('.katex, .MathJax, mjx-container');
+        const isMath = node.matches('.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference');
         const token = isMath ? `[[M${mathIdx++}]]` : `[[C${codeIdx++}]]`;
         placeholders.set(token, node);
         parts.push(token);
         return;
+      }
+
+      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
+        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (aText && (aText.length <= 28 || !shouldTranslateText(aText))) {
+          const token = `[[L${linkIdx++}]]`;
+          placeholders.set(token, node);
+          parts.push(token);
+          return;
+        }
       }
 
       if (node.tagName === 'BR') {
@@ -1167,6 +1216,34 @@
     const height = get('height');
     if (left === null || top === null || width === null || height === null) return null;
     return { left, top, width, height };
+  }
+
+  const PDF_TOC_LINE_REGEX = /^(.*\p{L}.*?)[\s.·•…_\-–—]+(\d{1,4}|[ivxlcdm]{1,7})$/iu;
+
+  // Table-of-contents rows ("Title ........ 12") are single lines whose page numbers share one right edge.
+  // Require >= 3 aligned rows on the same page so body lines that merely end in a number are never caught.
+  function detectPdfTocEntries(groups) {
+    const result = new Map();
+    const candidates = [];
+    for (const g of groups) {
+      if (g.lineCount !== 1) continue;
+      const m = g.text.match(PDF_TOC_LINE_REGEX);
+      if (!m) continue;
+      const title = m[1].replace(/[\s.·•…_]+$/u, '').trim();
+      if (title.length < 2) continue;
+      candidates.push({ g, title, num: m[2], right: g.left + g.width });
+    }
+    if (candidates.length < 3) return result;
+
+    const rights = candidates.map((c) => c.right).sort((a, b) => a - b);
+    const medianRight = rights[Math.floor(rights.length / 2)];
+    const aligned = candidates.filter((c) => Math.abs(c.right - medianRight) <= 1.2);
+    if (aligned.length < 3) return result;
+
+    for (const c of aligned) {
+      result.set(c.g, { title: c.title, num: c.num });
+    }
+    return result;
   }
 
   function preparePdfOverlayLayers(roots) {
@@ -1230,39 +1307,51 @@
 
       const groups = [];
       for (const item of items) {
-        const prev = groups[groups.length - 1];
-        if (prev) {
-          const prevBottom = prev.top + prev.height;
+        let matchedGroup = null;
+        for (let gi = groups.length - 1; gi >= 0; gi--) {
+          const candidate = groups[gi];
+          const prevBottom = candidate.top + candidate.height;
           const vGap = item.top - prevBottom;
-          const hRatio = Math.abs(item.height - prev.avgLineH) / Math.max(item.height, prev.avgLineH, 0.1);
-          const leftDiff = Math.abs(item.left - prev.left);
-          const isTocLine = /\s+\d{1,3}$/.test(prev.lastLineText) || /\s+\d{1,3}$/.test(item.text);
-          const prevEndedShort = prev.lastWidth < 46 && /[.!?。！？]$/.test(prev.text);
+          if (vGap > 1.2 * Math.max(candidate.avgLineH, item.height, 1)) {
+            continue;
+          }
+          const hRatio = Math.abs(item.height - candidate.avgLineH) / Math.max(item.height, candidate.avgLineH, 0.1);
+          const leftDiff = Math.abs(item.left - candidate.left);
+          const isTocLine = /\s+\d{1,3}$/.test(candidate.lastLineText) || /\s+\d{1,3}$/.test(item.text);
+          const colEndThreshold = candidate.width > 50 ? 44 : candidate.width * 0.72;
+          const prevEndedShort = candidate.lastWidth < colEndThreshold && /[.!?。！？]$/.test(candidate.text);
 
           if (
             !isTocLine &&
             !prevEndedShort &&
             hRatio <= 0.36 &&
             leftDiff <= 3.6 &&
-            vGap >= -0.45 * prev.avgLineH &&
-            vGap <= 0.88 * prev.avgLineH
+            vGap >= -0.45 * candidate.avgLineH &&
+            vGap <= 0.88 * candidate.avgLineH
           ) {
-            const newLeft = Math.min(prev.left, item.left);
-            const newRight = Math.max(prev.left + prev.width, item.left + item.width);
-            const newBottom = Math.max(prevBottom, item.top + item.height);
-            prev.left = newLeft;
-            prev.width = newRight - newLeft;
-            prev.height = newBottom - prev.top;
-            prev.avgLineH = (prev.avgLineH * prev.lineCount + item.height) / (prev.lineCount + 1);
-            prev.lineCount += 1;
-            prev.lastWidth = item.width;
-            prev.lastLineText = item.text;
-            prev.text = prev.text.endsWith('-') && /^[a-z]/.test(item.text)
-              ? prev.text.slice(0, -1) + item.text
-              : `${prev.text} ${item.text}`;
-            prev.members.push(item);
-            continue;
+            matchedGroup = candidate;
+            break;
           }
+        }
+
+        if (matchedGroup) {
+          const prevBottom = matchedGroup.top + matchedGroup.height;
+          const newLeft = Math.min(matchedGroup.left, item.left);
+          const newRight = Math.max(matchedGroup.left + matchedGroup.width, item.left + item.width);
+          const newBottom = Math.max(prevBottom, item.top + item.height);
+          matchedGroup.left = newLeft;
+          matchedGroup.width = newRight - newLeft;
+          matchedGroup.height = newBottom - matchedGroup.top;
+          matchedGroup.avgLineH = (matchedGroup.avgLineH * matchedGroup.lineCount + item.height) / (matchedGroup.lineCount + 1);
+          matchedGroup.lineCount += 1;
+          matchedGroup.lastWidth = item.width;
+          matchedGroup.lastLineText = item.text;
+          matchedGroup.lastTop = item.top;
+          matchedGroup.text = matchedGroup.text.endsWith('-') && /^[a-z]/.test(item.text)
+            ? matchedGroup.text.slice(0, -1) + item.text
+            : `${matchedGroup.text} ${item.text}`;
+          matchedGroup.members.push(item);
+          continue;
         }
 
         groups.push({
@@ -1274,16 +1363,31 @@
           lineCount: 1,
           lastWidth: item.width,
           lastLineText: item.text,
+          lastTop: item.top,
           text: item.text,
           members: [item]
         });
       }
 
-      for (const g of groups) {
+      const tocEntries = detectPdfTocEntries(groups);
+
+      for (let gi = 0; gi < groups.length; gi++) {
+        const g = groups[gi];
+        let nearestBelowTop = 98.5;
+        for (let oj = 0; oj < groups.length; oj++) {
+          if (gi === oj) continue;
+          const other = groups[oj];
+          if (other.top < g.top + g.height - 0.4) continue;
+          const xOverlap = Math.min(g.left + g.width, other.left + other.width) - Math.max(g.left, other.left);
+          if (xOverlap > 1.5 && other.top < nearestBelowTop) {
+            nearestBelowTop = other.top;
+          }
+        }
+        const safeHeight = Math.max(g.height, Math.min(g.height + g.avgLineH * 0.45, nearestBelowTop - g.top - 0.25));
         const primary = g.members[0].el;
         primary.setAttribute(
           'style',
-          `left: ${g.left.toFixed(4)}%; top: ${g.top.toFixed(4)}%; width: ${g.width.toFixed(4)}%; height: ${g.height.toFixed(4)}%;`
+          `left: ${g.left.toFixed(4)}%; top: ${g.top.toFixed(4)}%; width: ${g.width.toFixed(4)}%; height: ${safeHeight.toFixed(4)}%;`
         );
         primary.setAttribute('data-kct-pdf-block', '1');
         primary.setAttribute('data-kct-pdf-lines', String(g.lineCount));
@@ -1292,7 +1396,24 @@
           'data-kct-pdf-box',
           `${g.left.toFixed(3)},${g.top.toFixed(3)},${g.width.toFixed(3)},${g.height.toFixed(3)}`
         );
-        primary.textContent = g.text;
+        const pitch = g.lineCount > 1 ? (g.lastTop - g.top) / (g.lineCount - 1) : 0;
+        if (pitch > 0) {
+          primary.setAttribute('data-kct-pdf-pitch', pitch.toFixed(4));
+        } else {
+          primary.removeAttribute('data-kct-pdf-pitch');
+        }
+
+        const toc = tocEntries.get(g);
+        if (toc) {
+          // Translate only the entry title; the page number + dot leader are re-drawn natively by the renderer
+          primary.setAttribute('data-kct-pdf-toc', '1');
+          primary.setAttribute('data-kct-pdf-toc-num', toc.num);
+          primary.textContent = toc.title;
+        } else {
+          primary.removeAttribute('data-kct-pdf-toc');
+          primary.removeAttribute('data-kct-pdf-toc-num');
+          primary.textContent = g.text;
+        }
 
         for (let i = 1; i < g.members.length; i++) {
           const absorbed = g.members[i].el;
@@ -1301,6 +1422,7 @@
       }
 
       layer.setAttribute('data-kct-pdf-merged-count', String(ps.length));
+      delete layer._kctTypoKey; // blocks changed: re-measure native glyph sizes on next fit
     }
   }
 
@@ -1323,10 +1445,18 @@
         p.removeAttribute('data-kct-pdf-line-h');
         p.removeAttribute('data-kct-pdf-box');
         p.removeAttribute('data-kct-pdf-merged');
+        p.removeAttribute('data-kct-pdf-pitch');
+        p.removeAttribute('data-kct-pdf-toc');
+        p.removeAttribute('data-kct-pdf-toc-num');
+        p.removeAttribute('data-kct-pdf-typo-key');
+        p.removeAttribute('data-kct-pdf-fs-pct');
+        p.removeAttribute('data-kct-pdf-bold');
+        p.removeAttribute('data-kct-pdf-toc-leader');
         p.style.removeProperty('--kct-pdf-bg');
         p.style.removeProperty('--kct-pdf-fg');
       }
       layer.removeAttribute('data-kct-pdf-layer');
+      delete layer._kctTypoKey;
     }
   }
 
@@ -2077,11 +2207,38 @@
     rootNode.appendChild(styleEl);
   }
 
+  function detectPageDarkBackground() {
+    if (
+      document.body?.dataset?.jpThemeLight === 'false' ||
+      document.documentElement?.getAttribute('data-theme') === 'dark' ||
+      document.documentElement?.classList.contains('dark') ||
+      document.body?.classList.contains('theme-dark')
+    ) {
+      return true;
+    }
+    const candidates = [document.body, document.documentElement].filter(Boolean);
+    for (const el of candidates) {
+      const bg = getComputedStyle(el).backgroundColor || '';
+      const m = bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i);
+      if (m) {
+        const alpha = m[4] !== undefined ? parseFloat(m[4]) : 1;
+        if (alpha < 0.15) continue;
+        const r = Number(m[1]);
+        const g = Number(m[2]);
+        const b = Number(m[3]);
+        const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        return lum < 115;
+      }
+    }
+    return false;
+  }
+
   function applyDisplayModeClass(settings) {
     const root = document.documentElement;
     if (!root) return;
 
     root.classList.toggle('kct-active', settings?.enabled !== false);
+    root.classList.toggle('kct-page-dark', detectPageDarkBackground());
 
     root.classList.remove('kct-mode-bilingual', 'kct-mode-replace', 'kct-mode-original');
     const resolvedMode = settings?.displayMode || 'replace';
@@ -2112,11 +2269,11 @@
 
   function buildTranslatedFragment(zhText, placeholders) {
     const frag = document.createDocumentFragment();
-    const tokens = String(zhText || '').split(/(\[\[\s*[CM]\d+\s*\]\])/g);
+    const tokens = String(zhText || '').split(/(\[\[\s*[CML]\d+\s*\]\])/g);
 
     for (const part of tokens) {
       if (!part) continue;
-      const m = part.match(/^\[\[\s*([CM]\d+)\s*\]\]$/);
+      const m = part.match(/^\[\[\s*([CML]\d+)\s*\]\]$/);
       if (m && placeholders) {
         const canonical = `[[${m[1]}]]`;
         const origNode = placeholders.get(canonical);
@@ -2132,11 +2289,11 @@
 
   function needsInlineInjection(el) {
     const tag = el.tagName;
-    if (tag === 'TD' || tag === 'TH' || tag === 'A' || tag === 'SPAN') {
+    if (tag === 'TD' || tag === 'TH' || tag === 'A' || tag === 'SPAN' || tag === 'BUTTON') {
       return true;
     }
     const display = getComputedStyle(el).display || '';
-    if (display.includes('inline')) return true;
+    if (display.includes('inline') || display.includes('flex') || display.includes('grid')) return true;
     const parent = el.parentElement;
     if (!parent) return false;
     const parentDisplay = getComputedStyle(parent).display || '';
@@ -2156,13 +2313,15 @@
     try {
       const W = 400;
       const H = 520;
-      if (!img._kctSamplePixels) {
+      const srcKey = img.currentSrc || img.src || '';
+      if (!img._kctSamplePixels || img._kctSampleSrc !== srcKey) {
         const canvas = document.createElement('canvas');
         canvas.width = W;
         canvas.height = H;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.drawImage(img, 0, 0, W, H);
         img._kctSamplePixels = ctx.getImageData(0, 0, W, H).data;
+        img._kctSampleSrc = srcKey;
       }
       const data = img._kctSamplePixels;
       const x0 = Math.max(0, Math.min(W - 1, Math.floor((leftPct / 100) * W)));
@@ -2255,6 +2414,245 @@
     }
   }
 
+  // ---- Native glyph metrics measured from the rasterised PDF page image ----
+  const PDF_LATIN_XHEIGHT_RATIO = 0.53; // x-height / em of typical Latin text faces
+  const PDF_CJK_GLYPH_RATIO = 0.88;     // ink height / em of CJK source glyphs
+  const PDF_TARGET_EM_SCALE = 0.94;     // CJK glyphs fill more of the em box than Latin, so step down slightly
+  const PDF_SIZE_CLUSTER_TOLERANCE = 1.08;
+  const PDF_BOLD_STROKE_RATIO = 1.3;
+
+  function parsePdfBox(boxStr) {
+    const parts = String(boxStr || '').split(',').map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+    return { left: parts[0], top: parts[1], width: parts[2], height: parts[3] };
+  }
+
+  function readInkGrid(ctx, canvas, img, sx, sy, sw, sh) {
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    sx = Math.max(0, Math.min(nw - 1, Math.floor(sx)));
+    sy = Math.max(0, Math.min(nh - 1, Math.floor(sy)));
+    sw = Math.max(1, Math.min(nw - sx, Math.ceil(sw)));
+    sh = Math.max(1, Math.min(nh - sy, Math.ceil(sh)));
+    canvas.width = sw;
+    canvas.height = sh;
+    ctx.clearRect(0, 0, sw, sh);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    const data = ctx.getImageData(0, 0, sw, sh).data;
+    const lums = new Float32Array(sw * sh);
+    const hist = new Uint32Array(256);
+    for (let i = 0, j = 0; j < lums.length; i += 4, j += 1) {
+      const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      lums[j] = lum;
+      hist[Math.min(255, Math.round(lum))] += 1;
+    }
+    // Background = dominant luminance (the paper), robust to light-on-dark pages
+    let bgLum = 255;
+    let bgCount = -1;
+    for (let v = 0; v < 256; v++) {
+      if (hist[v] > bgCount) {
+        bgCount = hist[v];
+        bgLum = v;
+      }
+    }
+    return { lums, sw, sh, bgLum };
+  }
+
+  function measurePdfBlockGlyphs(ctx, canvas, img, el) {
+    const box = parsePdfBox(el.getAttribute('data-kct-pdf-box'));
+    if (!box) return null;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    const lineHPct = parseFloat(el.getAttribute('data-kct-pdf-line-h')) || box.height;
+    const isToc = el.getAttribute('data-kct-pdf-toc') === '1';
+
+    // Only the first line is needed; TOC rows only measure the title area so leader dots don't skew the result
+    const widthFrac = isToc ? 0.3 : 1;
+    const grid = readInkGrid(
+      ctx,
+      canvas,
+      img,
+      (box.left / 100) * nw,
+      ((box.top - lineHPct * 0.2) / 100) * nh,
+      Math.min((box.width * widthFrac / 100) * nw, 1400),
+      (lineHPct * 1.4 / 100) * nh
+    );
+    const { lums, sw, sh, bgLum } = grid;
+    const rowInk = new Uint32Array(sh);
+    let runSum = 0;
+    let runCount = 0;
+    for (let y = 0; y < sh; y++) {
+      let run = 0;
+      for (let x = 0; x < sw; x++) {
+        if (Math.abs(lums[y * sw + x] - bgLum) >= 70) {
+          rowInk[y] += 1;
+          run += 1;
+        } else if (run) {
+          runSum += run;
+          runCount += 1;
+          run = 0;
+        }
+      }
+      if (run) {
+        runSum += run;
+        runCount += 1;
+      }
+    }
+
+    let maxRow = 0;
+    for (let y = 0; y < sh; y++) if (rowInk[y] > maxRow) maxRow = rowInk[y];
+    if (maxRow < 3 || runCount < 6) return null;
+
+    // x-height band = longest contiguous run of densely inked rows
+    let best = 0;
+    let cur = 0;
+    for (let y = 0; y < sh; y++) {
+      if (rowInk[y] >= maxRow * 0.4) {
+        cur += 1;
+        if (cur > best) best = cur;
+      } else {
+        cur = 0;
+      }
+    }
+    if (best < 4) return null;
+
+    const sourceText = el.getAttribute('data-kct-orig-text') || '';
+    const cjk = (sourceText.match(/[\p{Script=Han}\u3040-\u30ff\uac00-\ud7af]/gu) || []).length;
+    const glyphRatio = cjk > sourceText.length * 0.3 ? PDF_CJK_GLYPH_RATIO : PDF_LATIN_XHEIGHT_RATIO;
+
+    const result = {
+      fsPct: (best / glyphRatio / nh) * 100,
+      strokeRatio: (runSum / runCount) / best,
+      leader: null
+    };
+
+    if (isToc) {
+      // Look for leader dots between the title and the page number (55%-85% of the row)
+      const gap = readInkGrid(
+        ctx,
+        canvas,
+        img,
+        ((box.left + box.width * 0.55) / 100) * nw,
+        (box.top / 100) * nh,
+        (box.width * 0.3 / 100) * nw,
+        (box.height / 100) * nh
+      );
+      let inkCols = 0;
+      for (let x = 0; x < gap.sw; x++) {
+        for (let y = 0; y < gap.sh; y++) {
+          if (Math.abs(gap.lums[y * gap.sw + x] - gap.bgLum) >= 50) {
+            inkCols += 1;
+            break;
+          }
+        }
+      }
+      result.leader = inkCols >= gap.sw * 0.12 ? 'dots' : 'none';
+    }
+    return result;
+  }
+
+  function median(values) {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+
+  // Measure every merged block of one page together, then snap near-equal sizes to one shared size so
+  // sibling rows (TOC entries, body paragraphs) never drift apart just because Drive's text boxes differ.
+  function ensurePdfLayerTypography(layer, img) {
+    if (!layer || !img || !img.complete || !img.naturalWidth || !img.naturalHeight) return false;
+    const blocks = Array.from(layer.querySelectorAll(':scope > p[data-kct-pdf-block="1"]'));
+    const key = `${img.currentSrc || img.src}|${img.naturalWidth}x${img.naturalHeight}|${blocks.length}`;
+    if (layer._kctTypoKey === key) return true;
+
+    let canvas;
+    let ctx;
+    try {
+      canvas = document.createElement('canvas');
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
+    } catch (_) {
+      return false;
+    }
+
+    const measured = [];
+    for (const el of blocks) {
+      let m = null;
+      try {
+        m = measurePdfBlockGlyphs(ctx, canvas, img, el);
+      } catch (_) {
+        // Tainted or unreadable image: keep the geometric fallback for this layer
+        layer._kctTypoKey = key;
+        return false;
+      }
+      if (m) {
+        measured.push({ el, ...m });
+      } else {
+        el.removeAttribute('data-kct-pdf-fs-pct');
+        el.removeAttribute('data-kct-pdf-bold');
+      }
+    }
+
+    // TOC entries always share one size
+    const tocItems = measured.filter((m) => m.el.getAttribute('data-kct-pdf-toc') === '1');
+    if (tocItems.length > 0) {
+      const tocFs = median(tocItems.map((m) => m.fsPct));
+      const dotted = tocItems.filter((m) => m.leader === 'dots').length;
+      const sharedLeader = dotted * 2 >= tocItems.length ? 'dots' : 'none';
+      for (const m of tocItems) {
+        m.fsPct = tocFs;
+        m.leader = sharedLeader; // one TOC = one leader style, even if a single row's sample was off
+      }
+    }
+
+    // Cluster remaining sizes: consecutive values within ~8% collapse to their median
+    const sorted = [...measured].sort((a, b) => a.fsPct - b.fsPct);
+    let cluster = [];
+    const flush = () => {
+      if (cluster.length === 0) return;
+      const shared = median(cluster.map((m) => m.fsPct));
+      for (const m of cluster) m.fsPct = shared;
+      cluster = [];
+    };
+    for (const m of sorted) {
+      if (cluster.length > 0 && m.fsPct > cluster[0].fsPct * PDF_SIZE_CLUSTER_TOLERANCE) flush();
+      cluster.push(m);
+    }
+    flush();
+
+    const strokeBaseline = median(measured.map((m) => m.strokeRatio));
+    for (const m of measured) {
+      m.el.setAttribute('data-kct-pdf-fs-pct', m.fsPct.toFixed(4));
+      if (strokeBaseline > 0 && m.strokeRatio >= strokeBaseline * PDF_BOLD_STROKE_RATIO) {
+        m.el.setAttribute('data-kct-pdf-bold', '1');
+      } else {
+        m.el.removeAttribute('data-kct-pdf-bold');
+      }
+      if (m.leader) m.el.setAttribute('data-kct-pdf-toc-leader', m.leader);
+    }
+
+    layer._kctTypoKey = key;
+    return true;
+  }
+
+  function appendPdfTocTail(el) {
+    const num = el.getAttribute('data-kct-pdf-toc-num');
+    const existing = el.querySelector(':scope > [data-kct-ui="toc"]');
+    if (existing) existing.remove();
+    if (!num) return;
+    const tail = document.createElement('span');
+    tail.className = 'kct-pdf-toc-tail';
+    tail.setAttribute('data-kct-ui', 'toc');
+    tail.setAttribute('translate', 'no');
+    const leader = document.createElement('span');
+    leader.className = 'kct-pdf-toc-leader';
+    leader.setAttribute('aria-hidden', 'true');
+    const numEl = document.createElement('span');
+    numEl.className = 'kct-pdf-toc-num';
+    numEl.textContent = num;
+    tail.append(leader, numEl);
+    el.appendChild(tail);
+  }
+
   function styleAndFitPdfOverlayBlock(el) {
     if (!el || !el.isConnected || el.getAttribute('data-kct-pdf-block') !== '1') return;
     const layer = el.closest('[data-kct-pdf-layer="1"]');
@@ -2288,35 +2686,76 @@
     const avgLineHPct = parseFloat(el.getAttribute('data-kct-pdf-line-h')) || 1.8;
     const lineCount = parseInt(el.getAttribute('data-kct-pdf-lines'), 10) || 1;
     const linePx = (avgLineHPct / 100) * pageH;
+    const isToc = el.getAttribute('data-kct-pdf-toc') === '1';
+
+    const img = pageContainer?.querySelector('img');
+    const measuredReady = ensurePdfLayerTypography(layer, img);
+    if (!measuredReady && img && !img.complete && !el._kctFitOnLoad) {
+      el._kctFitOnLoad = true;
+      img.addEventListener('load', () => {
+        el._kctFitOnLoad = false;
+        if (el.isConnected && el.hasAttribute('data-kct-has-trans')) styleAndFitPdfOverlayBlock(el);
+      }, { once: true });
+    }
 
     let fontSize;
     let lineHeight;
     let fontWeight = '400';
+    const fsPct = parseFloat(el.getAttribute('data-kct-pdf-fs-pct'));
 
-    if (lineCount === 1 && avgLineHPct >= 2.2) {
+    if (Number.isFinite(fsPct) && fsPct > 0) {
+      // Native size measured from the page raster
+      fontSize = +((fsPct / 100) * pageH * PDF_TARGET_EM_SCALE).toFixed(2);
+      fontWeight = el.getAttribute('data-kct-pdf-bold') === '1' ? '600' : '400';
+      const pitchPct = parseFloat(el.getAttribute('data-kct-pdf-pitch'));
+      if (lineCount > 1 && Number.isFinite(pitchPct) && pitchPct > 0) {
+        // Keep the original line pitch so the paragraph occupies the same vertical rhythm
+        lineHeight = Math.max(1.3, Math.min(1.9, ((pitchPct / 100) * pageH) / fontSize)).toFixed(2);
+      } else {
+        lineHeight = '1.3';
+      }
+    } else if (lineCount === 1 && avgLineHPct >= 2.2) {
       fontSize = Math.round(linePx * 0.80);
       lineHeight = '1.22';
-      fontWeight = '700';
+      fontWeight = '600';
     } else if (avgLineHPct >= 2.8) {
       fontSize = Math.round(linePx * 0.74);
       lineHeight = '1.28';
-      fontWeight = '400';
     } else {
       fontSize = Math.round(linePx * 0.78);
       lineHeight = '1.42';
-      fontWeight = '400';
     }
 
-    fontSize = Math.max(10, Math.min(42, fontSize));
+    fontSize = Math.max(9, Math.min(48, fontSize));
     el.style.setProperty('--kct-pdf-fs', `${fontSize}px`);
     el.style.setProperty('--kct-pdf-lh', lineHeight);
     el.style.setProperty('--kct-pdf-fw', fontWeight);
 
-    const targetH = el.clientHeight;
+    let fs = fontSize;
+    let guard = 0;
+    if (isToc) {
+      // TOC rows never wrap: only shrink if the translated title cannot fit beside its page number
+      const titleEl = el.querySelector(':scope > [data-kct-ui="trans"]');
+      while (
+        titleEl &&
+        guard < 12 &&
+        fs > 9.5 &&
+        titleEl.scrollWidth > titleEl.clientWidth + 1
+      ) {
+        fs = Math.max(9.5, +(fs * 0.94).toFixed(2));
+        el.style.setProperty('--kct-pdf-fs', `${fs}px`);
+        guard += 1;
+      }
+      return;
+    }
+
+    // A single-line source block may overflow its (often too tight) text-layer box vertically,
+    // as long as the translation itself still fits on one line; only wrapping should trigger shrinking.
+    const targetH = lineCount === 1
+      ? Math.max(el.clientHeight, fontSize * parseFloat(lineHeight) + 4)
+      : el.clientHeight;
     const targetW = el.clientWidth;
     if (targetH > 8 && targetW > 12) {
-      let fs = fontSize;
-      let guard = 0;
       while (
         guard < 16 &&
         fs > 9.5 &&
@@ -2391,6 +2830,7 @@
 
     el.setAttribute('data-kct-has-trans', '1');
     if (el.getAttribute('data-kct-pdf-block') === '1') {
+      if (el.getAttribute('data-kct-pdf-toc') === '1') appendPdfTocTail(el);
       styleAndFitPdfOverlayBlock(el);
     }
     if (state?.elementState) state.elementState.set(el, 'done');
@@ -2474,6 +2914,8 @@
       if (transWrap) {
         transWrap.remove();
       }
+      const tocTail = el.querySelector(':scope > [data-kct-ui="toc"]');
+      if (tocTail) tocTail.remove();
       el.removeAttribute('data-kct-has-trans');
       el.removeAttribute('data-kct-inline-layout');
       el.removeAttribute('data-kct-typo');
@@ -2495,6 +2937,8 @@
       notebookAdapter.clearNotebookOverlays(state);
     }
 
+    clearAllImageVisionOverlays();
+
     if (state) {
       // Reset WeakMap completely so any previously 'queued' or 'observed' blocks can be re-scanned
       state.elementState = new WeakMap();
@@ -2513,6 +2957,156 @@
     for (const el of blocks) {
       styleAndFitPdfOverlayBlock(el);
     }
+    refitAllImageVisionOverlays();
+  }
+
+  // =========================================================
+  // R4: On-Demand Vision Image Overlay Renderer
+  // =========================================================
+  function fitVisionOverlayBlock(blockEl, role) {
+    if (!blockEl || !blockEl.isConnected) return;
+    const h = blockEl.clientHeight;
+    const w = blockEl.clientWidth;
+    if (h < 6 || w < 10) return;
+
+    let fs = role === 'title'
+      ? Math.min(24, Math.max(11, Math.round(h * 0.42)))
+      : (role === 'badge'
+        ? Math.min(15, Math.max(9.5, Math.round(h * 0.62)))
+        : Math.min(16, Math.max(10, Math.round(h * 0.34))));
+
+    blockEl.style.fontSize = `${fs}px`;
+    let guard = 0;
+    while (
+      guard < 16 &&
+      fs > 8.5 &&
+      (blockEl.scrollHeight > h + 3 || blockEl.scrollWidth > w + 4)
+    ) {
+      fs = Math.max(8.5, +(fs - (fs > 15 ? 1.25 : 0.65)).toFixed(2));
+      blockEl.style.fontSize = `${fs}px`;
+      guard += 1;
+    }
+  }
+
+  // Sibling labels of the same role (all card titles, all badges, all body lines) share one size,
+  // like the original design; the smallest fitted size is used so every label still fits its box.
+  function unifyVisionOverlayRoleSizes(layer) {
+    if (!layer) return;
+    const byRole = new Map();
+    for (const blockEl of layer.querySelectorAll('.kct-img-overlay-block')) {
+      const fs = parseFloat(blockEl.style.fontSize);
+      if (!Number.isFinite(fs)) continue;
+      const role = blockEl.getAttribute('data-kct-role') || 'body';
+      if (!byRole.has(role)) byRole.set(role, []);
+      byRole.get(role).push({ blockEl, fs });
+    }
+    for (const items of byRole.values()) {
+      if (items.length < 2) continue;
+      const shared = Math.min(...items.map((it) => it.fs));
+      for (const it of items) it.blockEl.style.fontSize = `${shared}px`;
+    }
+  }
+
+  function renderImageVisionOverlay(imgEl, blocks) {
+    if (!imgEl || !imgEl.isConnected || !Array.isArray(blocks)) return null;
+    const parent = imgEl.parentElement;
+    if (!parent) return null;
+
+    // Reuse or wrap inside a dedicated relative host so overlay tracks exact image geometry
+    let host = imgEl.closest('.kct-img-overlay-host[data-kct-ui="img-host"]');
+    if (!host) {
+      host = document.createElement('span');
+      host.className = 'kct-img-overlay-host';
+      host.setAttribute('data-kct-ui', 'img-host');
+      const imgCs = getComputedStyle(imgEl);
+      host.style.display = imgCs.display === 'block' ? 'block' : 'inline-block';
+      host.style.position = 'relative';
+      host.style.maxWidth = '100%';
+      parent.insertBefore(host, imgEl);
+      host.appendChild(imgEl);
+    }
+
+    let layer = host.querySelector(':scope > .kct-img-overlay-layer[data-kct-ui="img-overlay"]');
+    if (layer) layer.remove();
+
+    layer = document.createElement('div');
+    layer.className = 'kct-img-overlay-layer';
+    layer.setAttribute('data-kct-ui', 'img-overlay');
+    layer.setAttribute('translate', 'no');
+
+    const syncLayerBounds = () => {
+      if (!imgEl.isConnected || !layer.isConnected) return;
+      layer.style.left = `${imgEl.offsetLeft}px`;
+      layer.style.top = `${imgEl.offsetTop}px`;
+      layer.style.width = `${imgEl.clientWidth || imgEl.offsetWidth}px`;
+      layer.style.height = `${imgEl.clientHeight || imgEl.offsetHeight}px`;
+    };
+    syncLayerBounds();
+
+    for (const b of blocks) {
+      const item = document.createElement('div');
+      item.className = `kct-img-overlay-block kct-img-role-${b.role || 'body'}`;
+      item.setAttribute('data-kct-ui', 'img-block');
+      item.setAttribute('data-kct-role', b.role || 'body');
+      const leftPct = Math.max(0, Math.min(99, b.xmin / 10));
+      const topPct = Math.max(0, Math.min(99, b.ymin / 10));
+      const widthPct = Math.max(1, Math.min(100 - leftPct, (b.xmax - b.xmin) / 10));
+      const heightPct = Math.max(1, Math.min(100 - topPct, (b.ymax - b.ymin) / 10));
+      item.style.left = `${leftPct.toFixed(2)}%`;
+      item.style.top = `${topPct.toFixed(2)}%`;
+      item.style.width = `${widthPct.toFixed(2)}%`;
+      item.style.height = `${heightPct.toFixed(2)}%`;
+      item.style.setProperty('--kct-img-bg', b.bg || '#ffffff');
+      item.style.setProperty('--kct-img-fg', b.fg || '#1e293b');
+      // Vision output sometimes inserts spaces between CJK characters; drop them so the label reads naturally
+      const labelText = String(b.text || '').replace(/([\p{Script=Han}\u3000-\u303f\uff00-\uffef])\s+(?=[\p{Script=Han}\u3000-\u303f\uff00-\uffef])/gu, '$1');
+      item.appendChild(document.createTextNode(labelText));
+      layer.appendChild(item);
+    }
+
+    host.appendChild(layer);
+    imgEl.setAttribute('data-kct-img-translated', '1');
+    imgEl.setAttribute('data-kct-img-mode', 'translated');
+
+    requestAnimationFrame(() => {
+      syncLayerBounds();
+      for (const blockEl of layer.querySelectorAll('.kct-img-overlay-block')) {
+        fitVisionOverlayBlock(blockEl, blockEl.getAttribute('data-kct-role') || 'body');
+      }
+      unifyVisionOverlayRoleSizes(layer);
+    });
+
+    return layer;
+  }
+
+  function refitAllImageVisionOverlays() {
+    const hosts = document.querySelectorAll('.kct-img-overlay-host[data-kct-ui="img-host"]');
+    for (const host of hosts) {
+      const imgEl = host.querySelector('img');
+      const layer = host.querySelector(':scope > .kct-img-overlay-layer[data-kct-ui="img-overlay"]');
+      if (!imgEl || !layer) continue;
+      layer.style.left = `${imgEl.offsetLeft}px`;
+      layer.style.top = `${imgEl.offsetTop}px`;
+      layer.style.width = `${imgEl.clientWidth || imgEl.offsetWidth}px`;
+      layer.style.height = `${imgEl.clientHeight || imgEl.offsetHeight}px`;
+      for (const blockEl of layer.querySelectorAll('.kct-img-overlay-block')) {
+        fitVisionOverlayBlock(blockEl, blockEl.getAttribute('data-kct-role') || 'body');
+      }
+      unifyVisionOverlayRoleSizes(layer);
+    }
+  }
+
+  function clearAllImageVisionOverlays() {
+    const hosts = Array.from(document.querySelectorAll('.kct-img-overlay-host[data-kct-ui="img-host"]'));
+    for (const host of hosts) {
+      const img = host.querySelector('img');
+      if (img && host.parentElement) {
+        img.removeAttribute('data-kct-img-translated');
+        img.removeAttribute('data-kct-img-mode');
+        host.parentElement.insertBefore(img, host);
+      }
+      host.remove();
+    }
   }
 
   globalThis.KCTRenderer = {
@@ -2523,7 +3117,10 @@
     buildTranslatedFragment,
     sanitizeFontFamily,
     styleAndFitPdfOverlayBlock,
-    refitAllPdfOverlayBlocks
+    refitAllPdfOverlayBlocks,
+    renderImageVisionOverlay,
+    refitAllImageVisionOverlays,
+    clearAllImageVisionOverlays
   };
 })();
 
@@ -2557,7 +3154,7 @@
   const KCTRenderer = globalThis.KCTRenderer;
   const KCTCodeOverlay = globalThis.KCTCodeOverlay;
 
-  const PAGE_STYLE_CSS = "/* Universal AI Web & Notebook Translator v2.0 - Page Typography & Mode Rules */\n/* Note: Floating control pill & selection popover are encapsulated in Shadow DOM. */\n\n:root {\n  --kct-accent: #0284c7;\n  --kct-accent-soft: rgba(2, 132, 199, 0.08);\n  --kct-hairline: rgba(148, 163, 184, 0.45);\n  --kct-border: rgba(15, 23, 42, 0.12);\n  --kct-text: #1e293b;\n  --kct-bilingual-ink: #475569;\n  --kct-bg: rgba(255, 255, 255, 0.9);\n\n  /* Default target language: Traditional Chinese (zh-TW) */\n  --kct-font-serif: \"Noto Serif TC\", \"Songti TC\", \"PMingLiU\", \"Source Han Serif TC\", Georgia, serif;\n  --kct-font-sans: \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", \"Heiti TC\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", monospace;\n}\n\nhtml.kct-lang-sc {\n  --kct-font-serif: \"Noto Serif SC\", \"Songti SC\", \"STSong\", \"SimSun\", \"Source Han Serif SC\", Georgia, serif;\n  --kct-font-sans: \"PingFang SC\", \"Noto Sans SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang SC\", \"Noto Sans SC\", \"Microsoft YaHei\", monospace;\n}\n\nhtml.kct-lang-ja {\n  --kct-font-serif: \"Hiragino Mincho ProN\", \"Yu Mincho\", \"Noto Serif JP\", \"MS PMincho\", Georgia, serif;\n  --kct-font-sans: \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"Noto Sans JP\", \"Yu Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Hiragino Sans\", \"Noto Sans JP\", monospace;\n}\n\nhtml.kct-lang-ko {\n  --kct-font-serif: \"Noto Serif KR\", \"AppleMyungjo\", \"Batang\", Georgia, serif;\n  --kct-font-sans: \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Apple SD Gothic Neo\", \"Noto Sans KR\", monospace;\n}\n\nhtml.kct-lang-latin {\n  --kct-font-serif: Georgia, \"Charter\", \"Times New Roman\", serif;\n  --kct-font-sans: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Inter\", sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace;\n}\n\n@media (prefers-color-scheme: dark) {\n  :root {\n    --kct-accent: #38bdf8;\n    --kct-accent-soft: rgba(56, 189, 248, 0.12);\n    --kct-hairline: rgba(148, 163, 184, 0.34);\n    --kct-border: rgba(255, 255, 255, 0.16);\n    --kct-text: #f1f5f9;\n    --kct-bilingual-ink: #cbd5e1;\n    --kct-bg: rgba(15, 23, 42, 0.9);\n  }\n}\n\nbody[data-jp-theme-light=\"false\"],\nhtml[data-theme=\"dark\"],\nhtml.dark,\nbody.theme-dark {\n  --kct-accent: #38bdf8;\n  --kct-accent-soft: rgba(56, 189, 248, 0.12);\n  --kct-hairline: rgba(148, 163, 184, 0.34);\n  --kct-border: rgba(255, 255, 255, 0.16);\n  --kct-text: #f1f5f9;\n  --kct-bilingual-ink: #cbd5e1;\n  --kct-bg: rgba(15, 23, 42, 0.9);\n}\n\n/* =========================================================\n   1. Replace Mode (Native-Feel Typography Matching)\n   ========================================================= */\nhtml.kct-mode-replace .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-replace .kct-trans-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\n/* Native mode: keep original site Latin font first (when non-generic), fall back to matched Serif/Sans/Mono CJK */\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-font-mono) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-mono) !important;\n}\n\n/* System mode: uniform clean sans font */\nhtml.kct-typo-system.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\n/* Preserve mode: do not override font-family or line-height */\n\n/* Selective line-height lift ONLY on dense multi-line reading prose */\nhtml.kct-mode-replace:not(.kct-typo-preserve) [data-kct-has-trans=\"1\"][data-kct-lh-lift=\"1\"] {\n  line-height: 1.72 !important;\n}\n\n/* =========================================================\n   2. Original Mode (Instant Zero-Cost Compare)\n   ========================================================= */\nhtml.kct-mode-original .kct-trans-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-original .kct-orig-wrap {\n  display: contents;\n}\n\n/* =========================================================\n   3. Bilingual Mode (Clean Hairline Contrast)\n   ========================================================= */\nhtml.kct-mode-bilingual .kct-orig-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-bilingual .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-mono);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-mono);\n}\n\nhtml.kct-typo-system.kct-mode-bilingual .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-mode-bilingual [data-kct-inline-layout=\"1\"] > .kct-trans-wrap {\n  display: inline;\n  margin-top: 0;\n  margin-left: 0.45em;\n  padding-left: 0.45em;\n  border-left: 1px solid var(--kct-hairline);\n}\n\n/* =========================================================\n   Non-destructive Code Comment Translation\n   - Static <pre>: CSS attr() + font-size:0 swap\n   - CodeMirror 6 (.cm-editor): non-intrusive .cm-scroller overlay layer\n   ========================================================= */\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans] {\n  font-size: 0 !important;\n  letter-spacing: 0 !important;\n}\n\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans]::after {\n  content: attr(data-kct-comment-trans);\n  font-size: var(--kct-code-font-size, 13px);\n  letter-spacing: normal;\n  font-family: var(--kct-font-mono);\n}\n\n.kct-cm-layer {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 4;\n  overflow: visible;\n}\n\n.kct-cm-comment {\n  position: absolute;\n  display: flex;\n  align-items: center;\n  white-space: pre;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  font-family: var(--kct-font-mono);\n  pointer-events: none;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-cm-layer,\nhtml:not(.kct-comments-on) .kct-cm-layer,\nhtml .cm-editor.cm-focused .kct-cm-layer {\n  display: none !important;\n}\n\n/* =========================================================\n   Jupyter Code Cell Output Quick Translate Button & Result\n   ========================================================= */\n.kct-output-host {\n  position: relative;\n}\n\n.kct-output-btn {\n  all: unset;\n  box-sizing: border-box;\n  position: absolute;\n  top: 6px;\n  right: 8px;\n  z-index: 10;\n  cursor: pointer;\n  font-family: var(--kct-font-sans);\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: var(--kct-bg);\n  color: var(--kct-accent);\n  border: 1px solid var(--kct-border);\n  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);\n  opacity: 0.85;\n  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;\n}\n\n.kct-output-btn:hover {\n  opacity: 1;\n  background: var(--kct-accent);\n  color: #ffffff;\n  border-color: transparent;\n}\n\n.kct-output-trans {\n  font-family: var(--kct-font-sans);\n  color: var(--kct-text);\n  background: var(--kct-accent-soft);\n  border-left: 2px solid var(--kct-accent);\n  border-radius: 0 6px 6px 0;\n  padding: 8px 12px;\n  margin-top: 8px;\n  font-size: 13px;\n  line-height: 1.65;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n/* =========================================================\n   5. Image/Canvas-Backed PDF Text Layer Overlay (Google Drive PDF Viewer)\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] {\n  z-index: 2 !important;\n  opacity: 1 !important;\n  pointer-events: none !important;\n  overflow: visible !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > :not([data-kct-has-trans=\"1\"]),\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > [data-kct-pdf-merged=\"absorbed\"] {\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] {\n  opacity: 1 !important;\n  pointer-events: auto !important;\n  background-color: var(--kct-pdf-bg, #ffffff) !important;\n  box-shadow: 0 0 0 5px var(--kct-pdf-bg, #ffffff) !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  font-size: var(--kct-pdf-fs, 13px) !important;\n  line-height: var(--kct-pdf-lh, 1.42) !important;\n  font-weight: var(--kct-pdf-fw, 400) !important;\n  box-sizing: border-box !important;\n  margin: 0 !important;\n  padding: 1px 4px !important;\n  border-radius: 2px !important;\n  display: block !important;\n  white-space: normal !important;\n  word-break: break-word !important;\n  overflow: visible !important;\n  transition: box-shadow 0.14s ease;\n}\n\n/* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: contents !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  margin: 0 !important;\n  padding: 0 !important;\n  border: none !important;\n  font-size: inherit !important;\n  line-height: inherit !important;\n  font-weight: inherit !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  height: auto !important;\n  padding: 8px 10px !important;\n  border-radius: 6px !important;\n  border: 1px solid var(--kct-accent) !important;\n  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.25) !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: block !important;\n  font-size: 0.86em !important;\n  line-height: 1.4 !important;\n  opacity: 0.76 !important;\n  margin-bottom: 6px !important;\n  padding-bottom: 6px !important;\n  border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;\n}\n";
+  const PAGE_STYLE_CSS = "/* Universal AI Web & Notebook Translator v2.0 - Page Typography & Mode Rules */\n/* Note: Floating control pill & selection popover are encapsulated in Shadow DOM. */\n\n:root {\n  --kct-accent: #0284c7;\n  --kct-accent-soft: rgba(2, 132, 199, 0.08);\n  --kct-hairline: rgba(148, 163, 184, 0.45);\n  --kct-border: rgba(15, 23, 42, 0.12);\n  --kct-text: #1e293b;\n  --kct-bilingual-ink: #475569;\n  --kct-bg: rgba(255, 255, 255, 0.9);\n\n  /* Default target language: Traditional Chinese (zh-TW) */\n  --kct-font-serif: \"Noto Serif TC\", \"Songti TC\", \"PMingLiU\", \"Source Han Serif TC\", Georgia, serif;\n  --kct-font-sans: \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", \"Heiti TC\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", monospace;\n}\n\nhtml.kct-lang-sc {\n  --kct-font-serif: \"Noto Serif SC\", \"Songti SC\", \"STSong\", \"SimSun\", \"Source Han Serif SC\", Georgia, serif;\n  --kct-font-sans: \"PingFang SC\", \"Noto Sans SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang SC\", \"Noto Sans SC\", \"Microsoft YaHei\", monospace;\n}\n\nhtml.kct-lang-ja {\n  --kct-font-serif: \"Hiragino Mincho ProN\", \"Yu Mincho\", \"Noto Serif JP\", \"MS PMincho\", Georgia, serif;\n  --kct-font-sans: \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"Noto Sans JP\", \"Yu Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Hiragino Sans\", \"Noto Sans JP\", monospace;\n}\n\nhtml.kct-lang-ko {\n  --kct-font-serif: \"Noto Serif KR\", \"AppleMyungjo\", \"Batang\", Georgia, serif;\n  --kct-font-sans: \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Apple SD Gothic Neo\", \"Noto Sans KR\", monospace;\n}\n\nhtml.kct-lang-latin {\n  --kct-font-serif: Georgia, \"Charter\", \"Times New Roman\", serif;\n  --kct-font-sans: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Inter\", sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace;\n}\n\nhtml.kct-page-dark,\nbody[data-jp-theme-light=\"false\"],\nhtml[data-theme=\"dark\"],\nhtml.dark,\nbody.theme-dark {\n  --kct-accent: #38bdf8;\n  --kct-accent-soft: rgba(56, 189, 248, 0.12);\n  --kct-hairline: rgba(148, 163, 184, 0.34);\n  --kct-border: rgba(255, 255, 255, 0.16);\n  --kct-text: #f1f5f9;\n  --kct-bilingual-ink: #cbd5e1;\n  --kct-bg: rgba(15, 23, 42, 0.9);\n}\n\n/* Preserve table & Infobox column widths when CJK labels sit next to long unbroken URLs */\nhtml.kct-active:not(.kct-mode-original) table th[data-kct-has-trans=\"1\"] {\n  min-width: 4.5em;\n  word-break: keep-all;\n  overflow-wrap: break-word;\n}\n\nhtml.kct-active:not(.kct-mode-original) table td[data-kct-has-trans=\"1\"],\nhtml.kct-active:not(.kct-mode-original) .infobox td {\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n/* =========================================================\n   1. Replace Mode (Native-Feel Typography Matching)\n   ========================================================= */\nhtml.kct-mode-replace .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-replace .kct-trans-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\n/* Native mode: keep original site Latin font first (when non-generic), fall back to matched Serif/Sans/Mono CJK */\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-font-mono) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-mono) !important;\n}\n\n/* System mode: uniform clean sans font */\nhtml.kct-typo-system.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\n/* Preserve mode: do not override font-family or line-height */\n\n/* Selective line-height lift ONLY on dense multi-line reading prose */\nhtml.kct-mode-replace:not(.kct-typo-preserve) [data-kct-has-trans=\"1\"][data-kct-lh-lift=\"1\"] {\n  line-height: 1.72 !important;\n}\n\n/* =========================================================\n   2. Original Mode (Instant Zero-Cost Compare)\n   ========================================================= */\nhtml.kct-mode-original .kct-trans-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-original .kct-orig-wrap {\n  display: contents;\n}\n\n/* =========================================================\n   3. Bilingual Mode (Clean Hairline Contrast)\n   ========================================================= */\nhtml.kct-mode-bilingual .kct-orig-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-bilingual .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-mono);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-mono);\n}\n\nhtml.kct-typo-system.kct-mode-bilingual .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-mode-bilingual [data-kct-inline-layout=\"1\"] > .kct-trans-wrap {\n  display: inline;\n  margin-top: 0;\n  margin-left: 0.45em;\n  padding-left: 0.45em;\n  border-left: 1px solid var(--kct-hairline);\n}\n\n/* =========================================================\n   Non-destructive Code Comment Translation\n   - Static <pre>: CSS attr() + font-size:0 swap\n   - CodeMirror 6 (.cm-editor): non-intrusive .cm-scroller overlay layer\n   ========================================================= */\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans] {\n  font-size: 0 !important;\n  letter-spacing: 0 !important;\n}\n\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans]::after {\n  content: attr(data-kct-comment-trans);\n  font-size: var(--kct-code-font-size, 13px);\n  letter-spacing: normal;\n  font-family: var(--kct-font-mono);\n}\n\n.kct-cm-layer {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 4;\n  overflow: visible;\n}\n\n.kct-cm-comment {\n  position: absolute;\n  display: flex;\n  align-items: center;\n  white-space: pre;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  font-family: var(--kct-font-mono);\n  pointer-events: none;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-cm-layer,\nhtml:not(.kct-comments-on) .kct-cm-layer,\nhtml .cm-editor.cm-focused .kct-cm-layer {\n  display: none !important;\n}\n\n/* =========================================================\n   Jupyter Code Cell Output Quick Translate Button & Result\n   ========================================================= */\n.kct-output-host {\n  position: relative;\n}\n\n.kct-output-btn {\n  all: unset;\n  box-sizing: border-box;\n  position: absolute;\n  top: 6px;\n  right: 8px;\n  z-index: 10;\n  cursor: pointer;\n  font-family: var(--kct-font-sans);\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: var(--kct-bg);\n  color: var(--kct-accent);\n  border: 1px solid var(--kct-border);\n  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);\n  opacity: 0.85;\n  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;\n}\n\n.kct-output-btn:hover {\n  opacity: 1;\n  background: var(--kct-accent);\n  color: #ffffff;\n  border-color: transparent;\n}\n\n.kct-output-trans {\n  font-family: var(--kct-font-sans);\n  color: var(--kct-text);\n  background: var(--kct-accent-soft);\n  border-left: 2px solid var(--kct-accent);\n  border-radius: 0 6px 6px 0;\n  padding: 8px 12px;\n  margin-top: 8px;\n  font-size: 13px;\n  line-height: 1.65;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n/* =========================================================\n   5. Image/Canvas-Backed PDF Text Layer Overlay (Google Drive PDF Viewer)\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] {\n  z-index: 2 !important;\n  opacity: 1 !important;\n  pointer-events: none !important;\n  overflow: visible !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > :not([data-kct-has-trans=\"1\"]),\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > [data-kct-pdf-merged=\"absorbed\"] {\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] {\n  opacity: 1 !important;\n  pointer-events: auto !important;\n  background-color: var(--kct-pdf-bg, #ffffff) !important;\n  box-shadow: 0 0 0 2px var(--kct-pdf-bg, #ffffff) !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  font-size: var(--kct-pdf-fs, 13px) !important;\n  line-height: var(--kct-pdf-lh, 1.42) !important;\n  font-weight: var(--kct-pdf-fw, 400) !important;\n  box-sizing: border-box !important;\n  margin: 0 !important;\n  padding: 1px 4px !important;\n  border-radius: 2px !important;\n  display: block !important;\n  white-space: normal !important;\n  word-break: break-word !important;\n  overflow: hidden !important;\n  transition: box-shadow 0.14s ease;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  overflow: visible !important;\n  height: auto !important;\n}\n\n/* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: contents !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  margin: 0 !important;\n  padding: 0 !important;\n  border: none !important;\n  font-size: inherit !important;\n  line-height: inherit !important;\n  font-weight: inherit !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  height: auto !important;\n  padding: 8px 10px !important;\n  border-radius: 6px !important;\n  border: 1px solid var(--kct-accent) !important;\n  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.25) !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: block !important;\n  font-size: 0.86em !important;\n  line-height: 1.4 !important;\n  opacity: 0.76 !important;\n  margin-bottom: 6px !important;\n  padding-bottom: 6px !important;\n  border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;\n}\n\n/* =========================================================\n   Google Drive PDF: table-of-contents rows\n   (translated title + native dot leader + right-aligned page number).\n   Placed last so it overrides the generic overlay / bilingual hover rules above.\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] {\n  display: flex !important;\n  align-items: baseline !important;\n  white-space: nowrap !important;\n  overflow: hidden !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap,\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: block !important;\n  flex: 0 1 auto !important;\n  min-width: 0 !important;\n  overflow: hidden !important;\n  text-overflow: ellipsis !important;\n  white-space: nowrap !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  height: auto !important;\n  padding: 1px 4px !important;\n}\n\n[data-kct-pdf-layer=\"1\"] > p > .kct-pdf-toc-tail {\n  display: none;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-pdf-toc-tail {\n  display: flex !important;\n  flex: 1 1 auto !important;\n  align-items: baseline !important;\n  min-width: 2.2em !important;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-leader {\n  flex: 1 1 auto;\n  height: 0;\n  margin: 0 0.5em;\n  border-bottom: 0.13em dotted currentColor;\n  opacity: 0.6;\n}\n\n[data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-toc-leader=\"none\"] .kct-pdf-toc-leader {\n  border-bottom-color: transparent;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-num {\n  flex: none;\n  font-variant-numeric: tabular-nums;\n}\n\n/* =========================================================\n   6. R4: On-Demand Vision Image Overlay Translation\n   ========================================================= */\n.kct-img-overlay-host {\n  position: relative;\n  line-height: 0;\n}\n\n.kct-img-overlay-layer {\n  position: absolute;\n  pointer-events: none;\n  z-index: 6;\n  overflow: hidden;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-img-overlay-layer,\n.kct-img-overlay-host > img[data-kct-img-mode=\"original\"] ~ .kct-img-overlay-layer {\n  display: none !important;\n}\n\n.kct-img-overlay-block {\n  position: absolute;\n  box-sizing: border-box;\n  background-color: var(--kct-img-bg, #ffffff);\n  box-shadow: 0 0 0 2px var(--kct-img-bg, #ffffff);\n  color: var(--kct-img-fg, #1e293b);\n  font-family: var(--kct-font-sans);\n  line-height: 1.28;\n  padding: 1px 3px;\n  border-radius: 3px;\n  display: flex;\n  align-items: center;\n  white-space: normal;\n  word-break: break-word;\n  overflow: hidden;\n  pointer-events: auto;\n}\n\n.kct-img-overlay-block.kct-img-role-title {\n  font-weight: 700;\n  line-height: 1.22;\n}\n\n.kct-img-overlay-block.kct-img-role-badge {\n  font-weight: 600;\n  justify-content: center;\n  text-align: center;\n  border-radius: 999px;\n}\n\n.kct-img-overlay-block:hover {\n  z-index: 20;\n  overflow: visible;\n  height: auto !important;\n  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--kct-accent);\n}\n";
 
   // ============================================================
   // 1. Storage Adapter (GM_getValue / GM_setValue + localStorage)

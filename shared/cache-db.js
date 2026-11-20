@@ -6,9 +6,16 @@
   const STORE_NAME = 'entries';
   const MAX_ENTRIES = 20000;
   const LEGACY_CACHE_KEY = 'kct_translation_cache_v1';
+  const TOUCH_THRESHOLD_MS = 60 * 1000;
+  const TOUCH_DEBOUNCE_MS = 250;
+  const TOUCH_MAX_BATCH = 200;
 
   let dbPromise = null;
   let migrationPromise = null;
+  const pendingTouches = new Map();
+  let touchTimer = null;
+  let activeFlushPromise = null;
+  let dbEpoch = 0;
 
   function openDB() {
     if (typeof indexedDB === 'undefined') {
@@ -69,11 +76,100 @@
     return dbPromise;
   }
 
+  function queueTouch(keys, ts) {
+    if (!Array.isArray(keys) || keys.length === 0) return;
+    for (const key of keys) {
+      if (typeof key !== 'string' || !key) continue;
+      pendingTouches.set(key, Math.max(pendingTouches.get(key) || 0, ts));
+    }
+    if (pendingTouches.size === 0) return;
+    if (pendingTouches.size >= TOUCH_MAX_BATCH) {
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+      void flushTouches();
+      return;
+    }
+    if (touchTimer) {
+      clearTimeout(touchTimer);
+    }
+    touchTimer = setTimeout(() => {
+      touchTimer = null;
+      void flushTouches();
+    }, TOUCH_DEBOUNCE_MS);
+  }
+
+  async function flushTouches() {
+    while (pendingTouches.size > 0 || activeFlushPromise) {
+      if (activeFlushPromise) {
+        await activeFlushPromise.catch(() => {});
+        continue;
+      }
+      const flushEpoch = dbEpoch;
+      const batch = [];
+      for (const [key, touchTs] of pendingTouches) {
+        batch.push([key, touchTs]);
+        pendingTouches.delete(key);
+        if (batch.length >= TOUCH_MAX_BATCH) break;
+      }
+      if (batch.length === 0) break;
+
+      activeFlushPromise = (async () => {
+        try {
+          const db = await openDB();
+          if (flushEpoch !== dbEpoch) return;
+          await new Promise((resolve) => {
+            try {
+              const tx = db.transaction(STORE_NAME, 'readwrite');
+              const store = tx.objectStore(STORE_NAME);
+              for (const [key, touchTs] of batch) {
+                const req = store.get(key);
+                req.onsuccess = () => {
+                  if (flushEpoch !== dbEpoch) return;
+                  const rec = req.result;
+                  if (
+                    rec &&
+                    typeof rec.zh === 'string' &&
+                    rec.zh.trim() &&
+                    (!Number.isFinite(rec.ts) || rec.ts < touchTs)
+                  ) {
+                    store.put({ key: rec.key, zh: rec.zh, ts: touchTs });
+                  }
+                };
+                req.onerror = (e) => {
+                  try { e?.stopPropagation?.(); } catch (_) {}
+                };
+              }
+              tx.oncomplete = () => resolve();
+              tx.onerror = (e) => {
+                try { e?.stopPropagation?.(); } catch (_) {}
+                resolve();
+              };
+              tx.onabort = () => resolve();
+            } catch (_) {
+              resolve();
+            }
+          });
+        } catch (_) {
+          // Swallow background touch failures
+        } finally {
+          activeFlushPromise = null;
+        }
+      })();
+      await activeFlushPromise;
+    }
+  }
+
   async function getMany(keys) {
     const result = new Map();
     if (!Array.isArray(keys) || keys.length === 0) return result;
     const uniqueKeys = Array.from(new Set(keys.filter((k) => typeof k === 'string' && k.length > 0)));
     if (uniqueKeys.length === 0) return result;
+
+    const readEpoch = dbEpoch;
+    const now = Date.now();
+    const staleHitKeys = [];
 
     try {
       const db = await openDB();
@@ -88,11 +184,19 @@
               const rec = req.result;
               if (rec && typeof rec.zh === 'string' && rec.zh.trim()) {
                 result.set(key, rec.zh);
+                if (!Number.isFinite(rec.ts) || (now - rec.ts) >= TOUCH_THRESHOLD_MS) {
+                  staleHitKeys.push(key);
+                }
               }
             };
           }
 
-          tx.oncomplete = () => resolve(result);
+          tx.oncomplete = () => {
+            if (staleHitKeys.length > 0 && readEpoch === dbEpoch) {
+              queueTouch(staleHitKeys, now);
+            }
+            resolve(result);
+          };
           tx.onerror = () => resolve(result);
           tx.onabort = () => resolve(result);
         } catch (_) {
@@ -106,8 +210,8 @@
 
   async function putMany(entries) {
     if (!Array.isArray(entries) || entries.length === 0) return false;
-    const now = Date.now();
-    const valid = [];
+    const preFiltered = [];
+    const incomingKeys = new Set();
     for (let i = 0; i < entries.length; i++) {
       const item = entries[i];
       const key = typeof item?.key === 'string'
@@ -117,11 +221,40 @@
           : '';
       const zh = typeof item?.zh === 'string' ? item.zh : '';
       if (key && zh.trim()) {
-        const ts = Number.isFinite(item?.ts) ? item.ts : now + i;
-        valid.push({ key, zh, ts });
+        preFiltered.push({
+          key,
+          zh,
+          explicitTs: Number.isFinite(item?.ts) ? item.ts : null
+        });
+        incomingKeys.add(key);
       }
     }
-    if (valid.length === 0) return true;
+    if (preFiltered.length === 0) return true;
+
+    for (const key of incomingKeys) {
+      pendingTouches.delete(key);
+    }
+    if (pendingTouches.size === 0 && touchTimer) {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+    if (pendingTouches.size > 0 || activeFlushPromise) {
+      await flushTouches();
+    }
+    for (const key of incomingKeys) {
+      pendingTouches.delete(key);
+    }
+    if (pendingTouches.size === 0 && touchTimer) {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+
+    const now = Date.now();
+    const valid = preFiltered.map((item) => ({
+      key: item.key,
+      zh: item.zh,
+      ts: item.explicitTs !== null ? item.explicitTs : now
+    }));
 
     try {
       const db = await openDB();
@@ -166,6 +299,15 @@
   }
 
   async function clear() {
+    dbEpoch += 1;
+    pendingTouches.clear();
+    if (touchTimer) {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+    if (activeFlushPromise) {
+      await activeFlushPromise.catch(() => {});
+    }
     try {
       const db = await openDB();
       await new Promise((resolve) => {

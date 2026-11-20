@@ -95,13 +95,13 @@
     '[itemprop="articleBody"]'
   ].join(', ');
 
-  const INLINE_PROTECT_SELECTOR = 'code, kbd, var, .katex, .MathJax, mjx-container';
+  const INLINE_PROTECT_SELECTOR = 'code, kbd, var, .katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference';
 
   const SHADOW_SKIP_SELECTOR = '[data-kct-ui], script, style, svg, pre, code, noscript, template, iframe, .cm-editor, .CodeMirror, .monaco-editor';
 
   const PROSE_TAGS = new Set(['P', 'LI', 'BLOCKQUOTE', 'DD', 'FIGCAPTION']);
 
-  const LEAF_CANDIDATE_TAGS = new Set(['DIV', 'SPAN', 'A', 'LABEL']);
+  const LEAF_CANDIDATE_TAGS = new Set(['DIV', 'SPAN', 'A', 'LABEL', 'BUTTON']);
 
   const CHILD_BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, ul, ol, blockquote, table, td, th, section, article, main, nav, aside, header, footer, form, div, pre, hr, iframe, figure, figcaption, details, summary, dl, dt, dd, fieldset, dialog';
 
@@ -255,11 +255,15 @@
     }
 
     // Dedicated multi-page document viewer containers (e.g. Google Drive PDF Viewer)
+    const gdrivePages = Array.from(document.querySelectorAll('.ndfHFb-c4YZDc-cYSp0e-DARUcf'));
+    if (gdrivePages.length > 0) {
+      return [document.body];
+    }
     const gdrivePdfRoot = document.querySelector(
       '.ndfHFb-c4YZDc-cYSp0e-DARUcf-gSKZZ, .ndfHFb-c4YZDc-cYSp0e-s2gQvd'
     );
     if (gdrivePdfRoot && isElementVisible(gdrivePdfRoot)) {
-      return [gdrivePdfRoot];
+      return [document.body];
     }
 
     // Dedicated embedded rendered-cell containers (e.g. Jupyter / Notebook outputs)
@@ -306,6 +310,10 @@
 
         const dedupedWinners = dedupeTopmost(winners);
         if (dedupedWinners.length > 0) {
+          const topH1 = document.querySelector('#firstHeading, main h1, article h1, [role="main"] h1');
+          if (topH1 && isElementVisible(topH1) && !dedupedWinners.some((w) => w.contains(topH1))) {
+            return [topH1, ...dedupedWinners];
+          }
           return dedupedWinners;
         }
       }
@@ -491,6 +499,7 @@
     const placeholders = new Map();
     let codeIdx = 0;
     let mathIdx = 0;
+    let linkIdx = 0;
     let nestedListEl = null;
     const parts = [];
 
@@ -511,11 +520,21 @@
       }
 
       if (node.matches(INLINE_PROTECT_SELECTOR)) {
-        const isMath = node.matches('.katex, .MathJax, mjx-container');
+        const isMath = node.matches('.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference');
         const token = isMath ? `[[M${mathIdx++}]]` : `[[C${codeIdx++}]]`;
         placeholders.set(token, node);
         parts.push(token);
         return;
+      }
+
+      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
+        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (aText && (aText.length <= 28 || !shouldTranslateText(aText))) {
+          const token = `[[L${linkIdx++}]]`;
+          placeholders.set(token, node);
+          parts.push(token);
+          return;
+        }
       }
 
       if (node.tagName === 'BR') {
@@ -556,6 +575,34 @@
     const height = get('height');
     if (left === null || top === null || width === null || height === null) return null;
     return { left, top, width, height };
+  }
+
+  const PDF_TOC_LINE_REGEX = /^(.*\p{L}.*?)[\s.·•…_\-–—]+(\d{1,4}|[ivxlcdm]{1,7})$/iu;
+
+  // Table-of-contents rows ("Title ........ 12") are single lines whose page numbers share one right edge.
+  // Require >= 3 aligned rows on the same page so body lines that merely end in a number are never caught.
+  function detectPdfTocEntries(groups) {
+    const result = new Map();
+    const candidates = [];
+    for (const g of groups) {
+      if (g.lineCount !== 1) continue;
+      const m = g.text.match(PDF_TOC_LINE_REGEX);
+      if (!m) continue;
+      const title = m[1].replace(/[\s.·•…_]+$/u, '').trim();
+      if (title.length < 2) continue;
+      candidates.push({ g, title, num: m[2], right: g.left + g.width });
+    }
+    if (candidates.length < 3) return result;
+
+    const rights = candidates.map((c) => c.right).sort((a, b) => a - b);
+    const medianRight = rights[Math.floor(rights.length / 2)];
+    const aligned = candidates.filter((c) => Math.abs(c.right - medianRight) <= 1.2);
+    if (aligned.length < 3) return result;
+
+    for (const c of aligned) {
+      result.set(c.g, { title: c.title, num: c.num });
+    }
+    return result;
   }
 
   function preparePdfOverlayLayers(roots) {
@@ -619,39 +666,51 @@
 
       const groups = [];
       for (const item of items) {
-        const prev = groups[groups.length - 1];
-        if (prev) {
-          const prevBottom = prev.top + prev.height;
+        let matchedGroup = null;
+        for (let gi = groups.length - 1; gi >= 0; gi--) {
+          const candidate = groups[gi];
+          const prevBottom = candidate.top + candidate.height;
           const vGap = item.top - prevBottom;
-          const hRatio = Math.abs(item.height - prev.avgLineH) / Math.max(item.height, prev.avgLineH, 0.1);
-          const leftDiff = Math.abs(item.left - prev.left);
-          const isTocLine = /\s+\d{1,3}$/.test(prev.lastLineText) || /\s+\d{1,3}$/.test(item.text);
-          const prevEndedShort = prev.lastWidth < 46 && /[.!?。！？]$/.test(prev.text);
+          if (vGap > 1.2 * Math.max(candidate.avgLineH, item.height, 1)) {
+            continue;
+          }
+          const hRatio = Math.abs(item.height - candidate.avgLineH) / Math.max(item.height, candidate.avgLineH, 0.1);
+          const leftDiff = Math.abs(item.left - candidate.left);
+          const isTocLine = /\s+\d{1,3}$/.test(candidate.lastLineText) || /\s+\d{1,3}$/.test(item.text);
+          const colEndThreshold = candidate.width > 50 ? 44 : candidate.width * 0.72;
+          const prevEndedShort = candidate.lastWidth < colEndThreshold && /[.!?。！？]$/.test(candidate.text);
 
           if (
             !isTocLine &&
             !prevEndedShort &&
             hRatio <= 0.36 &&
             leftDiff <= 3.6 &&
-            vGap >= -0.45 * prev.avgLineH &&
-            vGap <= 0.88 * prev.avgLineH
+            vGap >= -0.45 * candidate.avgLineH &&
+            vGap <= 0.88 * candidate.avgLineH
           ) {
-            const newLeft = Math.min(prev.left, item.left);
-            const newRight = Math.max(prev.left + prev.width, item.left + item.width);
-            const newBottom = Math.max(prevBottom, item.top + item.height);
-            prev.left = newLeft;
-            prev.width = newRight - newLeft;
-            prev.height = newBottom - prev.top;
-            prev.avgLineH = (prev.avgLineH * prev.lineCount + item.height) / (prev.lineCount + 1);
-            prev.lineCount += 1;
-            prev.lastWidth = item.width;
-            prev.lastLineText = item.text;
-            prev.text = prev.text.endsWith('-') && /^[a-z]/.test(item.text)
-              ? prev.text.slice(0, -1) + item.text
-              : `${prev.text} ${item.text}`;
-            prev.members.push(item);
-            continue;
+            matchedGroup = candidate;
+            break;
           }
+        }
+
+        if (matchedGroup) {
+          const prevBottom = matchedGroup.top + matchedGroup.height;
+          const newLeft = Math.min(matchedGroup.left, item.left);
+          const newRight = Math.max(matchedGroup.left + matchedGroup.width, item.left + item.width);
+          const newBottom = Math.max(prevBottom, item.top + item.height);
+          matchedGroup.left = newLeft;
+          matchedGroup.width = newRight - newLeft;
+          matchedGroup.height = newBottom - matchedGroup.top;
+          matchedGroup.avgLineH = (matchedGroup.avgLineH * matchedGroup.lineCount + item.height) / (matchedGroup.lineCount + 1);
+          matchedGroup.lineCount += 1;
+          matchedGroup.lastWidth = item.width;
+          matchedGroup.lastLineText = item.text;
+          matchedGroup.lastTop = item.top;
+          matchedGroup.text = matchedGroup.text.endsWith('-') && /^[a-z]/.test(item.text)
+            ? matchedGroup.text.slice(0, -1) + item.text
+            : `${matchedGroup.text} ${item.text}`;
+          matchedGroup.members.push(item);
+          continue;
         }
 
         groups.push({
@@ -663,16 +722,31 @@
           lineCount: 1,
           lastWidth: item.width,
           lastLineText: item.text,
+          lastTop: item.top,
           text: item.text,
           members: [item]
         });
       }
 
-      for (const g of groups) {
+      const tocEntries = detectPdfTocEntries(groups);
+
+      for (let gi = 0; gi < groups.length; gi++) {
+        const g = groups[gi];
+        let nearestBelowTop = 98.5;
+        for (let oj = 0; oj < groups.length; oj++) {
+          if (gi === oj) continue;
+          const other = groups[oj];
+          if (other.top < g.top + g.height - 0.4) continue;
+          const xOverlap = Math.min(g.left + g.width, other.left + other.width) - Math.max(g.left, other.left);
+          if (xOverlap > 1.5 && other.top < nearestBelowTop) {
+            nearestBelowTop = other.top;
+          }
+        }
+        const safeHeight = Math.max(g.height, Math.min(g.height + g.avgLineH * 0.45, nearestBelowTop - g.top - 0.25));
         const primary = g.members[0].el;
         primary.setAttribute(
           'style',
-          `left: ${g.left.toFixed(4)}%; top: ${g.top.toFixed(4)}%; width: ${g.width.toFixed(4)}%; height: ${g.height.toFixed(4)}%;`
+          `left: ${g.left.toFixed(4)}%; top: ${g.top.toFixed(4)}%; width: ${g.width.toFixed(4)}%; height: ${safeHeight.toFixed(4)}%;`
         );
         primary.setAttribute('data-kct-pdf-block', '1');
         primary.setAttribute('data-kct-pdf-lines', String(g.lineCount));
@@ -681,7 +755,24 @@
           'data-kct-pdf-box',
           `${g.left.toFixed(3)},${g.top.toFixed(3)},${g.width.toFixed(3)},${g.height.toFixed(3)}`
         );
-        primary.textContent = g.text;
+        const pitch = g.lineCount > 1 ? (g.lastTop - g.top) / (g.lineCount - 1) : 0;
+        if (pitch > 0) {
+          primary.setAttribute('data-kct-pdf-pitch', pitch.toFixed(4));
+        } else {
+          primary.removeAttribute('data-kct-pdf-pitch');
+        }
+
+        const toc = tocEntries.get(g);
+        if (toc) {
+          // Translate only the entry title; the page number + dot leader are re-drawn natively by the renderer
+          primary.setAttribute('data-kct-pdf-toc', '1');
+          primary.setAttribute('data-kct-pdf-toc-num', toc.num);
+          primary.textContent = toc.title;
+        } else {
+          primary.removeAttribute('data-kct-pdf-toc');
+          primary.removeAttribute('data-kct-pdf-toc-num');
+          primary.textContent = g.text;
+        }
 
         for (let i = 1; i < g.members.length; i++) {
           const absorbed = g.members[i].el;
@@ -690,6 +781,7 @@
       }
 
       layer.setAttribute('data-kct-pdf-merged-count', String(ps.length));
+      delete layer._kctTypoKey; // blocks changed: re-measure native glyph sizes on next fit
     }
   }
 
@@ -712,10 +804,18 @@
         p.removeAttribute('data-kct-pdf-line-h');
         p.removeAttribute('data-kct-pdf-box');
         p.removeAttribute('data-kct-pdf-merged');
+        p.removeAttribute('data-kct-pdf-pitch');
+        p.removeAttribute('data-kct-pdf-toc');
+        p.removeAttribute('data-kct-pdf-toc-num');
+        p.removeAttribute('data-kct-pdf-typo-key');
+        p.removeAttribute('data-kct-pdf-fs-pct');
+        p.removeAttribute('data-kct-pdf-bold');
+        p.removeAttribute('data-kct-pdf-toc-leader');
         p.style.removeProperty('--kct-pdf-bg');
         p.style.removeProperty('--kct-pdf-fg');
       }
       layer.removeAttribute('data-kct-pdf-layer');
+      delete layer._kctTypoKey;
     }
   }
 

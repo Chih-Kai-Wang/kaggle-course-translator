@@ -3,22 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NativeRead — 原版美感 AI 翻譯</title>
+  <meta name="color-scheme" content="light dark">
+  <title>NativeRead</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <header class="header">
     <div class="brand">
-      <img src="../icons/icon-48.png" alt="Logo" width="26" height="26">
+      <img src="../icons/icon-48.png" alt="Logo" width="24" height="24">
       <div class="brand-text">
         <h1>NativeRead</h1>
         <p id="model-badge" class="sub">載入中...</p>
       </div>
     </div>
-    <label class="switch" title="啟用或暫停擴充功能">
-      <input type="checkbox" id="toggle-enabled">
-      <span class="slider"></span>
-    </label>
   </header>
 
   <div id="site-bar" class="site-bar">
@@ -28,12 +25,12 @@
     </div>
     <label id="site-auto-label" class="site-auto-toggle" title="將此網站加入自動翻譯白名單">
       <input type="checkbox" id="toggle-site-auto">
-      <span>總是自動翻譯此網站</span>
+      <span>自動翻譯此站</span>
     </label>
   </div>
 
   <div id="api-alert" class="alert hidden">
-    <span>尚未填寫大模型 API Key，無法發起翻譯。</span>
+    <span>尚未設定 API Key，無法翻譯</span>
     <button id="btn-go-config" class="link-btn" type="button">立即設定</button>
   </div>
 
@@ -47,34 +44,26 @@
 
   <section class="card">
     <div class="row-label">目標語言</div>
-    <select id="lang-select" class="select-input"></select>
+    <select id="lang-select" class="select-input" aria-label="目標語言"></select>
     <input id="custom-lang-input" class="text-input hidden" type="text" placeholder="請輸入語言名稱，例如：Thai 或 粵語">
 
-    <div class="row-label">顯示模式（原版乾淨排版）</div>
-    <div class="segmented" id="mode-group">
+    <div class="row-label">顯示模式</div>
+    <div class="segmented" id="mode-group" role="group" aria-label="顯示模式">
       <button type="button" data-mode="replace">譯文</button>
       <button type="button" data-mode="original">僅原文</button>
       <button type="button" data-mode="bilingual">簡潔雙語</button>
     </div>
 
     <div class="row-label">翻譯範圍</div>
-    <div class="segmented scope-segmented" id="scope-group">
-      <button type="button" data-scope="course">智慧主文（避開導覽雜訊）</button>
-      <button type="button" data-scope="all">整頁可讀文字</button>
+    <div class="segmented scope-segmented" id="scope-group" role="group" aria-label="翻譯範圍">
+      <button type="button" data-scope="course">智慧主文</button>
+      <button type="button" data-scope="all">整頁文字</button>
     </div>
 
     <div class="toggles">
       <label class="check-row">
         <input type="checkbox" id="toggle-code-comments">
-        <span>翻譯程式碼中的 <code>#</code> / <code>//</code> 註解</span>
-      </label>
-      <label class="check-row">
-        <input type="checkbox" id="toggle-lazy-viewport">
-        <span>視口優先懶翻譯（捲到哪翻到哪）</span>
-      </label>
-      <label class="check-row">
-        <input type="checkbox" id="toggle-stream">
-        <span>串流逐段即時上屏（首字更快）</span>
+        <span>翻譯程式碼註解</span>
       </label>
       <label class="check-row">
         <input type="checkbox" id="toggle-selection">
@@ -82,13 +71,13 @@
       </label>
       <label class="check-row">
         <input type="checkbox" id="toggle-ball">
-        <span>顯示懸浮控制列（啟動翻譯後）</span>
+        <span>顯示懸浮控制列</span>
       </label>
     </div>
   </section>
 
   <footer class="footer">
-    <span id="status-text" class="status" title="">待命（按上方按鈕或 Alt+T 開始翻譯）</span>
+    <span id="status-text" class="status" title="">待命 · Alt+T 翻譯</span>
     <div class="footer-links">
       <button id="btn-open-pdf" class="link-btn link-btn-muted" type="button" title="開啟本機或線上 PDF 原版翻譯閱讀器">PDF 閱讀器</button>
       <span class="footer-sep" aria-hidden="true">·</span>

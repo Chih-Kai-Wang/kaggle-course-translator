@@ -8,10 +8,10 @@ const {
   isPdfUrl
 } = globalThis.KCTConfig;
 
-const IDLE_STATUS_TEXT = '待命（按上方按鈕或 Alt+T 開始翻譯）';
-const PDF_READY_STATUS_TEXT = '偵測到 PDF 文件（點擊上方開啟閱讀器）';
-const PDF_OPENED_STATUS_TEXT = '已開啟 PDF 原版翻譯閱讀器';
-const UNSUPPORTED_STATUS_TEXT = '此系統頁面不支援翻譯';
+const IDLE_STATUS_TEXT = '待命 · Alt+T 翻譯';
+const PDF_READY_STATUS_TEXT = '偵測到 PDF 文件';
+const PDF_OPENED_STATUS_TEXT = '已開啟 PDF 閱讀器';
+const UNSUPPORTED_STATUS_TEXT = '此頁面不支援翻譯';
 
 let currentSettings = null;
 let activeTab = null;
@@ -19,6 +19,28 @@ let activeHost = '';
 let activeTabInjectable = false;
 let activeTabIsPdf = false;
 let lastKnownTranslated = 0;
+
+let saveQueue = Promise.resolve();
+let customTimer = null;
+let customLangDirty = false;
+let pendingCustomFlushCount = 0;
+
+function enqueueSave(taskFn) {
+  const run = saveQueue.then(() => taskFn());
+  saveQueue = run.catch(() => {});
+  return run;
+}
+
+function hasPendingCustomLangEdit(customInput) {
+  return Boolean(
+    customInput && (
+      document.activeElement === customInput ||
+      customLangDirty ||
+      customTimer !== null ||
+      pendingCustomFlushCount > 0
+    )
+  );
+}
 
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -56,7 +78,7 @@ function updateActionButtonsForTab() {
   if (activeTabIsPdf) {
     if (primaryBtn) {
       primaryBtn.disabled = false;
-      primaryBtn.textContent = '翻譯此 PDF（原版排版閱讀器）';
+      primaryBtn.textContent = '開啟 PDF 原版翻譯';
     }
     if (retranslateBtn) retranslateBtn.disabled = true;
     if (clearBtn) clearBtn.disabled = true;
@@ -75,6 +97,7 @@ function renderSiteBar(settings) {
   const dotEl = document.getElementById('site-dot');
   const autoCheck = document.getElementById('toggle-site-auto');
   const autoLabel = document.getElementById('site-auto-label');
+  if (!siteBar || !hostEl || !dotEl || !autoCheck || !autoLabel) return;
 
   if (activeTabIsPdf) {
     siteBar.classList.add('disabled');
@@ -110,31 +133,40 @@ function renderSiteBar(settings) {
 }
 
 function renderUI(settings) {
-  document.getElementById('toggle-enabled').checked = Boolean(settings.enabled);
-  document.getElementById('toggle-code-comments').checked = settings.translateCodeComments !== false;
-  document.getElementById('toggle-lazy-viewport').checked = settings.lazyViewport !== false;
-  document.getElementById('toggle-stream').checked = settings.streamTranslation !== false;
-  document.getElementById('toggle-selection').checked = settings.selectionTranslate !== false;
-  document.getElementById('toggle-ball').checked = settings.showFloatingBall !== false;
+  const codeCommentsEl = document.getElementById('toggle-code-comments');
+  if (codeCommentsEl) codeCommentsEl.checked = settings.translateCodeComments !== false;
+  const selectionEl = document.getElementById('toggle-selection');
+  if (selectionEl) selectionEl.checked = settings.selectionTranslate !== false;
+  const ballEl = document.getElementById('toggle-ball');
+  if (ballEl) ballEl.checked = settings.showFloatingBall !== false;
 
   const langSel = document.getElementById('lang-select');
-  langSel.value = settings.targetLang || 'zh-TW';
+  if (langSel) langSel.value = settings.targetLang || 'zh-TW';
   const customInput = document.getElementById('custom-lang-input');
-  customInput.value = settings.customTargetLang || '';
-  customInput.classList.toggle('hidden', langSel.value !== 'custom');
+  if (customInput) {
+    if (!hasPendingCustomLangEdit(customInput)) {
+      customInput.value = settings.customTargetLang || '';
+    }
+    customInput.classList.toggle('hidden', langSel?.value !== 'custom');
+  }
 
   const isLocal = typeof globalThis.KCTConfig?.isLocalEndpoint === 'function'
     ? globalThis.KCTConfig.isLocalEndpoint(settings.baseUrl)
     : /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(settings.baseUrl || '');
   const hasKey = Boolean(settings.apiKey?.trim()) || isLocal;
-  document.getElementById('api-alert').classList.toggle('hidden', hasKey);
-  document.getElementById('model-badge').textContent = `${settings.model || '未選擇模型'}`;
+  document.getElementById('api-alert')?.classList.toggle('hidden', hasKey);
+  const modelBadge = document.getElementById('model-badge');
+  if (modelBadge) modelBadge.textContent = `${settings.model || '未選擇模型'}`;
 
   for (const btn of document.querySelectorAll('#mode-group button')) {
-    btn.classList.toggle('active', btn.dataset.mode === settings.displayMode);
+    const active = btn.dataset.mode === settings.displayMode;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
   }
   for (const btn of document.querySelectorAll('#scope-group button')) {
-    btn.classList.toggle('active', btn.dataset.scope === settings.scope);
+    const active = btn.dataset.scope === settings.scope;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
   }
 
   renderSiteBar(settings);
@@ -162,7 +194,7 @@ async function queryActiveTabStatus() {
     } else if (res.isBusy) {
       setStatusText(`翻譯中 ${res.totalTranslated}/${res.totalDetected}`);
     } else if (!currentSettings?.enabled) {
-      setStatusText('已暫停（點擊上方按鈕或開啟開關）');
+      setStatusText('已暫停，點擊上方按鈕即可翻譯');
     } else if (res.totalTranslated > 0) {
       setStatusText(`已譯 ${res.totalTranslated} 項`);
     } else {
@@ -170,7 +202,7 @@ async function queryActiveTabStatus() {
     }
     return res;
   } catch (_) {
-    // Uninjected tab is normal in v2.0.0 on-demand mode
+    // Uninjected tab is normal in on-demand mode
     lastKnownTranslated = 0;
     setStatusText(IDLE_STATUS_TEXT);
     return null;
@@ -216,8 +248,13 @@ async function sendCommandToActiveTab(action) {
   }
 
   if ((action === 'TRANSLATE_NOW' || action === 'RETRANSLATE') && currentSettings && !currentSettings.enabled) {
-    currentSettings = await saveSettings({ enabled: true });
-    renderUI(currentSettings);
+    await enqueueSave(async () => {
+      if (currentSettings && !currentSettings.enabled) {
+        const next = await saveSettings({ enabled: true });
+        currentSettings = next;
+        renderUI(next);
+      }
+    });
   }
 
   if (action === 'CLEAR_PAGE') {
@@ -271,7 +308,7 @@ async function sendCommandToActiveTab(action) {
         } else if (st.totalTranslated > 0) {
           setStatusText(`已譯 ${st.totalTranslated} 項`);
         } else if (st.totalDetected === 0 && currentSettings?.scope === 'course') {
-          setStatusText('未偵測到主文（可切換「整頁可讀文字」）');
+          setStatusText('無主文，可試「整頁文字」');
         } else {
           setStatusText('目前頁面無新增可譯段落');
         }
@@ -280,7 +317,7 @@ async function sendCommandToActiveTab(action) {
 
     setTimeout(() => { pollStatus(false); }, 320);
   } catch (err) {
-    setStatusText(err?.message || '無法連線至背景服務，請稍後重試');
+    setStatusText(err?.message || '無法連線背景服務，請重試');
   }
 }
 
@@ -298,7 +335,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   activeTabInjectable = Boolean(activeTab && isInjectableUrl(activeTab.url));
   activeHost = activeTabInjectable ? extractHostname(activeTab.url) : '';
 
-  let settings = await getSettings();
+  let settings = await enqueueSave(async () => {
+    const initial = await getSettings();
+    if (initial.enabled === false) {
+      return saveSettings({ enabled: true });
+    }
+    return initial;
+  });
   currentSettings = settings;
   renderUI(settings);
   updateActionButtonsForTab();
@@ -317,74 +360,112 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderUI(next);
   };
 
-  document.getElementById('toggle-site-auto').addEventListener('change', async () => {
+  const customLangEl = document.getElementById('custom-lang-input');
+  const flushCustomLang = async () => {
+    if (customTimer) {
+      clearTimeout(customTimer);
+      customTimer = null;
+    }
+    if (!customLangEl) return;
+    pendingCustomFlushCount += 1;
+    try {
+      await enqueueSave(async () => {
+        const trimmed = customLangEl.value.trim();
+        if (trimmed !== (currentSettings?.customTargetLang || '')) {
+          const next = await saveSettings({ customTargetLang: trimmed });
+          settings = next;
+          currentSettings = next;
+        }
+        if (customLangEl.value.trim() === (currentSettings?.customTargetLang || '')) {
+          customLangDirty = false;
+        }
+      });
+    } finally {
+      pendingCustomFlushCount = Math.max(0, pendingCustomFlushCount - 1);
+    }
+  };
+
+  document.getElementById('toggle-site-auto')?.addEventListener('change', async () => {
     if (!activeTabInjectable || !activeHost) return;
-    await toggleHostWhitelist(activeHost);
-    const next = await getSettings();
-    updateSavedSettings(next);
+    await flushCustomLang();
+    const next = await enqueueSave(async () => {
+      const res = await toggleHostWhitelist(activeHost);
+      const saved = res?.settings || await getSettings();
+      updateSavedSettings(saved);
+      return saved;
+    });
 
     const nowWhitelisted = isHostWhitelisted(activeHost, next);
     if (nowWhitelisted) {
-      setStatusText(`已加入白名單：${activeHost}`);
+      setStatusText(`已自動翻譯：${activeHost}`);
       if (lastKnownTranslated === 0) {
+        await flushCustomLang();
         await sendCommandToActiveTab('TRANSLATE_NOW');
       }
     } else {
-      setStatusText(`已移出自動翻譯白名單`);
+      setStatusText('已移出白名單');
     }
   });
 
-  langSel.addEventListener('change', async (e) => {
-    updateSavedSettings(await saveSettings({ targetLang: e.target.value }));
+  langSel?.addEventListener('change', async (e) => {
+    const targetLang = e.target.value;
+    await enqueueSave(async () => {
+      updateSavedSettings(await saveSettings({ targetLang }));
+    });
   });
 
-  let customTimer = null;
-  document.getElementById('custom-lang-input').addEventListener('input', (e) => {
-    const val = e.target.value;
+  customLangEl?.addEventListener('input', () => {
+    customLangDirty = true;
     if (customTimer) clearTimeout(customTimer);
-    customTimer = setTimeout(async () => {
-      settings = await saveSettings({ customTargetLang: val.trim() });
-      currentSettings = settings;
+    customTimer = setTimeout(() => {
+      customTimer = null;
+      void flushCustomLang();
     }, 350);
   });
+  customLangEl?.addEventListener('change', flushCustomLang);
+  customLangEl?.addEventListener('blur', flushCustomLang);
 
-  document.getElementById('toggle-enabled').addEventListener('change', async (e) => {
-    updateSavedSettings(await saveSettings({ enabled: e.target.checked }));
+  document.getElementById('toggle-code-comments')?.addEventListener('change', async (e) => {
+    const translateCodeComments = e.target.checked;
+    await enqueueSave(async () => {
+      updateSavedSettings(await saveSettings({ translateCodeComments }));
+    });
   });
 
-  document.getElementById('toggle-code-comments').addEventListener('change', async (e) => {
-    updateSavedSettings(await saveSettings({ translateCodeComments: e.target.checked }));
+  document.getElementById('toggle-selection')?.addEventListener('change', async (e) => {
+    const selectionTranslate = e.target.checked;
+    await enqueueSave(async () => {
+      updateSavedSettings(await saveSettings({ selectionTranslate }));
+    });
   });
 
-  document.getElementById('toggle-lazy-viewport').addEventListener('change', async (e) => {
-    updateSavedSettings(await saveSettings({ lazyViewport: e.target.checked }));
-  });
-
-  document.getElementById('toggle-stream').addEventListener('change', async (e) => {
-    updateSavedSettings(await saveSettings({ streamTranslation: e.target.checked }));
-  });
-
-  document.getElementById('toggle-selection').addEventListener('change', async (e) => {
-    updateSavedSettings(await saveSettings({ selectionTranslate: e.target.checked }));
-  });
-
-  document.getElementById('toggle-ball').addEventListener('change', async (e) => {
-    updateSavedSettings(await saveSettings({ showFloatingBall: e.target.checked }));
+  document.getElementById('toggle-ball')?.addEventListener('change', async (e) => {
+    const showFloatingBall = e.target.checked;
+    await enqueueSave(async () => {
+      updateSavedSettings(await saveSettings({ showFloatingBall }));
+    });
   });
 
   for (const btn of document.querySelectorAll('#mode-group button')) {
     btn.addEventListener('click', async () => {
-      updateSavedSettings(await saveSettings({ displayMode: btn.dataset.mode }));
+      const displayMode = btn.dataset.mode;
+      await enqueueSave(async () => {
+        updateSavedSettings(await saveSettings({ displayMode }));
+      });
     });
   }
 
   for (const btn of document.querySelectorAll('#scope-group button')) {
     btn.addEventListener('click', async () => {
-      updateSavedSettings(await saveSettings({ scope: btn.dataset.scope }));
+      const scope = btn.dataset.scope;
+      await enqueueSave(async () => {
+        updateSavedSettings(await saveSettings({ scope }));
+      });
     });
   }
 
-  document.getElementById('btn-translate-now').addEventListener('click', async () => {
+  document.getElementById('btn-translate-now')?.addEventListener('click', async () => {
+    await flushCustomLang();
     if (activeTabIsPdf && activeTab?.url) {
       await openPdfViewerFromPopup(activeTab.url);
       return;
@@ -392,15 +473,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     await sendCommandToActiveTab('TRANSLATE_NOW');
   });
 
-  document.getElementById('btn-retranslate').addEventListener('click', async () => {
+  document.getElementById('btn-retranslate')?.addEventListener('click', async () => {
+    await flushCustomLang();
     await sendCommandToActiveTab('RETRANSLATE');
   });
 
-  document.getElementById('btn-clear-page').addEventListener('click', async () => {
+  document.getElementById('btn-clear-page')?.addEventListener('click', async () => {
     await sendCommandToActiveTab('CLEAR_PAGE');
   });
 
-  document.getElementById('btn-open-pdf').addEventListener('click', async () => {
+  document.getElementById('btn-open-pdf')?.addEventListener('click', async () => {
     const resolvedPdfUrl = typeof globalThis.KCTConfig?.resolvePdfSourceUrl === 'function'
       ? globalThis.KCTConfig.resolvePdfSourceUrl(activeTab?.url || '')
       : '';
@@ -410,6 +492,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const openOptions = async () => {
     await chrome.runtime.openOptionsPage();
   };
-  document.getElementById('btn-open-options').addEventListener('click', openOptions);
-  document.getElementById('btn-go-config').addEventListener('click', openOptions);
+  document.getElementById('btn-open-options')?.addEventListener('click', openOptions);
+  document.getElementById('btn-go-config')?.addEventListener('click', openOptions);
 });

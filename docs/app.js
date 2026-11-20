@@ -909,6 +909,7 @@ const dom = {
   pdfErrorDetail: document.getElementById('pdfErrorDetail'),
   pdfRetryUrlBtn: document.getElementById('pdfRetryUrlBtn'),
   pdfErrorOpenFileBtn: document.getElementById('pdfErrorOpenFileBtn'),
+  pdfOpenSourceBtn: document.getElementById('pdfOpenSourceBtn'),
   pdfPagesContainer: document.getElementById('pdfPagesContainer'),
 
   // Web Tab
@@ -2267,46 +2268,159 @@ async function openPdfFromArrayBuffer(arrayBuffer, { title, sourceUrl = '' }) {
   }
 }
 
-function showPdfError(title, detail, canRetry) {
+const PDF_FETCH_TIMEOUT_MS = 15000;
+
+function extractGoogleDriveFileId(url) {
+  if (!url || typeof url !== 'string') return '';
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_) {
+    return '';
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (host !== 'drive.google.com' && host !== 'docs.google.com') return '';
+  const m = (parsed.pathname || '').match(/\/file\/d\/([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  const qId = parsed.searchParams.get('id');
+  if (qId && /^[a-zA-Z0-9_-]{10,}$/.test(qId)) return qId;
+  return '';
+}
+
+function resolvePdfSourceUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  const gdriveId = extractGoogleDriveFileId(url);
+  if (gdriveId) {
+    return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(gdriveId)}`;
+  }
+  return url;
+}
+
+function showPdfError(title, detail, canRetry, openUrl = '') {
+  let safeOpenUrl = '';
+  if (openUrl && typeof openUrl === 'string') {
+    try {
+      const parsed = new URL(openUrl);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        safeOpenUrl = parsed.toString();
+      }
+    } catch (_) {}
+  }
+
+  state.pdfOpenSourceUrl = safeOpenUrl;
   showPdfStage('error');
   dom.pdfErrorTitle.textContent = title;
   dom.pdfErrorDetail.textContent = detail;
   dom.pdfRetryUrlBtn.hidden = !canRetry;
+  if (dom.pdfOpenSourceBtn) {
+    dom.pdfOpenSourceBtn.hidden = !safeOpenUrl;
+  }
 }
 
 async function loadPdfFromUrl(rawUrl) {
   let parsed;
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(String(rawUrl || '').trim());
   } catch (_) {
-    showPdfError('PDF 連結無效', `無法辨識網址：${rawUrl}`, false);
+    showPdfError('PDF 連結無效', `無法辨識網址：${rawUrl || ''}`, false);
     return;
   }
 
-  state.sourceUrl = parsed.toString();
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    showPdfError('PDF 連結無效', '僅支援 http:// 或 https:// 開頭的 PDF 網址。', false);
+    return;
+  }
+
+  const originalUrl = parsed.toString();
+  const gdriveId = extractGoogleDriveFileId(originalUrl);
+  const fetchUrl = resolvePdfSourceUrl(originalUrl);
+
+  state.sourceUrl = originalUrl;
   showPdfStage('loading');
-  dom.pdfLoadingTitle.textContent = '正在下載 PDF 白皮書...';
-  dom.pdfLoadingSub.textContent = parsed.toString();
+  dom.pdfLoadingTitle.textContent = '正在下載 PDF 文件...';
+  dom.pdfLoadingSub.textContent = originalUrl;
+
+  const controller = new AbortController();
+  state.activeAbortControllers.add(controller);
+  let timedOut = false;
+  const timerId = setTimeout(() => {
+    timedOut = true;
+    try {
+      controller.abort();
+    } catch (_) {}
+  }, PDF_FETCH_TIMEOUT_MS);
+
+  let buf;
+  try {
+    const res = await fetch(fetchUrl, { signal: controller.signal });
+    if (!res.ok) {
+      const httpErr = new Error(`HTTP ${res.status}`);
+      httpErr.httpStatus = res.status;
+      throw httpErr;
+    }
+    buf = await res.arrayBuffer();
+  } catch (err) {
+    if (controller.signal.aborted && !timedOut) {
+      return;
+    }
+    if (timedOut) {
+      showPdfError(
+        '下載 PDF 逾時（超過 15 秒）',
+        '伺服器回應過慢或檔案較大導致下載逾時。\n請點擊「重試網址」，或點擊「在新分頁開啟 PDF」將檔案下載至裝置後，再選擇本機 PDF 檔案。',
+        true,
+        originalUrl
+      );
+      return;
+    }
+    const reason = err?.httpStatus ? `伺服器回應 HTTP ${err.httpStatus}` : '受網站 CORS 跨域限制或網路連線中斷影響';
+    showPdfError(
+      '無法直接從此網址下載 PDF',
+      `${reason}，瀏覽器無法直接讀取此檔案。\n請點擊下方「在新分頁開啟 PDF」，將 PDF 下載至手機或電腦後，再點擊「改選本機 PDF 檔案」即可進行原位翻譯。`,
+      true,
+      originalUrl
+    );
+    return;
+  } finally {
+    clearTimeout(timerId);
+    state.activeAbortControllers.delete(controller);
+  }
+
+  if (controller.signal.aborted && !timedOut) {
+    return;
+  }
+
+  if (!buf || !hasPdfMagicHeader(new Uint8Array(buf))) {
+    const detail = gdriveId
+      ? 'Google 雲端硬碟回傳了網頁而非 PDF 本體（常見於未開放「知道連結的任何人」權限、需要登入，或大型檔案觸發防毒掃描確認頁）。\n請點擊「在新分頁開啟 PDF」手動下載檔案後，再改選本機 PDF 檔案。'
+      : '此網址回傳的內容不是有效的 PDF 檔案（可能是網頁、登入畫面或下載確認頁）。\n請點擊「在新分頁開啟 PDF」手動下載檔案後，再改選本機 PDF 檔案。';
+    showPdfError('下載的內容不是 PDF 檔案', detail, true, originalUrl);
+    return;
+  }
+
+  let fileName = '';
+  if (gdriveId) {
+    fileName = `GoogleDrive_${gdriveId.slice(0, 8)}.pdf`;
+  } else {
+    const lastSegment = parsed.pathname.split('/').filter(Boolean).pop() || '';
+    if (lastSegment) {
+      try {
+        fileName = decodeURIComponent(lastSegment);
+      } catch (_) {
+        fileName = lastSegment;
+      }
+    } else {
+      fileName = parsed.hostname;
+    }
+  }
 
   try {
-    let res;
-    try {
-      res = await fetch(parsed.toString());
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (_) {
-      // Fallback to AllOrigins CORS proxy for public arXiv / whitepaper PDFs
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(parsed.toString())}`;
-      res = await fetch(proxyUrl);
-      if (!res.ok) throw new Error(`CORS Proxy HTTP ${res.status}`);
-    }
-    const buf = await res.arrayBuffer();
-    const fileName = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || parsed.hostname);
-    await openPdfFromArrayBuffer(buf, { title: fileName, sourceUrl: parsed.toString() });
+    await openPdfFromArrayBuffer(buf, { title: fileName, sourceUrl: originalUrl });
   } catch (err) {
     showPdfError(
-      '無法直接從此網址下載 PDF（受網站 CORS 限制）',
-      `瀏覽器跨域限制阻擋了直接抓取 (${err?.message || 'CORS'})。\n請先將 PDF 下載至手機，再點擊下方「改選本機 PDF 檔案」即可完美原位翻譯！`,
-      true
+      '無法開啟 PDF 檔案',
+      `PDF 解析失敗（${err?.message || '檔案可能已損毀或受密碼保護'}）。\n請嘗試點擊「在新分頁開啟 PDF」確認檔案是否正常。`,
+      true,
+      originalUrl
     );
   }
 }
@@ -2351,6 +2465,15 @@ function applyPdfZoom(nextZoom) {
       pageRec.rendered = false;
     }
   }
+}
+
+function abortAllActiveRequests() {
+  for (const ctrl of state.activeAbortControllers) {
+    try {
+      ctrl.abort();
+    } catch (_) {}
+  }
+  state.activeAbortControllers.clear();
 }
 
 function resetAndRetranslatePdf() {
@@ -2501,6 +2624,7 @@ async function fetchReadableArticleFromUrl(targetUrl) {
 }
 
 async function renderAndStreamWebArticle({ title, sourceLabel, blocks }) {
+  state.currentWebArticle = { title, sourceLabel, blocks };
   if (state.webAbortController) {
     state.webAbortController.abort();
   }
@@ -2714,6 +2838,16 @@ function bindEvents() {
 
   dom.pdfRetryUrlBtn.addEventListener('click', () => {
     if (state.sourceUrl) loadPdfFromUrl(state.sourceUrl);
+  });
+
+  dom.pdfOpenSourceBtn?.addEventListener('click', () => {
+    if (!state.pdfOpenSourceUrl) return;
+    try {
+      const parsed = new URL(state.pdfOpenSourceUrl);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        window.open(parsed.toString(), '_blank', 'noopener');
+      }
+    } catch (_) {}
   });
 
   // Compare Sheet events

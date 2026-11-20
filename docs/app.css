@@ -477,7 +477,13 @@ body {
 }
 
 .nr-text-input {
-  flex: 1 1 200px;
+  width: 100%;
+  flex: none;
+}
+
+.nr-input-row > .nr-text-input {
+  width: auto;
+  flex: 1 1 180px;
 }
 
 .nr-select-full,
@@ -1204,4 +1210,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+}
+
+#pdfErrorDetail {
+  white-space: pre-line;
 }

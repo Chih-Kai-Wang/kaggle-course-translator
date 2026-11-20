@@ -5,10 +5,13 @@ const {
   getSettings,
   saveSettings,
   resolveEndpoint,
-  resolveStreamEndpoint
+  resolveStreamEndpoint,
+  isLocalEndpoint,
+  sanitizeApiKey
 } = globalThis.KCTConfig;
 
 let whitelistHosts = [];
+let lastSyncUrl = '';
 
 function normalizeHostInput(raw) {
   const trimmed = String(raw || '').trim();
@@ -39,7 +42,7 @@ function renderWhitelist() {
   if (!whitelistHosts.length) {
     const empty = document.createElement('span');
     empty.className = 'host-empty';
-    empty.textContent = '目前尚未加入任何自動翻譯網站（可在任一網頁點擊擴充圖示快速加入）';
+    empty.textContent = '目前尚未加入任何自動翻譯網站';
     container.appendChild(empty);
     return;
   }
@@ -74,10 +77,11 @@ function renderWhitelist() {
 async function handleAddHost() {
   const input = document.getElementById('whitelist-host-input');
   const fb = document.getElementById('whitelist-feedback');
+  if (!input || !fb) return;
   const normalized = normalizeHostInput(input.value);
 
   if (!normalized) {
-    fb.textContent = '請輸入有效網域名稱，例如 www.kaggle.com 或 docs.python.org';
+    fb.textContent = '請輸入有效網域名稱，例如 www.kaggle.com';
     return;
   }
 
@@ -94,7 +98,22 @@ async function handleAddHost() {
   fb.textContent = `已加入白名單：${normalized}`;
 }
 
+function normalizeApiKeyValue(raw) {
+  if (typeof sanitizeApiKey === 'function') {
+    return sanitizeApiKey(raw);
+  }
+  return String(raw || '').trim().replace(/^Bearer\s+/i, '').trim();
+}
+
+function checkLocalEndpoint(baseUrl) {
+  if (typeof isLocalEndpoint === 'function') {
+    return isLocalEndpoint(baseUrl);
+  }
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(String(baseUrl || '').trim());
+}
+
 function readFormValues() {
+  const maxCharsEl = document.getElementById('max-batch-chars');
   return {
     targetLang: document.getElementById('lang-select').value,
     customTargetLang: document.getElementById('custom-lang-input').value.trim(),
@@ -110,9 +129,12 @@ function readFormValues() {
     providerId: document.getElementById('provider-select').value,
     protocol: document.getElementById('protocol-select').value,
     baseUrl: document.getElementById('baseurl-input').value.trim(),
-    apiKey: document.getElementById('apikey-input').value.trim(),
+    apiKey: normalizeApiKeyValue(document.getElementById('apikey-input').value),
     model: document.getElementById('model-input').value.trim(),
     batchSize: Math.min(40, Math.max(1, Number(document.getElementById('batch-size').value) || 20)),
+    ...(maxCharsEl ? {
+      maxBatchChars: Math.min(20000, Math.max(800, Math.round(Number(maxCharsEl.value) || 5500)))
+    } : {}),
     temperature: (() => {
       const raw = document.getElementById('temperature-input').value.trim();
       const t = raw === '' ? NaN : Number(raw);
@@ -123,16 +145,21 @@ function readFormValues() {
 }
 
 function updateEndpointPreview() {
+  const previewEl = document.getElementById('endpoint-preview');
+  if (!previewEl) return;
   const form = readFormValues();
   const resolved = (form.streamTranslation && typeof resolveStreamEndpoint === 'function')
     ? resolveStreamEndpoint(form)
     : resolveEndpoint(form);
-  document.getElementById('endpoint-preview').textContent = resolved || '（未填寫）';
+  previewEl.textContent = resolved || '（未填寫）';
 }
 
 function updateCustomLangVisibility() {
-  const isCustom = document.getElementById('lang-select').value === 'custom';
-  document.getElementById('custom-lang-wrap').classList.toggle('hidden', !isCustom);
+  const isCustom = document.getElementById('lang-select')?.value === 'custom';
+  const wrap = document.getElementById('custom-lang-wrap');
+  if (!wrap) return;
+  wrap.hidden = !isCustom;
+  wrap.classList.toggle('hidden', !isCustom);
 }
 
 function updateModelSuggestions(preset) {
@@ -306,7 +333,6 @@ function encodeQrCodewords(utf8Bytes, verInfo) {
     }
   };
 
-  // Byte mode indicator (0100) + char count
   pushBits(0b0100, 4);
   pushBits(utf8Bytes.length, verInfo.v <= 9 ? 8 : 16);
   for (let i = 0; i < utf8Bytes.length; i++) {
@@ -334,7 +360,6 @@ function encodeQrCodewords(utf8Bytes, verInfo) {
     dataCodewords[i] = pads[(i - byteCount) % 2];
   }
 
-  // Split into RS blocks & interleave
   const dataBlocks = [];
   const ecBlocks = [];
   let offset = 0;
@@ -364,7 +389,6 @@ function encodeQrCodewords(utf8Bytes, verInfo) {
 }
 
 function computeFormatBits(mask) {
-  // Level L = 01
   const data = (0b01 << 3) | mask;
   let rem = data << 10;
   for (let i = 14; i >= 10; i--) {
@@ -396,7 +420,6 @@ function buildBaseQrMatrix(verInfo) {
     reserved[r][c] = 1;
   };
 
-  // Finder patterns + separators
   const drawFinder = (topR, leftC) => {
     for (let dr = -1; dr <= 7; dr++) {
       for (let dc = -1; dc <= 7; dc++) {
@@ -411,7 +434,6 @@ function buildBaseQrMatrix(verInfo) {
   drawFinder(0, size - 7);
   drawFinder(size - 7, 0);
 
-  // Alignment patterns
   const centers = verInfo.align;
   for (let i = 0; i < centers.length; i++) {
     for (let j = 0; j < centers.length; j++) {
@@ -429,13 +451,11 @@ function buildBaseQrMatrix(verInfo) {
     }
   }
 
-  // Timing patterns
   for (let i = 8; i < size - 8; i++) {
     if (!reserved[6][i]) setFunctionModule(6, i, i % 2 === 0);
     if (!reserved[i][6]) setFunctionModule(i, 6, i % 2 === 0);
   }
 
-  // Dark module & reserve format info slots
   setFunctionModule(size - 8, 8, true);
   for (let i = 0; i < 9; i++) {
     if (!reserved[8][i]) reserved[8][i] = 1;
@@ -446,7 +466,6 @@ function buildBaseQrMatrix(verInfo) {
     if (!reserved[size - 1 - i][8]) reserved[size - 1 - i][8] = 1;
   }
 
-  // Version info (V >= 7)
   if (verInfo.v >= 7) {
     const vBits = computeVersionBits(verInfo.v);
     for (let i = 0; i < 18; i++) {
@@ -463,14 +482,12 @@ function buildBaseQrMatrix(verInfo) {
 
 function placeFormatBits(grid, size, mask) {
   const bits = computeFormatBits(mask);
-  // Copy 1: around top-left finder pattern (ISO/IEC 18004 Fig 25: bit 0 LSB at (0,8) .. bit 14 MSB at (8,0))
   for (let i = 0; i <= 5; i++) grid[i][8] = (bits >>> i) & 1;
   grid[7][8] = (bits >>> 6) & 1;
   grid[8][8] = (bits >>> 7) & 1;
   grid[8][7] = (bits >>> 8) & 1;
   for (let i = 9; i < 15; i++) grid[8][14 - i] = (bits >>> i) & 1;
 
-  // Copy 2: top-right horizontal (bits 0..7) & bottom-left vertical (bits 8..14)
   for (let i = 0; i < 8; i++) grid[8][size - 1 - i] = (bits >>> i) & 1;
   for (let i = 8; i < 15; i++) grid[size - 15 + i][8] = (bits >>> i) & 1;
   grid[size - 8][8] = 1;
@@ -537,7 +554,6 @@ function generateQrMatrix(text) {
   const codewords = encodeQrCodewords(utf8Bytes, verInfo);
   const { size, grid: baseGrid, reserved } = buildBaseQrMatrix(verInfo);
 
-  // Place data bits in upward/downward 2-column zigzag
   let bitIdx = 0;
   const totalBits = codewords.length * 8;
   let upward = true;
@@ -606,16 +622,17 @@ function renderQrToCanvas(canvas, text) {
 
 async function refreshCacheStats() {
   const statsEl = document.getElementById('cache-stats');
+  if (!statsEl) return;
   try {
     const res = await chrome.runtime.sendMessage({ type: 'GET_CACHE_STATS' });
     if (res?.ok) {
       const sizeStr = formatCacheSize(res.bytes);
-      statsEl.textContent = `IndexedDB 已快取 ${res.entries} 筆段落／註解／PDF 譯文（約 ${sizeStr}）`;
+      statsEl.textContent = `已快取 ${res.entries} 筆譯文（約 ${sizeStr}）`;
     } else {
-      statsEl.textContent = '無法讀取 IndexedDB 快取狀態';
+      statsEl.textContent = '無法讀取快取狀態';
     }
   } catch (_) {
-    statsEl.textContent = '無法讀取 IndexedDB 快取狀態';
+    statsEl.textContent = '無法讀取快取狀態';
   }
 }
 
@@ -659,6 +676,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('apikey-input').value = settings.apiKey || '';
   document.getElementById('model-input').value = settings.model || '';
   document.getElementById('batch-size').value = settings.batchSize ?? 20;
+  const maxCharsEl = document.getElementById('max-batch-chars');
+  if (maxCharsEl) {
+    maxCharsEl.value = settings.maxBatchChars ?? 5500;
+  }
   document.getElementById('temperature-input').value = settings.temperature ?? 0.2;
   document.getElementById('glossary-input').value = settings.customGlossary ?? DEFAULT_GLOSSARY;
 
@@ -671,39 +692,80 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateEndpointPreview();
   await refreshCacheStats();
 
-  langSelect.addEventListener('change', updateCustomLangVisibility);
+  const btnGenSync = document.getElementById('btn-generate-mobile-sync');
+  const btnCopySync = document.getElementById('btn-copy-mobile-sync');
+  const syncStatus = document.getElementById('mobile-sync-status');
+  const syncBox = document.getElementById('mobile-sync-box');
+  const syncUrlInput = document.getElementById('mobile-sync-url');
+  const syncQrCanvas = document.getElementById('mobile-sync-qr');
+
+  const invalidateMobileSync = () => {
+    lastSyncUrl = '';
+    if (syncUrlInput) syncUrlInput.value = '';
+    if (btnCopySync) btnCopySync.disabled = true;
+    if (syncBox) {
+      syncBox.hidden = true;
+      syncBox.classList.add('hidden');
+    }
+    if (syncStatus) {
+      syncStatus.textContent = '';
+      syncStatus.className = 'inline-status';
+    }
+  };
+
+  langSelect.addEventListener('change', () => {
+    updateCustomLangVisibility();
+    invalidateMobileSync();
+  });
+  document.getElementById('custom-lang-input')?.addEventListener('input', invalidateMobileSync);
+  document.getElementById('typography-match')?.addEventListener('change', invalidateMobileSync);
+  document.getElementById('thinking-effort')?.addEventListener('change', invalidateMobileSync);
 
   providerSelect.addEventListener('change', (e) => {
     applyPreset(e.target.value);
+    invalidateMobileSync();
   });
 
-  document.getElementById('protocol-select').addEventListener('change', updateEndpointPreview);
-  document.getElementById('baseurl-input').addEventListener('input', updateEndpointPreview);
-  document.getElementById('model-input').addEventListener('input', updateEndpointPreview);
-  document.getElementById('stream-translation').addEventListener('change', updateEndpointPreview);
+  document.getElementById('protocol-select')?.addEventListener('change', () => {
+    updateEndpointPreview();
+    invalidateMobileSync();
+  });
+  document.getElementById('baseurl-input')?.addEventListener('input', () => {
+    updateEndpointPreview();
+    invalidateMobileSync();
+  });
+  document.getElementById('model-input')?.addEventListener('input', () => {
+    updateEndpointPreview();
+    invalidateMobileSync();
+  });
+  document.getElementById('apikey-input')?.addEventListener('input', invalidateMobileSync);
+  document.getElementById('stream-translation')?.addEventListener('change', updateEndpointPreview);
 
-  document.getElementById('btn-toggle-key').addEventListener('click', (e) => {
+  document.getElementById('btn-toggle-key')?.addEventListener('click', (e) => {
     const input = document.getElementById('apikey-input');
+    if (!input) return;
     const isPwd = input.type === 'password';
     input.type = isPwd ? 'text' : 'password';
     e.target.textContent = isPwd ? '隱藏' : '顯示';
   });
 
-  document.getElementById('btn-add-host').addEventListener('click', handleAddHost);
-  document.getElementById('whitelist-host-input').addEventListener('keydown', async (e) => {
+  document.getElementById('btn-add-host')?.addEventListener('click', handleAddHost);
+  document.getElementById('whitelist-host-input')?.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       await handleAddHost();
     }
   });
 
-  document.getElementById('btn-reset-glossary').addEventListener('click', () => {
-    document.getElementById('glossary-input').value = DEFAULT_GLOSSARY;
+  document.getElementById('btn-reset-glossary')?.addEventListener('click', () => {
+    const el = document.getElementById('glossary-input');
+    if (el) el.value = DEFAULT_GLOSSARY;
   });
 
   async function handleSave(statusElId) {
     const form = readFormValues();
     const statusEl = document.getElementById(statusElId);
+    if (!statusEl) return;
     statusEl.className = 'inline-status';
     statusEl.textContent = '儲存中...';
 
@@ -715,17 +777,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => { statusEl.textContent = ''; }, 2500);
   }
 
-  document.getElementById('btn-save').addEventListener('click', async () => {
+  document.getElementById('btn-save')?.addEventListener('click', async () => {
     await handleSave('save-status');
   });
 
-  document.getElementById('btn-save-bottom').addEventListener('click', async () => {
-    await handleSave('save-status-bottom');
-  });
-
-  document.getElementById('btn-test').addEventListener('click', async () => {
+  document.getElementById('btn-test')?.addEventListener('click', async () => {
     const form = readFormValues();
     const box = document.getElementById('test-result');
+    if (!box) return;
+    box.hidden = false;
     box.className = 'test-box';
     box.textContent = '正在測試連線...';
 
@@ -749,54 +809,73 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  document.getElementById('btn-clear-cache').addEventListener('click', async () => {
+  document.getElementById('btn-clear-cache')?.addEventListener('click', async () => {
     try {
       await chrome.runtime.sendMessage({ type: 'CLEAR_CACHE' });
     } catch (_) {}
     await refreshCacheStats();
   });
 
-  const btnGenSync = document.getElementById('btn-generate-mobile-sync');
-  const btnCopySync = document.getElementById('btn-copy-mobile-sync');
-  const syncStatus = document.getElementById('mobile-sync-status');
-  const syncBox = document.getElementById('mobile-sync-box');
-  const syncUrlInput = document.getElementById('mobile-sync-url');
-  const syncQrCanvas = document.getElementById('mobile-sync-qr');
-
   if (btnGenSync) {
     btnGenSync.addEventListener('click', async () => {
       const form = readFormValues();
+      if (!form.apiKey && !checkLocalEndpoint(form.baseUrl)) {
+        invalidateMobileSync();
+        if (syncStatus) {
+          syncStatus.className = 'inline-status err';
+          syncStatus.textContent = '請先填寫 API Key 再產生同步 QR Code';
+        }
+        return;
+      }
+
       await saveSettings(form);
       try {
         const url = buildMobileSyncUrl(form);
-        syncUrlInput.value = url;
+        lastSyncUrl = url;
+        if (syncUrlInput) syncUrlInput.value = url;
         renderQrToCanvas(syncQrCanvas, url);
-        syncBox.classList.remove('hidden');
-        btnCopySync.disabled = false;
-        syncStatus.className = 'inline-status ok';
-        syncStatus.textContent = '✓ 已於本機產生同步連結與 QR Code';
+        if (syncBox) {
+          syncBox.hidden = false;
+          syncBox.classList.remove('hidden');
+        }
+        if (btnCopySync) btnCopySync.disabled = false;
+        if (syncStatus) {
+          syncStatus.className = 'inline-status ok';
+          syncStatus.textContent = '✓ 已產生同步 QR Code';
+        }
       } catch (err) {
-        syncStatus.className = 'inline-status err';
-        syncStatus.textContent = err?.message || '產生 QR Code 失敗';
+        lastSyncUrl = '';
+        if (syncUrlInput) syncUrlInput.value = '';
+        if (btnCopySync) btnCopySync.disabled = true;
+        if (syncBox) {
+          syncBox.hidden = true;
+          syncBox.classList.add('hidden');
+        }
+        if (syncStatus) {
+          syncStatus.className = 'inline-status err';
+          syncStatus.textContent = err?.message || '產生 QR Code 失敗';
+        }
       }
     });
   }
 
   if (btnCopySync) {
     btnCopySync.addEventListener('click', async () => {
-      const url = syncUrlInput?.value || '';
+      const url = lastSyncUrl || syncUrlInput?.value || '';
       if (!url) return;
       try {
         await navigator.clipboard.writeText(url);
-        syncStatus.className = 'inline-status ok';
-        syncStatus.textContent = '✓ 已複製同步連結';
-        setTimeout(() => {
-          if (syncStatus.textContent === '✓ 已複製同步連結') {
-            syncStatus.textContent = '';
-          }
-        }, 2500);
+        if (syncStatus) {
+          syncStatus.className = 'inline-status ok';
+          syncStatus.textContent = '✓ 已複製同步連結';
+          setTimeout(() => {
+            if (syncStatus.textContent === '✓ 已複製同步連結') {
+              syncStatus.textContent = '';
+            }
+          }, 2500);
+        }
       } catch (_) {
-        syncUrlInput.select();
+        syncUrlInput?.select();
       }
     });
   }

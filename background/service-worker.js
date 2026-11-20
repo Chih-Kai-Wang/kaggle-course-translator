@@ -2,6 +2,7 @@ importScripts('../shared/config.js', '../shared/cache-db.js');
 
 const {
   PROVIDER_PRESETS,
+  TARGET_LANGUAGES,
   DEFAULT_GLOSSARY,
   getSettings,
   saveSettings,
@@ -13,6 +14,7 @@ const {
   hashText,
   isHostWhitelisted,
   isInjectableUrl,
+  isFilePdfUrl,
   isPdfUrl
 } = globalThis.KCTConfig;
 
@@ -51,13 +53,26 @@ function isLocalEndpoint(baseUrl) {
   return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(String(baseUrl || '').trim());
 }
 
+function redactApiKey(text, apiKey) {
+  const out = String(text || '');
+  const cleanKey = sanitizeApiKey(apiKey);
+  if (!out || cleanKey.length < 6) return out;
+  return out.split(cleanKey).join('[REDACTED]');
+}
+
+function isContextLengthError(errText) {
+  return /context.{0,20}length|maximum context|too many tokens|payload too large|request entity too large|token limit/i.test(
+    String(errText || '')
+  );
+}
+
 function shouldUseGlossary(settings, pageContext) {
-  const lang = resolveTargetLanguage(settings);
-  if (lang.id !== 'zh-TW' && lang.id !== 'zh-CN') return false;
   const glossary = String(settings.customGlossary || '').trim();
   if (!glossary) return false;
   const isUserModified = glossary !== String(DEFAULT_GLOSSARY || '').trim();
   if (isUserModified) return true;
+  const lang = resolveTargetLanguage(settings);
+  if (lang.id !== 'zh-TW' && lang.id !== 'zh-CN') return false;
   if (!pageContext) return true;
   return Boolean(pageContext.useTechGlossary);
 }
@@ -91,9 +106,14 @@ function buildGlossarySection(settings, pageContext) {
   const lang = resolveTargetLanguage(settings);
   const glossary = String(settings.customGlossary || '').trim();
   if (!glossary) return '';
-  const glossaryNote = lang.id === 'zh-CN'
-    ? '參考術語表（若術語表為繁體寫法，輸出時請自動轉為對應簡體字形與中國大陸技術用語）：'
-    : '參考術語表（若語意符合請優先採用一致譯法）：';
+  let glossaryNote;
+  if (lang.id === 'zh-CN') {
+    glossaryNote = '參考術語表（若術語表為繁體寫法，輸出時請自動轉為對應簡體字形與中國大陸技術用語）：';
+  } else if (lang.id === 'zh-TW') {
+    glossaryNote = '參考術語表（若語意符合請優先採用一致譯法）：';
+  } else {
+    glossaryNote = 'Custom Terminology Glossary (apply consistently where contextually appropriate):';
+  }
   return `\n${glossaryNote}\n${glossary}\n`;
 }
 
@@ -107,6 +127,9 @@ function buildRoleAndTopicLines(pageContext) {
   return { roleLine, topicLine };
 }
 
+const PLACEHOLDER_PRESERVE_RULE =
+  '1. Keep ALL placeholders verbatim and untranslated in natural positions: [[C0]], [[C1]] (inline code), [[M0]], [[M1]] (math/citations), [[L0]], [[L1]] (inline clickable links). Never alter digits or brackets.';
+
 function buildSystemPrompt(settings, pageContext) {
   const lang = resolveTargetLanguage(settings);
   const { roleLine, topicLine } = buildRoleAndTopicLines(pageContext);
@@ -117,7 +140,7 @@ function buildSystemPrompt(settings, pageContext) {
     topicLine,
     buildLanguageGuidance(lang),
     'Rules:',
-    '1. Keep ALL placeholders ([[C0]], [[C1]], [[M0]], [[L0]]) exact and untranslated in natural positions.',
+    PLACEHOLDER_PRESERVE_RULE,
     '2. Keep code identifiers, package/class/function names, URLs, and standard abbreviations (MAE, RMSE, AUC, CV, SQL, API) intact.',
     '3. For `"kind":"comment"`, keep the leading `# ` prefix and return only the concise translated comment text.',
     '4. Output ONLY valid JSON: {"translations":[{"id":0,"zh":"..."},...]} matching all input ids.',
@@ -135,7 +158,7 @@ function buildStreamSystemPrompt(settings, pageContext) {
     topicLine,
     buildLanguageGuidance(lang),
     'Rules:',
-    '1. Keep ALL placeholders ([[C0]], [[C1]], [[M0]], [[L0]]) exact and untranslated in natural positions.',
+    PLACEHOLDER_PRESERVE_RULE,
     '2. Keep code identifiers, package/class/function names, URLs, and standard abbreviations intact.',
     '3. For `"kind":"comment"`, keep the leading `# ` prefix and return only the concise translated comment text.',
     '4. Output STRICT NDJSON: exactly ONE JSON object per line in the format {"i":0,"t":"..."} matching every input index `i`, in order.',
@@ -144,30 +167,174 @@ function buildStreamSystemPrompt(settings, pageContext) {
   ].filter(Boolean).join('\n');
 }
 
+function parseJsonLenient(rawSlice) {
+  const str = String(rawSlice || '');
+  try {
+    return JSON.parse(str);
+  } catch (firstErr) {
+    let out = '';
+    let inStr = false;
+    let escaped = false;
+    let changed = false;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (inStr) {
+        if (escaped) {
+          out += ch;
+          escaped = false;
+        } else if (ch === '\\') {
+          out += ch;
+          escaped = true;
+        } else if (ch === '"') {
+          out += ch;
+          inStr = false;
+        } else {
+          const code = ch.charCodeAt(0);
+          if (code < 0x20) {
+            if (ch === '\n') out += '\\n';
+            else if (ch === '\r') out += '\\r';
+            else if (ch === '\t') out += '\\t';
+            else out += `\\u${code.toString(16).padStart(4, '0')}`;
+            changed = true;
+          } else {
+            out += ch;
+          }
+        }
+      } else {
+        if (ch === '"') inStr = true;
+        out += ch;
+      }
+    }
+    if (!changed) throw firstErr;
+    return JSON.parse(out);
+  }
+}
+
+function scanBalancedBracketArray(candidate) {
+  for (let start = 0; start < candidate.length; start++) {
+    if (candidate[start] !== '[') continue;
+    let depth = 0;
+    let inStr = false;
+    let escaped = false;
+    for (let i = start; i < candidate.length; i++) {
+      const ch = candidate[i];
+      if (inStr) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inStr = false;
+      } else {
+        if (ch === '"') inStr = true;
+        else if (ch === '[' || ch === '{') depth += 1;
+        else if (ch === ']' || ch === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            if (ch === ']') {
+              try {
+                return { ok: true, value: parseJsonLenient(candidate.slice(start, i + 1)) };
+              } catch (_) {}
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+  return { ok: false, value: null };
+}
+
+function scanTopLevelObjects(candidate) {
+  const objects = [];
+  let i = 0;
+  while (i < candidate.length) {
+    if (candidate[i] !== '{') {
+      i += 1;
+      continue;
+    }
+    const objStart = i;
+    let depth = 0;
+    let inStr = false;
+    let escaped = false;
+    let matched = false;
+    for (let j = objStart; j < candidate.length; j++) {
+      const ch = candidate[j];
+      if (inStr) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inStr = false;
+      } else {
+        if (ch === '"') inStr = true;
+        else if (ch === '{') depth += 1;
+        else if (ch === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              const parsed = parseJsonLenient(candidate.slice(objStart, j + 1));
+              objects.push(parsed);
+              i = j + 1;
+              matched = true;
+            } catch (_) {}
+            break;
+          }
+        }
+      }
+    }
+    if (!matched) {
+      i = objStart + 1;
+    }
+  }
+  return objects;
+}
+
 function extractJsonObject(rawText) {
   const trimmed = String(rawText || '').trim();
   if (!trimmed) throw new Error('模型返回內容為空');
 
-  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fencedMatch ? fencedMatch[1].trim() : trimmed;
-
   try {
-    return JSON.parse(candidate);
-  } catch (_) {
-    const objStart = candidate.indexOf('{');
-    const objEnd = candidate.lastIndexOf('}');
-    if (objStart !== -1 && objEnd > objStart) {
-      try {
-        return JSON.parse(candidate.slice(objStart, objEnd + 1));
-      } catch (_) {}
-    }
-    const arrStart = candidate.indexOf('[');
-    const arrEnd = candidate.lastIndexOf(']');
-    if (arrStart !== -1 && arrEnd > arrStart) {
-      return JSON.parse(candidate.slice(arrStart, arrEnd + 1));
-    }
-    throw new Error('模型返回格式不是有效 JSON');
+    return parseJsonLenient(trimmed);
+  } catch (_) {}
+
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch && fencedMatch[1]) {
+    try {
+      return parseJsonLenient(fencedMatch[1].trim());
+    } catch (_) {}
   }
+
+  const candidate = trimmed
+    .replace(/^\s*```(?:json)?\s*$/gim, '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+
+  if (candidate) {
+    try {
+      return parseJsonLenient(candidate);
+    } catch (_) {}
+
+    const firstObjIdx = candidate.indexOf('{');
+    const firstArrIdx = candidate.indexOf('[');
+    if (firstArrIdx !== -1 && (firstObjIdx === -1 || firstArrIdx < firstObjIdx)) {
+      const arrResult = scanBalancedBracketArray(candidate);
+      if (
+        arrResult.ok &&
+        Array.isArray(arrResult.value) &&
+        (firstObjIdx === -1 || arrResult.value.some((el) => el && typeof el === 'object' && !Array.isArray(el)))
+      ) {
+        return arrResult.value;
+      }
+    }
+
+    const objects = scanTopLevelObjects(candidate);
+    if (objects.length === 1) return objects[0];
+    if (objects.length > 1) return objects;
+
+    if (firstArrIdx !== -1) {
+      const arrResult = scanBalancedBracketArray(candidate);
+      if (arrResult.ok) return arrResult.value;
+    }
+  }
+
+  throw new Error('模型返回格式不是有效 JSON');
 }
 
 function sleep(ms) {
@@ -302,9 +469,10 @@ function parseRetryDelayMs(errBody, response) {
   return 0;
 }
 
-function handleRateLimitResponse(errBody, response, attempt, maxAttempts) {
-  const isDailyOrZeroQuota = /PerDay|RequestsPerDay|GenerateRequestsPerDay|"quotaValue"\s*:\s*"0"|limit:\s*0/i.test(errBody);
-  const retryDelayMs = parseRetryDelayMs(errBody, response);
+function handleRateLimitResponse(errBody, response, attempt, maxAttempts, apiKey = '') {
+  const safeBody = redactApiKey(errBody, apiKey);
+  const isDailyOrZeroQuota = /PerDay|RequestsPerDay|GenerateRequestsPerDay|"quotaValue"\s*:\s*"0"|limit:\s*0/i.test(safeBody);
+  const retryDelayMs = parseRetryDelayMs(safeBody, response);
   if (!isDailyOrZeroQuota && attempt < maxAttempts && retryDelayMs <= 28000) {
     const waitMs = Math.min(26000, retryDelayMs > 0 ? retryDelayMs + 400 : 4500 * attempt);
     const now = Date.now();
@@ -317,7 +485,7 @@ function handleRateLimitResponse(errBody, response, attempt, maxAttempts) {
     ? 'HTTP 429：已達每日免費額度上限（或模型配額為 0），建議切換 Tier 1 Key、更換模型或改用 DeepSeek'
     : waitSec
       ? `HTTP 429：請求頻率達上限，需等待約 ${waitSec}s（免費版限 5–15 RPM）`
-      : `HTTP 429：請求頻率達上限 (${errBody.slice(0, 160) || response.statusText})`;
+      : `HTTP 429：請求頻率達上限 (${safeBody.slice(0, 160) || response.statusText})`;
   const httpErr = new Error(rateHint);
   httpErr.httpStatus = 429;
   httpErr.errorCode = isDailyOrZeroQuota ? 'QUOTA_EXCEEDED' : 'RATE_LIMITED';
@@ -402,6 +570,8 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
   }
 
   const maxAttempts = 4;
+  const maxNetworkOr5xxAttempts = 3;
+  const maxTimeoutAttempts = 2;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -469,9 +639,12 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
               signal: controller.signal
             });
           } else {
-            const badReq = new Error(`HTTP 400: ${errText.slice(0, 260)}`);
+            const safeErrText = redactApiKey(errText, settings.apiKey);
+            const badReq = new Error(`HTTP 400: ${safeErrText.slice(0, 260)}`);
             badReq.httpStatus = 400;
-            badReq.noSplit = true;
+            badReq.errorCode = 'HTTP_400';
+            badReq.noSplit = !isContextLengthError(safeErrText);
+            badReq.noRetry = true;
             throw badReq;
           }
         }
@@ -479,20 +652,30 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
 
       if (!response.ok) {
         const errBody = await response.text();
+        const safeErrBody = redactApiKey(errBody, settings.apiKey);
         const status = response.status;
         if (status === 429) {
-          const rl = handleRateLimitResponse(errBody, response, attempt, maxAttempts);
+          const rl = handleRateLimitResponse(safeErrBody, response, attempt, maxAttempts, settings.apiKey);
           if (rl.shouldRetry) continue;
           throw rl.error;
         }
-        if (status >= 500 && attempt < maxAttempts) {
+        if (status >= 500 && attempt < maxNetworkOr5xxAttempts) {
           sleepAfterAttemptMs = 700 * attempt;
           continue;
         }
-        const httpErr = new Error(`HTTP ${status}: ${errBody.slice(0, 280) || response.statusText}`);
+        const httpErr = new Error(`HTTP ${status}: ${safeErrBody.slice(0, 280) || response.statusText}`);
         httpErr.httpStatus = status;
         httpErr.errorCode = `HTTP_${status}`;
-        httpErr.noSplit = status === 400 || status === 401 || status === 403 || status === 404;
+        httpErr.noRetry = true;
+        httpErr.noSplit =
+          status >= 500 ||
+          status === 401 ||
+          status === 402 ||
+          status === 403 ||
+          status === 404 ||
+          status === 422 ||
+          status === 429 ||
+          (status === 400 && !isContextLengthError(safeErrBody));
         throw httpErr;
       }
 
@@ -504,13 +687,19 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
         const text = (answerParts.length ? answerParts : parts).map((p) => p.text || '').join('');
         if (!text) {
           const reason = candidate?.finishReason ? ` (${candidate.finishReason})` : '';
-          throw new Error(data?.error?.message || `Gemini 未返回文本內容${reason}`);
+          const msg = data?.error?.message
+            ? redactApiKey(data.error.message, settings.apiKey)
+            : `Gemini 未返回文本內容${reason}`;
+          throw new Error(msg);
         }
         return text;
       } else {
         const text = data?.choices?.[0]?.message?.content || '';
         if (!text) {
-          throw new Error(data?.error?.message || '模型未返回有效文本');
+          const msg = data?.error?.message
+            ? redactApiKey(data.error.message, settings.apiKey)
+            : '模型未返回有效文本';
+          throw new Error(msg);
         }
         return text;
       }
@@ -522,13 +711,24 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
       if (err.name === 'AbortError' || timedOut) {
         lastError = new Error('請求逾時 (25s)，請檢查網路或 API 服務狀態');
         lastError.noSplit = true;
+        if (attempt < maxTimeoutAttempts) {
+          sleepAfterAttemptMs = 700 * attempt;
+          continue;
+        }
+        break;
       }
       if (lastError.noRetry) {
         break;
       }
-      if (attempt < maxAttempts && /timeout|逾時|network|failed to fetch|5\d\d/i.test(String(lastError.message))) {
-        sleepAfterAttemptMs = 700 * attempt;
-        continue;
+      const isNetworkErr =
+        err?.name === 'TypeError' ||
+        /network|failed to fetch|load failed|networkerror|fetch/i.test(String(lastError.message));
+      if (isNetworkErr) {
+        lastError.noSplit = true;
+        if (attempt < maxNetworkOr5xxAttempts) {
+          sleepAfterAttemptMs = 700 * attempt;
+          continue;
+        }
       }
       break;
     } finally {
@@ -578,6 +778,109 @@ function extractNdjsonEntriesFromObject(obj) {
     pushEntry(obj);
   }
   return results;
+}
+
+function createIncrementalJsonScanner(onValue) {
+  let buf = '';
+  let pos = 0;
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  let objStart = -1;
+
+  const scanAvailable = () => {
+    while (pos < buf.length) {
+      const ch = buf[pos];
+      if (depth === 0) {
+        if (ch === '{') {
+          depth = 1;
+          objStart = pos;
+          inStr = false;
+          escaped = false;
+        }
+        pos += 1;
+        continue;
+      }
+
+      if (inStr) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '"') {
+          inStr = false;
+        }
+      } else {
+        if (ch === '"') {
+          inStr = true;
+        } else if (ch === '{') {
+          depth += 1;
+        } else if (ch === '}') {
+          depth -= 1;
+          if (depth === 0 && objStart !== -1) {
+            const slice = buf.slice(objStart, pos + 1);
+            let parsed = null;
+            let ok = false;
+            try {
+              parsed = parseJsonLenient(slice);
+              ok = true;
+            } catch (_) {}
+
+            if (ok) {
+              try {
+                onValue(parsed);
+              } catch (_) {}
+              buf = buf.slice(pos + 1);
+              pos = 0;
+              objStart = -1;
+              inStr = false;
+              escaped = false;
+              continue;
+            }
+            pos = objStart + 1;
+            depth = 0;
+            objStart = -1;
+            inStr = false;
+            escaped = false;
+            continue;
+          }
+        }
+      }
+      pos += 1;
+    }
+
+    if (depth === 0 && pos > 0) {
+      buf = buf.slice(pos);
+      pos = 0;
+    }
+  };
+
+  return {
+    feed(chunk) {
+      if (!chunk) return;
+      buf += String(chunk);
+      scanAvailable();
+    },
+    flush() {
+      let rewinds = 0;
+      while (depth > 0 && objStart !== -1 && rewinds < 128) {
+        rewinds += 1;
+        buf = buf.slice(objStart + 1);
+        pos = 0;
+        depth = 0;
+        objStart = -1;
+        inStr = false;
+        escaped = false;
+        scanAvailable();
+      }
+      buf = '';
+      pos = 0;
+      depth = 0;
+      objStart = -1;
+      inStr = false;
+      escaped = false;
+    }
+  };
 }
 
 function parseNdjsonLine(rawLine) {
@@ -683,8 +986,19 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
   ];
 
   const maxAttempts = 4;
+  const maxNetworkOr5xxAttempts = 3;
+  const maxTimeoutAttempts = 2;
   let lastError = null;
   let emittedCount = 0;
+  const emittedIndices = new Set();
+  const emitEntry = (entry) => {
+    if (!entry || !Number.isInteger(entry.idx)) return;
+    if (entry.idx < 0 || entry.idx >= items.length) return;
+    if (emittedIndices.has(entry.idx)) return;
+    emittedIndices.add(entry.idx);
+    emittedCount += 1;
+    onItem(entry.idx, entry.text);
+  };
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (externalSignal?.aborted) {
@@ -756,9 +1070,12 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
               signal: controller.signal
             });
           } else {
-            const badReq = new Error(`HTTP 400: ${errText.slice(0, 260)}`);
+            const safeErrText = redactApiKey(errText, settings.apiKey);
+            const badReq = new Error(`HTTP 400: ${safeErrText.slice(0, 260)}`);
             badReq.httpStatus = 400;
-            badReq.noSplit = true;
+            badReq.errorCode = 'HTTP_400';
+            badReq.noSplit = !isContextLengthError(safeErrText);
+            badReq.noRetry = true;
             throw badReq;
           }
         }
@@ -766,45 +1083,61 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
 
       if (!response.ok) {
         const errBody = await response.text();
+        const safeErrBody = redactApiKey(errBody, settings.apiKey);
         const status = response.status;
         if (status === 429) {
-          const rl = handleRateLimitResponse(errBody, response, attempt, maxAttempts);
+          const rl = handleRateLimitResponse(safeErrBody, response, attempt, maxAttempts, settings.apiKey);
           if (rl.shouldRetry) continue;
           throw rl.error;
         }
-        if (status >= 500 && attempt < maxAttempts) {
+        if (status >= 500 && attempt < maxNetworkOr5xxAttempts) {
           sleepAfterAttemptMs = 700 * attempt;
           continue;
         }
-        const httpErr = new Error(`HTTP ${status}: ${errBody.slice(0, 280) || response.statusText}`);
+        const httpErr = new Error(`HTTP ${status}: ${safeErrBody.slice(0, 280) || response.statusText}`);
         httpErr.httpStatus = status;
         httpErr.errorCode = `HTTP_${status}`;
-        httpErr.noSplit = status === 400 || status === 401 || status === 403 || status === 404;
+        httpErr.noRetry = true;
+        httpErr.noSplit =
+          status >= 500 ||
+          status === 401 ||
+          status === 402 ||
+          status === 403 ||
+          status === 404 ||
+          status === 422 ||
+          status === 429 ||
+          (status === 400 && !isContextLengthError(safeErrBody));
         throw httpErr;
       }
 
       const contentType = String(response.headers.get('content-type') || '').toLowerCase();
       if (!response.body || (contentType.includes('application/json') && !contentType.includes('event-stream'))) {
-        // Relay returned a non-SSE JSON payload (or Gemini chunk array); extract text and parse as NDJSON/JSON
+        // Relay returned a non-SSE JSON payload (or Gemini chunk array); extract text and parse via scanner/JSON
         const data = await response.json();
         const fullText = Array.isArray(data)
           ? data.map((chunk) => extractStreamTextDelta(settings.protocol, chunk)).join('')
           : extractStreamTextDelta(settings.protocol, data);
-        let parsedAny = false;
-        for (const line of String(fullText || '').split('\n')) {
-          const entries = parseNdjsonLine(line);
-          for (const entry of entries) {
-            onItem(entry.idx, entry.text);
-            emittedCount += 1;
-            parsedAny = true;
-          }
+        const apiErrMsg = Array.isArray(data)
+          ? data.find((chunk) => chunk?.error?.message)?.error?.message
+          : data?.error?.message;
+        if (!fullText && apiErrMsg) {
+          const errObj = new Error(redactApiKey(apiErrMsg, settings.apiKey));
+          errObj.noRetry = true;
+          errObj.noSplit = true;
+          throw errObj;
         }
-        if (!parsedAny && fullText.trim()) {
+        const nonSseScanner = createIncrementalJsonScanner((obj) => {
+          for (const entry of extractNdjsonEntriesFromObject(obj)) {
+            emitEntry(entry);
+          }
+        });
+        nonSseScanner.feed(fullText);
+        nonSseScanner.flush();
+        if (emittedCount < items.length && String(fullText || '').trim()) {
           try {
             const parsed = extractJsonObject(fullText);
             for (const entry of extractNdjsonEntriesFromObject(parsed)) {
-              onItem(entry.idx, entry.text);
-              emittedCount += 1;
+              emitEntry(entry);
             }
           } catch (_) {}
         }
@@ -814,25 +1147,14 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let sseBuffer = '';
-      let textBuffer = '';
       let fullAccumulatedText = '';
+      let streamApiError = '';
 
-      const drainNdjson = (flush) => {
-        const normalized = textBuffer.replace(/\r\n/g, '\n');
-        const lines = normalized.split('\n');
-        if (!flush) {
-          textBuffer = lines.pop() || '';
-        } else {
-          textBuffer = '';
+      const jsonScanner = createIncrementalJsonScanner((obj) => {
+        for (const entry of extractNdjsonEntriesFromObject(obj)) {
+          emitEntry(entry);
         }
-        for (const line of lines) {
-          const entries = parseNdjsonLine(line);
-          for (const entry of entries) {
-            onItem(entry.idx, entry.text);
-            emittedCount += 1;
-          }
-        }
-      };
+      });
 
       const handleSseLine = (rawLine) => {
         const line = rawLine.replace(/\r$/, '');
@@ -848,11 +1170,13 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
         } catch (_) {
           return;
         }
+        if (parsedChunk?.error?.message && !streamApiError) {
+          streamApiError = redactApiKey(parsedChunk.error.message, settings.apiKey);
+        }
         const deltaText = extractStreamTextDelta(settings.protocol, parsedChunk);
         if (deltaText) {
-          textBuffer += deltaText;
           fullAccumulatedText += deltaText;
-          drainNdjson(false);
+          jsonScanner.feed(deltaText);
         }
       };
 
@@ -884,15 +1208,21 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
           handleSseLine(line);
         }
       }
-      drainNdjson(true);
+      jsonScanner.flush();
 
-      // Defensive fallback if model output a multi-line JSON document instead of NDJSON
-      if (emittedCount === 0 && fullAccumulatedText.trim()) {
+      if (emittedCount === 0 && streamApiError) {
+        const errObj = new Error(streamApiError);
+        errObj.noRetry = true;
+        errObj.noSplit = true;
+        throw errObj;
+      }
+
+      // Defensive recovery for any unemitted items across fenced/array/multi-object outputs
+      if (emittedCount < items.length && fullAccumulatedText.trim()) {
         try {
           const parsed = extractJsonObject(fullAccumulatedText);
           for (const entry of extractNdjsonEntriesFromObject(parsed)) {
-            onItem(entry.idx, entry.text);
-            emittedCount += 1;
+            emitEntry(entry);
           }
         } catch (_) {}
       }
@@ -905,14 +1235,25 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
       lastError = err;
       if (err.name === 'AbortError' || timedOut) {
         lastError = new Error('串流請求逾時，請檢查網路或 API 服務狀態');
-        lastError.noSplit = false;
+        lastError.noSplit = true;
+        if (attempt < maxTimeoutAttempts && emittedCount === 0) {
+          sleepAfterAttemptMs = 700 * attempt;
+          continue;
+        }
+        break;
       }
       if (lastError.noRetry || emittedCount > 0) {
         break;
       }
-      if (attempt < maxAttempts && /timeout|逾時|network|failed to fetch|5\d\d/i.test(String(lastError.message))) {
-        sleepAfterAttemptMs = 700 * attempt;
-        continue;
+      const isNetworkErr =
+        err?.name === 'TypeError' ||
+        /network|failed to fetch|load failed|networkerror|fetch/i.test(String(lastError.message));
+      if (isNetworkErr) {
+        lastError.noSplit = true;
+        if (attempt < maxNetworkOr5xxAttempts) {
+          sleepAfterAttemptMs = 700 * attempt;
+          continue;
+        }
       }
       break;
     } finally {
@@ -930,9 +1271,22 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
   throw lastError || new Error('串流翻譯失敗');
 }
 
-async function translateItemsWithFallback(settings, items, pageContext = null, externalSignal = null) {
+async function translateItemsWithFallback(settings, items, pageContext = null, externalSignal = null, state = null, depth = 0) {
   if (!items || items.length === 0) return {};
   if (externalSignal?.aborted) throw makeAbortError();
+
+  const shared = state || {
+    requestsUsed: 0,
+    maxRequests: Math.min(8, Math.max(4, Math.ceil(items.length / 2) + 2)),
+    maxDepth: 3
+  };
+
+  if (shared.requestsUsed >= shared.maxRequests) {
+    const budgetErr = new Error('已達單批重試請求上限');
+    budgetErr.noSplit = true;
+    throw budgetErr;
+  }
+  shared.requestsUsed += 1;
 
   const lang = resolveTargetLanguage(settings);
   const payload = items.map((item, idx) =>
@@ -961,7 +1315,11 @@ async function translateItemsWithFallback(settings, items, pageContext = null, e
         ? parsed.translations
         : Array.isArray(parsed?.data)
           ? parsed.data
-          : null;
+          : (parsed && typeof parsed === 'object' &&
+              (parsed.id ?? parsed.i ?? parsed.index) !== undefined &&
+              (typeof parsed.zh === 'string' || typeof parsed.t === 'string' || typeof parsed.translation === 'string'))
+            ? [parsed]
+            : null;
 
     if (!list) {
       throw new Error('JSON 中缺少 translations 陣列');
@@ -994,8 +1352,24 @@ async function translateItemsWithFallback(settings, items, pageContext = null, e
     }
 
     if (missing.length > 0 && missing.length < items.length) {
-      const rest = await translateItemsWithFallback(settings, missing, pageContext, externalSignal);
-      Object.assign(mapped, rest);
+      if (depth < shared.maxDepth && shared.requestsUsed < shared.maxRequests) {
+        try {
+          const rest = await translateItemsWithFallback(
+            settings,
+            missing,
+            pageContext,
+            externalSignal,
+            shared,
+            depth + 1
+          );
+          Object.assign(mapped, rest);
+        } catch (missingErr) {
+          if (missingErr?.isExternalAbort || externalSignal?.aborted) {
+            throw missingErr;
+          }
+          // Preserve partial mapped items
+        }
+      }
     } else if (missing.length === items.length) {
       throw new Error('回傳結果未匹配任何輸入段落');
     }
@@ -1006,19 +1380,68 @@ async function translateItemsWithFallback(settings, items, pageContext = null, e
       throw err;
     }
     if (items.length > 1) {
+      if (depth >= shared.maxDepth || shared.requestsUsed >= shared.maxRequests) {
+        throw err;
+      }
       const mid = Math.ceil(items.length / 2);
-      const [left, right] = await Promise.all([
-        translateItemsWithFallback(settings, items.slice(0, mid), pageContext, externalSignal),
-        translateItemsWithFallback(settings, items.slice(mid), pageContext, externalSignal)
-      ]);
-      return { ...left, ...right };
+      const combined = {};
+      let lastSubErr = null;
+
+      try {
+        const left = await translateItemsWithFallback(
+          settings,
+          items.slice(0, mid),
+          pageContext,
+          externalSignal,
+          shared,
+          depth + 1
+        );
+        Object.assign(combined, left);
+      } catch (leftErr) {
+        if (leftErr?.noSplit || leftErr?.isExternalAbort || externalSignal?.aborted) {
+          throw leftErr;
+        }
+        lastSubErr = leftErr;
+      }
+
+      if (shared.requestsUsed < shared.maxRequests) {
+        try {
+          const right = await translateItemsWithFallback(
+            settings,
+            items.slice(mid),
+            pageContext,
+            externalSignal,
+            shared,
+            depth + 1
+          );
+          Object.assign(combined, right);
+        } catch (rightErr) {
+          if (rightErr?.isExternalAbort || externalSignal?.aborted) {
+            throw rightErr;
+          }
+          if (rightErr?.noSplit) {
+            if (Object.keys(combined).length > 0) return combined;
+            throw rightErr;
+          }
+          lastSubErr = rightErr;
+        }
+      }
+
+      if (Object.keys(combined).length > 0) {
+        return combined;
+      }
+      throw lastSubErr || err;
     }
 
     // Single item fallback: plain text prompt (more tolerant than strict JSON)
+    if (shared.requestsUsed >= shared.maxRequests) {
+      throw err;
+    }
+    shared.requestsUsed += 1;
     const single = items[0];
     const singleRule = single.kind === 'comment'
       ? `You are a Python & technical translator. Translate this single-line # comment into ${lang.promptName}. Preserve the leading "# " prefix and output only the translated comment line.`
-      : `You are a web & technical translator. Translate the user text into ${lang.promptName}. Strictly preserve placeholders like [[C0]], [[M0]] and output only the translation.`;
+      : `You are a web & technical translator. Translate the user text into ${lang.promptName}. Strictly preserve placeholders like [[C0]] (code), [[M0]] (math/citations), [[L0]] (inline links) verbatim and output only the translation.`;
     const plain = await callLLMChat(
       settings,
       [
@@ -1089,7 +1512,7 @@ async function handleTranslateBatch(items, pageContext = null) {
       }
       finishBatchEvent(bid, { stage: 'done', translated: toPersist.length });
     } catch (err) {
-      finishBatchEvent(bid, { stage: 'error', error: err?.message || String(err) });
+      finishBatchEvent(bid, { stage: 'error', error: redactApiKey(err?.message || String(err), settings.apiKey) });
       throw err;
     }
   } else {
@@ -1167,20 +1590,65 @@ function isExtensionSender(sender) {
   return !sender.tab && sender.id === chrome.runtime.id;
 }
 
+async function isFileSchemeAccessAllowed() {
+  if (typeof chrome?.extension?.isAllowedFileSchemeAccess !== 'function') {
+    return false;
+  }
+  return new Promise((resolve) => {
+    try {
+      chrome.extension.isAllowedFileSchemeAccess((allowed) => {
+        void chrome.runtime.lastError;
+        resolve(Boolean(allowed));
+      });
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+
 async function openPdfViewer(pdfUrl, sourceTab = null) {
   const baseUrl = chrome.runtime.getURL('viewer/pdf-viewer.html');
   let cleanUrl = typeof pdfUrl === 'string' ? pdfUrl.trim() : '';
+  let parsed = null;
   if (cleanUrl) {
     try {
-      const parsed = new URL(cleanUrl);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'file:') {
+      parsed = new URL(cleanUrl);
+      if (parsed.protocol === 'file:') {
+        if (!isFilePdfUrl(cleanUrl)) {
+          cleanUrl = '';
+          parsed = null;
+        }
+      } else if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         cleanUrl = '';
+        parsed = null;
       }
     } catch (_) {
       cleanUrl = '';
+      parsed = null;
     }
   }
-  const targetUrl = cleanUrl ? `${baseUrl}?src=${encodeURIComponent(cleanUrl)}` : baseUrl;
+
+  let targetUrl = baseUrl;
+  let resultMeta = { isFileUrl: false, fileAccessAllowed: null };
+
+  if (cleanUrl && parsed?.protocol === 'file:') {
+    const fileAccessAllowed = await isFileSchemeAccessAllowed();
+    if (fileAccessAllowed) {
+      targetUrl = `${baseUrl}?src=${encodeURIComponent(cleanUrl)}`;
+      resultMeta = { isFileUrl: true, fileAccessAllowed: true };
+    } else {
+      let fileName = 'local.pdf';
+      try {
+        const rawSeg = parsed.pathname.split('/').pop() || '';
+        if (rawSeg) fileName = decodeURIComponent(rawSeg);
+      } catch (_) {}
+      targetUrl = `${baseUrl}?fileAccess=denied&name=${encodeURIComponent(fileName)}`;
+      resultMeta = { isFileUrl: true, fileAccessAllowed: false, fileName };
+    }
+  } else if (cleanUrl) {
+    targetUrl = `${baseUrl}?src=${encodeURIComponent(cleanUrl)}`;
+  }
+
   const createProps = { url: targetUrl, active: true };
   if (sourceTab && typeof sourceTab.index === 'number') {
     createProps.index = sourceTab.index + 1;
@@ -1189,33 +1657,46 @@ async function openPdfViewer(pdfUrl, sourceTab = null) {
     createProps.windowId = sourceTab.windowId;
   }
   await chrome.tabs.create(createProps);
+  return resultMeta;
 }
 
-async function ensureInjected(tabId) {
+async function ensureInjected(tabId, preferredFrameId = null) {
   if (typeof tabId !== 'number') {
     throw new Error('無效的分頁 ID');
   }
 
   // Probe frames for initialization status and extensionless PDF content-type detection
   let uninjectedFrameIds = null;
+  let pdfSubframes = [];
   try {
     const probeResults = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      func: () => ({
-        initialized: Boolean(globalThis.__KCT_INITIALIZED__),
-        isPdf: document.contentType === 'application/pdf'
-      })
+      func: () => {
+        const isPdfDoc =
+          document.contentType === 'application/pdf' ||
+          (Boolean(document.body) &&
+            document.body.children.length === 1 &&
+            Boolean(document.body.querySelector(':scope > embed[type="application/pdf"]')));
+        return {
+          initialized: Boolean(globalThis.__KCT_INITIALIZED__),
+          isPdf: isPdfDoc,
+          url: isPdfDoc ? location.href : ''
+        };
+      }
     });
     if (Array.isArray(probeResults) && probeResults.length > 0) {
       const topFrameProbe = probeResults.find((r) => r.frameId === 0);
       if (topFrameProbe?.result?.isPdf) {
-        return { isPdf: true };
+        return { isPdf: true, pdfSubframes: [] };
       }
+      pdfSubframes = probeResults
+        .filter((r) => r.frameId !== 0 && r.result?.isPdf && r.result?.url)
+        .map((r) => ({ frameId: r.frameId, url: r.result.url }));
       uninjectedFrameIds = probeResults
-        .filter((r) => !r.result?.initialized && typeof r.frameId === 'number')
+        .filter((r) => !r.result?.initialized && !r.result?.isPdf && typeof r.frameId === 'number')
         .map((r) => r.frameId);
       if (uninjectedFrameIds.length === 0) {
-        return { isPdf: false }; // All accessible frames are already injected
+        return { isPdf: false, pdfSubframes }; // All accessible non-PDF frames are already injected
       }
     }
   } catch (_) {
@@ -1223,14 +1704,23 @@ async function ensureInjected(tabId) {
   }
 
   const target = uninjectedFrameIds ? { tabId, frameIds: uninjectedFrameIds } : { tabId, allFrames: true };
+  const hasPreferredSubframe = typeof preferredFrameId === 'number' && preferredFrameId > 0;
 
-  // Inject CSS only into frames not yet initialized; fall back to top frame if a restricted subframe rejects
+  // Inject CSS only into frames not yet initialized; fall back to preferred/top frame if a restricted subframe rejects
   try {
     await chrome.scripting.insertCSS({
       target,
       files: CONTENT_CSS_FILES
     });
   } catch (_) {
+    if (hasPreferredSubframe) {
+      try {
+        await chrome.scripting.insertCSS({
+          target: { tabId, frameIds: [preferredFrameId] },
+          files: CONTENT_CSS_FILES
+        });
+      } catch (_) {}
+    }
     try {
       await chrome.scripting.insertCSS({
         target: { tabId, allFrames: false },
@@ -1242,19 +1732,35 @@ async function ensureInjected(tabId) {
   }
 
   // Inject content scripts in strict dependency order
+  let injectedAny = false;
   try {
     await chrome.scripting.executeScript({
       target,
       files: CONTENT_JS_FILES
     });
+    injectedAny = true;
   } catch (_) {
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: false },
-      files: CONTENT_JS_FILES
-    });
+    if (hasPreferredSubframe) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [preferredFrameId] },
+          files: CONTENT_JS_FILES
+        });
+        injectedAny = true;
+      } catch (_) {}
+    }
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: false },
+        files: CONTENT_JS_FILES
+      });
+      injectedAny = true;
+    } catch (topErr) {
+      if (!injectedAny) throw topErr;
+    }
   }
 
-  return { isPdf: false };
+  return { isPdf: false, pdfSubframes };
 }
 
 async function injectAndCommandTab(tabId, action, payload = null) {
@@ -1263,8 +1769,8 @@ async function injectAndCommandTab(tabId, action, payload = null) {
     if (action === 'CLEAR_PAGE') {
       return { ok: true };
     }
-    await openPdfViewer(tab.url, tab);
-    return { ok: true, openedPdfViewer: true };
+    const viewerRes = await openPdfViewer(tab.url, tab);
+    return { ok: true, openedPdfViewer: true, ...viewerRes };
   }
   if (!isInjectableUrl(tab?.url)) {
     return {
@@ -1287,8 +1793,8 @@ async function injectAndCommandTab(tabId, action, payload = null) {
   }
   const inj = await ensureInjected(tabId);
   if (inj?.isPdf) {
-    await openPdfViewer(tab.url, tab);
-    return { ok: true, openedPdfViewer: true };
+    const viewerRes = await openPdfViewer(tab.url, tab);
+    return { ok: true, openedPdfViewer: true, ...viewerRes };
   }
   try {
     const resp = await chrome.tabs.sendMessage(tabId, {
@@ -1334,6 +1840,16 @@ function setupContextMenus() {
           void chrome.runtime.lastError;
         }
       );
+      chrome.contextMenus.create(
+        {
+          id: 'kct-translate-image',
+          title: 'NativeRead 翻譯圖片文字',
+          contexts: ['image']
+        },
+        () => {
+          void chrome.runtime.lastError;
+        }
+      );
     });
   } catch (err) {
     console.warn('[KCT] setupContextMenus error:', err?.message);
@@ -1369,6 +1885,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         action: 'TRANSLATE_NOW'
       });
     } else if (info.menuItemId === 'kct-translate-selection') {
+      if (isPdfUrl(tab.url)) {
+        await openPdfViewer(tab.url, tab);
+        return;
+      }
       if (!isInjectableUrl(tab.url)) return;
       const inj = await ensureInjected(tab.id);
       if (inj?.isPdf) {
@@ -1382,6 +1902,28 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
           type: 'KCT_COMMAND',
           action: 'TRANSLATE_SELECTION',
           selectionText: info.selectionText || ''
+        },
+        sendOpts
+      );
+    } else if (info.menuItemId === 'kct-translate-image') {
+      if (isPdfUrl(tab.url) || !isInjectableUrl(tab.url)) return;
+      const preferredFrameId = typeof info.frameId === 'number' ? info.frameId : null;
+      const inj = await ensureInjected(tab.id, preferredFrameId);
+      if (inj?.isPdf) return;
+      if (
+        typeof info.frameId === 'number' &&
+        Array.isArray(inj?.pdfSubframes) &&
+        inj.pdfSubframes.some((f) => f.frameId === info.frameId)
+      ) {
+        return;
+      }
+      const sendOpts = typeof info.frameId === 'number' ? { frameId: info.frameId } : undefined;
+      await chrome.tabs.sendMessage(
+        tab.id,
+        {
+          type: 'KCT_TRANSLATE_IMAGE',
+          srcUrl: info.srcUrl || '',
+          pageUrl: info.pageUrl || tab.url || ''
         },
         sendOpts
       );
@@ -1415,12 +1957,51 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-async function tryImportNrSyncFromUrl(urlStr) {
-  if (!urlStr || !urlStr.includes('nr_sync=')) return false;
-  const match = urlStr.match(/[#&]nr_sync=([A-Za-z0-9_%-]+)/);
-  if (!match || !match[1]) return false;
+const TRUSTED_PWA_ORIGIN = 'https://chih-kai-wang.github.io';
+const TRUSTED_PWA_PATH_PREFIX = '/native-read';
+const ALLOWED_THINKING_EFFORTS = new Set(['fastest', 'balanced', 'deep']);
+const ALLOWED_TYPOGRAPHY_MATCHES = new Set(['native', 'system', 'preserve']);
+const RECENT_NR_SYNC_TOKENS = new Map(); // tabId -> lastToken
+
+function rememberNrSyncToken(tabId, token) {
+  if (typeof tabId !== 'number' || !token) return;
+  RECENT_NR_SYNC_TOKENS.delete(tabId);
+  RECENT_NR_SYNC_TOKENS.set(tabId, token);
+  while (RECENT_NR_SYNC_TOKENS.size > 50) {
+    const oldestKey = RECENT_NR_SYNC_TOKENS.keys().next().value;
+    RECENT_NR_SYNC_TOKENS.delete(oldestKey);
+  }
+}
+
+function extractTrustedNrSyncToken(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string' || !urlStr.includes('nr_sync=')) return null;
+  let parsed;
   try {
-    const rawToken = decodeURIComponent(match[1]);
+    parsed = new URL(urlStr);
+  } catch (_) {
+    return null;
+  }
+  const extOrigin = new URL(chrome.runtime.getURL('')).origin;
+  const isTrustedExt = parsed.origin === extOrigin;
+  const isTrustedPwa =
+    parsed.protocol === 'https:' &&
+    parsed.origin === TRUSTED_PWA_ORIGIN &&
+    (parsed.pathname === TRUSTED_PWA_PATH_PREFIX ||
+      parsed.pathname.startsWith(`${TRUSTED_PWA_PATH_PREFIX}/`));
+  if (!isTrustedExt && !isTrustedPwa) return null;
+
+  // Strictly require nr_sync= inside URL hash fragment (#), never query params (?nr_sync=...)
+  const hash = parsed.hash || '';
+  const match = hash.match(/(?:^|[#&])nr_sync=([A-Za-z0-9_%-]+)/);
+  if (!match || !match[1]) return null;
+  return { parsed, token: match[1], isTrustedPwa, isTrustedExt };
+}
+
+async function tryImportNrSyncFromUrl(urlStr) {
+  const trusted = extractTrustedNrSyncToken(urlStr);
+  if (!trusted) return false;
+  try {
+    const rawToken = decodeURIComponent(trusted.token);
     const b64 = rawToken.replace(/-/g, '+').replace(/_/g, '/');
     const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
     const binary = atob(b64 + pad);
@@ -1429,29 +2010,89 @@ async function tryImportNrSyncFromUrl(urlStr) {
       bytes[i] = binary.charCodeAt(i);
     }
     const data = JSON.parse(new TextDecoder().decode(bytes));
-    if (!data || typeof data !== 'object') return false;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
 
-    const providerId = String(data.providerId || data.p || '').trim();
-    const preset = (providerId && PROVIDER_PRESETS?.[providerId]) || null;
-    const patch = {};
-    if (providerId) patch.providerId = providerId;
-    const protocol = String(data.protocol || data.r || preset?.protocol || '').trim();
-    if (protocol === 'openai' || protocol === 'gemini') patch.protocol = protocol;
-    const baseUrl = String(data.baseUrl || data.u || preset?.baseUrl || '').trim();
-    if (baseUrl) patch.baseUrl = baseUrl;
-    if (typeof (data.apiKey ?? data.k) === 'string') {
-      patch.apiKey = sanitizeApiKey(data.apiKey ?? data.k);
+    const hasOwnK = Object.prototype.hasOwnProperty.call(data, 'k');
+    const hasOwnApiKey = Object.prototype.hasOwnProperty.call(data, 'apiKey');
+    const rawKey = hasOwnApiKey ? data.apiKey : (hasOwnK ? data.k : undefined);
+    const hasExplicitKey = typeof rawKey === 'string';
+
+    const rawProviderId = String(data.providerId || data.p || '').trim();
+    if (rawProviderId && !PROVIDER_PRESETS?.[rawProviderId]) return false;
+    const providerId = rawProviderId;
+    const preset = providerId ? PROVIDER_PRESETS[providerId] : null;
+
+    const rawProtocol = String(data.protocol || data.r || '').trim();
+    if (rawProtocol && rawProtocol !== 'openai' && rawProtocol !== 'gemini') return false;
+
+    const rawBaseUrl = String(data.baseUrl || data.u || '').trim();
+    if (rawBaseUrl) {
+      let parsedBase;
+      try {
+        parsedBase = new URL(rawBaseUrl);
+      } catch (_) {
+        return false;
+      }
+      if (parsedBase.protocol !== 'http:' && parsedBase.protocol !== 'https:') {
+        return false;
+      }
     }
-    const model = String(data.model || data.m || preset?.defaultModel || '').trim();
+
+    const hasEndpointMutationField =
+      Boolean(rawBaseUrl) ||
+      Boolean(rawProtocol) ||
+      Boolean(providerId);
+
+    if (!hasExplicitKey && hasEndpointMutationField) {
+      return false;
+    }
+
+    const patch = {};
+    if (hasExplicitKey) {
+      patch.apiKey = sanitizeApiKey(rawKey);
+      if (providerId) patch.providerId = providerId;
+      const protocol = rawProtocol || preset?.protocol || '';
+      if (protocol === 'openai' || protocol === 'gemini') {
+        patch.protocol = protocol;
+      }
+      const resolvedBaseUrl = rawBaseUrl || preset?.baseUrl || '';
+      if (resolvedBaseUrl) {
+        let parsedResolvedBase;
+        try {
+          parsedResolvedBase = new URL(resolvedBaseUrl);
+        } catch (_) {
+          return false;
+        }
+        if (parsedResolvedBase.protocol !== 'http:' && parsedResolvedBase.protocol !== 'https:') {
+          return false;
+        }
+        patch.baseUrl = resolvedBaseUrl;
+      }
+    }
+
+    const model = String(data.model || data.m || (hasExplicitKey ? preset?.defaultModel : '') || '').trim();
     if (model) patch.model = model;
+
     const targetLang = String(data.targetLang || data.l || '').trim();
-    if (targetLang) patch.targetLang = targetLang;
+    if (targetLang && (!TARGET_LANGUAGES || TARGET_LANGUAGES[targetLang])) {
+      patch.targetLang = targetLang;
+    }
     const customTargetLang = String(data.customTargetLang ?? data.c ?? '').trim();
-    if (customTargetLang || targetLang === 'custom') patch.customTargetLang = customTargetLang;
+    if (customTargetLang || patch.targetLang === 'custom') {
+      patch.customTargetLang = customTargetLang;
+    }
+
     const thinkingEffort = String(data.thinkingEffort || data.e || '').trim();
-    if (thinkingEffort) patch.thinkingEffort = thinkingEffort;
+    if (thinkingEffort && ALLOWED_THINKING_EFFORTS.has(thinkingEffort)) {
+      patch.thinkingEffort = thinkingEffort;
+    }
+
     const typographyMatch = String(data.typographyMatch || data.t || '').trim();
-    if (typographyMatch) patch.typographyMatch = typographyMatch;
+    if (typographyMatch && ALLOWED_TYPOGRAPHY_MATCHES.has(typographyMatch)) {
+      patch.typographyMatch = typographyMatch;
+    }
+
+    if (Object.keys(patch).length === 0) return false;
 
     await saveSettings(patch);
     return true;
@@ -1462,14 +2103,33 @@ async function tryImportNrSyncFromUrl(urlStr) {
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const candidateUrl = changeInfo?.url || tab?.url || '';
-  if (candidateUrl.includes('nr_sync=')) {
-    await tryImportNrSyncFromUrl(candidateUrl);
+  const trustedCandidate = extractTrustedNrSyncToken(candidateUrl);
+  if (trustedCandidate && RECENT_NR_SYNC_TOKENS.get(tabId) !== trustedCandidate.token) {
+    const imported = await tryImportNrSyncFromUrl(candidateUrl);
+    if (imported) {
+      rememberNrSyncToken(tabId, trustedCandidate.token);
+    }
   }
   if (changeInfo.status !== 'complete' || !isInjectableUrl(tab?.url) || isPdfUrl(tab?.url)) return;
   try {
-    if (tab.url.includes('nr_sync=')) {
-      await tryImportNrSyncFromUrl(tab.url);
-      await ensureInjected(tabId);
+    const trustedComplete = extractTrustedNrSyncToken(tab.url);
+    if (trustedComplete) {
+      if (RECENT_NR_SYNC_TOKENS.get(tabId) !== trustedComplete.token) {
+        const imported = await tryImportNrSyncFromUrl(tab.url);
+        if (imported) {
+          rememberNrSyncToken(tabId, trustedComplete.token);
+        }
+      }
+      if (trustedComplete.isTrustedPwa) {
+        await chrome.scripting.executeScript({
+          target: { tabId, allFrames: false },
+          func: () => {
+            if (location.hash.includes('nr_sync=')) {
+              history.replaceState(null, '', location.pathname + location.search);
+            }
+          }
+        }).catch(() => {});
+      }
     }
     const settings = await getSettings();
     if (!settings.enabled) return;
@@ -1565,9 +2225,10 @@ chrome.runtime.onConnect.addListener((port) => {
       activeControllers.set(requestId, controller);
       const toPersist = [];
       let translatedCount = 0;
+      let settings = null;
 
       try {
-        const settings = await getSettings();
+        settings = await getSettings();
         if (!sanitizeApiKey(settings.apiKey) && !isLocalEndpoint(settings.baseUrl)) {
           finishBatchEvent(bid, { stage: 'no_key' });
           safePost({
@@ -1654,9 +2315,12 @@ chrome.runtime.onConnect.addListener((port) => {
               return;
             }
             const isFatal =
+              streamErr?.httpStatus >= 500 ||
               streamErr?.httpStatus === 401 ||
+              streamErr?.httpStatus === 402 ||
               streamErr?.httpStatus === 403 ||
               streamErr?.httpStatus === 404 ||
+              streamErr?.httpStatus === 422 ||
               streamErr?.httpStatus === 429 ||
               streamErr?.noSplit === true;
             if (isFatal) {
@@ -1697,11 +2361,12 @@ chrome.runtime.onConnect.addListener((port) => {
           finishBatchEvent(bid, { stage: 'aborted' });
           return;
         }
-        finishBatchEvent(bid, { stage: 'error', error: err?.message || String(err) });
+        const safeErrMsg = redactApiKey(err?.message || String(err), settings?.apiKey);
+        finishBatchEvent(bid, { stage: 'error', error: safeErrMsg });
         safePost({
           type: 'ERROR',
           requestId,
-          error: err?.message || '串流翻譯失敗',
+          error: safeErrMsg || '串流翻譯失敗',
           errorCode: err?.errorCode || (err?.httpStatus ? `HTTP_${err.httpStatus}` : 'STREAM_ERROR')
         });
       } finally {
@@ -1710,6 +2375,1249 @@ chrome.runtime.onConnect.addListener((port) => {
     })();
   });
 });
+
+// ============================================================
+// R4: On-Demand Vision Image Overlay Translation
+// ============================================================
+
+const MAX_RAW_IMAGE_BYTES = 16 * 1024 * 1024;
+const MAX_VISION_DIMENSION = 1600;
+const MAX_DIRECT_VISION_BYTES = 4 * 1024 * 1024;
+
+function uint8ToBase64(bytes) {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode.apply(null, slice);
+  }
+  return btoa(binary);
+}
+
+function base64ToUint8(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function makeVisionError(message, errorCode, httpStatus = 0) {
+  const err = new Error(message);
+  if (errorCode) err.errorCode = errorCode;
+  if (httpStatus) err.httpStatus = httpStatus;
+  return err;
+}
+
+function isVisionUnsupportedError(errText, httpStatus) {
+  if (httpStatus === 415) return true;
+  if (httpStatus !== 400 && httpStatus !== 404 && httpStatus !== 422) return false;
+  return /image|vision|multimodal|inline_data|inlineData|image_url|media|content.{0,30}(must be|expected).{0,20}string|invalid type:\s*sequence|content array|unknown variant.{0,20}image_url|not.{0,12}multimodal|does not support.{0,25}(image|vision|multimodal|media|file)|unsupported.{0,20}(type|modality|content|image|media)/i.test(
+    String(errText || '')
+  );
+}
+
+function srgbChannelToLinear(c) {
+  const s = c / 255;
+  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+
+function computeRelativeLuminance(r, g, b) {
+  return (
+    0.2126 * srgbChannelToLinear(r) +
+    0.7152 * srgbChannelToLinear(g) +
+    0.0722 * srgbChannelToLinear(b)
+  );
+}
+
+function computeContrastRatio(lum1, lum2) {
+  const hi = Math.max(lum1, lum2);
+  const lo = Math.min(lum1, lum2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function rgbToHex(r, g, b) {
+  return (
+    '#' +
+    [r, g, b]
+      .map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0'))
+      .join('')
+  );
+}
+
+function pickHighContrastFallback(bgLum) {
+  const slateDarkLum = computeRelativeLuminance(15, 23, 42); // #0f172a
+  const slateLightLum = computeRelativeLuminance(248, 250, 252); // #f8fafc
+  const crLight = computeContrastRatio(bgLum, slateLightLum);
+  const crDark = computeContrastRatio(bgLum, slateDarkLum);
+  const preferLight = crLight > crDark;
+  const bestCr = preferLight ? crLight : crDark;
+  if (bestCr >= 4.5) {
+    return { fg: preferLight ? '#f8fafc' : '#0f172a', isDarkBg: preferLight };
+  }
+  const pureWhiteCr = computeContrastRatio(bgLum, 1.0);
+  const pureBlackCr = computeContrastRatio(bgLum, 0.0);
+  return {
+    fg: pureWhiteCr >= pureBlackCr ? '#ffffff' : '#000000',
+    isDarkBg: pureWhiteCr >= pureBlackCr
+  };
+}
+
+// Expand a vision text box so the opaque label also covers glyph edges the model's box cut off
+function refineImageBoxToInk(samplePixels, W, H, box, bg) {
+  if (!samplePixels || !W || !H || !bg) {
+    return { ymin: box.ymin, xmin: box.xmin, ymax: box.ymax, xmax: box.xmax };
+  }
+
+  // 1. Convert normalized 0..1000 box to inclusive sample pixel coordinates, clamped to image.
+  const initX0 = Math.max(0, Math.min(W - 1, Math.floor((box.xmin / 1000) * W)));
+  const initX1 = Math.max(initX0, Math.min(W - 1, Math.ceil((box.xmax / 1000) * W) - 1));
+  const initY0 = Math.max(0, Math.min(H - 1, Math.floor((box.ymin / 1000) * H)));
+  const initY1 = Math.max(initY0, Math.min(H - 1, Math.ceil((box.ymax / 1000) * H) - 1));
+
+  let x0 = initX0;
+  let x1 = initX1;
+  let y0 = initY0;
+  let y1 = initY1;
+
+  const bgR = bg.r;
+  const bgG = bg.g;
+  const bgB = bg.b;
+
+  // 2. Check whether pixel (x, y) is foreground ink relative to sampled background.
+  const isInk = (x, y) => {
+    const idx = (y * W + x) * 4;
+    if (samplePixels[idx + 3] < 128) return false;
+    const dr = Math.abs(samplePixels[idx] - bgR);
+    const dg = Math.abs(samplePixels[idx + 1] - bgG);
+    const db = Math.abs(samplePixels[idx + 2] - bgB);
+    return Math.max(dr, dg, db) >= 56;
+  };
+
+  // 3. Growth budgets derived from the height of ONE text line, not the whole box: multi-line titles
+  //    are tall, and budgets based on their full height let the box creep into nearby illustrations.
+  const hPx = initY1 - initY0 + 1;
+  let lineBands = 0;
+  let inBand = false;
+  for (let y = initY0; y <= initY1; y++) {
+    let rowHasInk = false;
+    for (let x = initX0; x <= initX1; x++) {
+      if (isInk(x, y)) { rowHasInk = true; break; }
+    }
+    if (rowHasInk && !inBand) lineBands++;
+    inBand = rowHasInk;
+  }
+  const lineH = hPx / Math.max(1, lineBands);
+  const maxGrowX = Math.max(2, Math.round(0.6 * lineH));
+  const maxGrowY = Math.max(2, Math.round(0.3 * lineH));
+  // Only bridge letter spacing (not word spaces), so a cut-off glyph is covered without swallowing neighbours
+  const gapTol = Math.max(1, Math.round(0.15 * lineH));
+
+  // Clamp per-side expansion limits so total growth across passes never exceeds budgets.
+  const minAllowedX0 = Math.max(0, initX0 - maxGrowX);
+  const maxAllowedX1 = Math.min(W - 1, initX1 + maxGrowX);
+  const minAllowedY0 = Math.max(0, initY0 - maxGrowY);
+  const maxAllowedY1 = Math.min(H - 1, initY1 + maxGrowY);
+
+  // 4. Horizontal scan helper: expand x0 left and x1 right from current edges.
+  const expandHorizontal = () => {
+    const spanH = y1 - y0 + 1;
+
+    // Scan left from current x0
+    let bestLeft = x0;
+    let emptyRun = 0;
+    for (let x = x0 - 1; x >= minAllowedX0; x--) {
+      let inkCount = 0;
+      for (let y = y0; y <= y1; y++) {
+        if (isInk(x, y)) inkCount++;
+      }
+      if (inkCount / spanH > 0.7) break; // Stop at solid border / rule / illustration edge
+      if (inkCount > 0) {
+        bestLeft = x;
+        emptyRun = 0;
+      } else {
+        emptyRun++;
+        if (emptyRun > gapTol) break;
+      }
+    }
+    x0 = bestLeft;
+
+    // Scan right from current x1
+    let bestRight = x1;
+    emptyRun = 0;
+    for (let x = x1 + 1; x <= maxAllowedX1; x++) {
+      let inkCount = 0;
+      for (let y = y0; y <= y1; y++) {
+        if (isInk(x, y)) inkCount++;
+      }
+      if (inkCount / spanH > 0.7) break; // Stop at solid border / rule / illustration edge
+      if (inkCount > 0) {
+        bestRight = x;
+        emptyRun = 0;
+      } else {
+        emptyRun++;
+        if (emptyRun > gapTol) break;
+      }
+    }
+    x1 = bestRight;
+  };
+
+  // 5. Vertical scan helper: expand y0 up and y1 down with zero gap tolerance.
+  const expandVertical = () => {
+    const spanW = x1 - x0 + 1;
+
+    // Scan up from current y0
+    let bestTop = y0;
+    for (let y = y0 - 1; y >= minAllowedY0; y--) {
+      let inkCount = 0;
+      for (let x = x0; x <= x1; x++) {
+        if (isInk(x, y)) inkCount++;
+      }
+      if (inkCount === 0 || inkCount / spanW > 0.6) break;
+      bestTop = y;
+    }
+    y0 = bestTop;
+
+    // Scan down from current y1
+    let bestBottom = y1;
+    for (let y = y1 + 1; y <= maxAllowedY1; y++) {
+      let inkCount = 0;
+      for (let x = x0; x <= x1; x++) {
+        if (isInk(x, y)) inkCount++;
+      }
+      if (inkCount === 0 || inkCount / spanW > 0.6) break;
+      bestBottom = y;
+    }
+    y1 = bestBottom;
+  };
+
+  // 6. Horizontal -> Vertical -> Horizontal (vertical expansion can uncover overhanging glyphs).
+  expandHorizontal();
+  expandVertical();
+  expandHorizontal();
+
+  // 7. Add 1 px safety margin on each side that actually grew, clamped to image bounds.
+  const grewLeft = x0 < initX0;
+  const grewRight = x1 > initX1;
+  const grewTop = y0 < initY0;
+  const grewBottom = y1 > initY1;
+
+  if (grewLeft) x0 = Math.max(0, x0 - 1);
+  if (grewRight) x1 = Math.min(W - 1, x1 + 1);
+  if (grewTop) y0 = Math.max(0, y0 - 1);
+  if (grewBottom) y1 = Math.min(H - 1, y1 + 1);
+
+  // Convert inclusive pixel bounds [x0..x1], [y0..y1] back to 0..1000 integers,
+  // ensuring the refined box is never smaller than the input box on any edge.
+  const inYmin = Math.max(0, Math.min(1000, Math.floor(box.ymin)));
+  const inXmin = Math.max(0, Math.min(1000, Math.floor(box.xmin)));
+  const inYmax = Math.max(0, Math.min(1000, Math.ceil(box.ymax)));
+  const inXmax = Math.max(0, Math.min(1000, Math.ceil(box.xmax)));
+
+  const outXmin = grewLeft
+    ? Math.max(0, Math.min(inXmin, Math.floor((x0 / W) * 1000)))
+    : inXmin;
+  const outXmax = grewRight
+    ? Math.min(1000, Math.max(inXmax, Math.ceil(((x1 + 1) / W) * 1000)))
+    : inXmax;
+  const outYmin = grewTop
+    ? Math.max(0, Math.min(inYmin, Math.floor((y0 / H) * 1000)))
+    : inYmin;
+  const outYmax = grewBottom
+    ? Math.min(1000, Math.max(inYmax, Math.ceil(((y1 + 1) / H) * 1000)))
+    : inYmax;
+
+  return {
+    ymin: outYmin,
+    xmin: outXmin,
+    ymax: outYmax,
+    xmax: outXmax,
+  };
+}
+
+function hexToRgbTriplet(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function sampleImageBoxColors(samplePixels, W, H, box) {
+  if (!samplePixels || !W || !H) {
+    return { bg: '#ffffff', fg: '#0f172a', isDarkBg: false };
+  }
+  const x0 = Math.max(0, Math.min(W - 1, Math.floor((box.xmin / 1000) * W)));
+  const y0 = Math.max(0, Math.min(H - 1, Math.floor((box.ymin / 1000) * H)));
+  const x1 = Math.max(x0, Math.min(W - 1, Math.ceil((box.xmax / 1000) * W)));
+  const y1 = Math.max(y0, Math.min(H - 1, Math.ceil((box.ymax / 1000) * H)));
+
+  const buckets = new Map();
+  let totalPerim = 0;
+  let opaquePerim = 0;
+
+  const pushBorder = (px, py) => {
+    if (px < 0 || px >= W || py < 0 || py >= H) return;
+    totalPerim += 1;
+    const idx = (py * W + px) * 4;
+    if (samplePixels[idx + 3] < 128) return;
+    opaquePerim += 1;
+    const r = samplePixels[idx];
+    const g = samplePixels[idx + 1];
+    const b = samplePixels[idx + 2];
+    const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    let entry = buckets.get(key);
+    if (!entry) {
+      entry = { count: 0, sumR: 0, sumG: 0, sumB: 0 };
+      buckets.set(key, entry);
+    }
+    entry.count += 1;
+    entry.sumR += r;
+    entry.sumG += g;
+    entry.sumB += b;
+  };
+
+  const pad = Math.max(1, Math.round(W * 0.004));
+  const rings = [
+    { rx0: x0, ry0: y0, rx1: x1, ry1: y1 },
+    {
+      rx0: Math.max(0, x0 - pad),
+      ry0: Math.max(0, y0 - pad),
+      rx1: Math.min(W - 1, x1 + pad),
+      ry1: Math.min(H - 1, y1 + pad)
+    }
+  ];
+  for (const ring of rings) {
+    for (let x = ring.rx0; x <= ring.rx1; x += 2) {
+      pushBorder(x, ring.ry0);
+      pushBorder(x, ring.ry1);
+    }
+    for (let y = ring.ry0; y <= ring.ry1; y += 2) {
+      pushBorder(ring.rx0, y);
+      pushBorder(ring.rx1, y);
+    }
+  }
+
+  let bgR = 255;
+  let bgG = 255;
+  let bgB = 255;
+  let bgHex = '#ffffff';
+
+  if (totalPerim === 0 || opaquePerim / totalPerim < 0.4 || buckets.size === 0) {
+    // Transparent perimeter: infer matte from opaque interior pixel luminance
+    let lumSum = 0;
+    let lumCount = 0;
+    for (let y = y0; y <= y1; y += 1) {
+      for (let x = x0; x <= x1; x += 1) {
+        const idx = (y * W + x) * 4;
+        if (samplePixels[idx + 3] < 128) continue;
+        lumSum += computeRelativeLuminance(samplePixels[idx], samplePixels[idx + 1], samplePixels[idx + 2]);
+        lumCount += 1;
+      }
+    }
+    const avgInteriorLum = lumCount > 0 ? lumSum / lumCount : 0.1;
+    if (avgInteriorLum > 0.45) {
+      bgR = 15;
+      bgG = 23;
+      bgB = 42;
+      bgHex = '#0f172a';
+    } else {
+      bgR = 255;
+      bgG = 255;
+      bgB = 255;
+      bgHex = '#ffffff';
+    }
+  } else {
+    let bestBucket = null;
+    for (const bucket of buckets.values()) {
+      if (!bestBucket || bucket.count > bestBucket.count) {
+        bestBucket = bucket;
+      }
+    }
+    bgR = Math.round(bestBucket.sumR / bestBucket.count);
+    bgG = Math.round(bestBucket.sumG / bestBucket.count);
+    bgB = Math.round(bestBucket.sumB / bestBucket.count);
+    bgHex = rgbToHex(bgR, bgG, bgB);
+  }
+
+  const bgLum = computeRelativeLuminance(bgR, bgG, bgB);
+  const fallback = pickHighContrastFallback(bgLum);
+  const isDarkBg = fallback.isDarkBg;
+
+  const contrastPixels = [];
+  for (let y = y0; y <= y1; y += 1) {
+    for (let x = x0; x <= x1; x += 1) {
+      const idx = (y * W + x) * 4;
+      if (samplePixels[idx + 3] < 128) continue;
+      const r = samplePixels[idx];
+      const g = samplePixels[idx + 1];
+      const b = samplePixels[idx + 2];
+      const lum = computeRelativeLuminance(r, g, b);
+      const lumDiff = Math.abs(lum - bgLum);
+      const rgbDist = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
+      if (lumDiff >= 0.12 || rgbDist >= 110) {
+        contrastPixels.push({ r, g, b, cr: computeContrastRatio(bgLum, lum) });
+      }
+    }
+  }
+
+  let fg = fallback.fg;
+  if (contrastPixels.length >= 3) {
+    contrastPixels.sort((a, b) => b.cr - a.cr);
+    const take = Math.max(2, Math.min(24, Math.ceil(contrastPixels.length * 0.12)));
+    let sR = 0;
+    let sG = 0;
+    let sB = 0;
+    for (let i = 0; i < take; i++) {
+      sR += contrastPixels[i].r;
+      sG += contrastPixels[i].g;
+      sB += contrastPixels[i].b;
+    }
+    const fgR = Math.round(sR / take);
+    const fgG = Math.round(sG / take);
+    const fgB = Math.round(sB / take);
+    const fgLum = computeRelativeLuminance(fgR, fgG, fgB);
+    if (computeContrastRatio(bgLum, fgLum) >= 4.5) {
+      fg = rgbToHex(fgR, fgG, fgB);
+    }
+  }
+
+  return {
+    bg: bgHex,
+    fg,
+    isDarkBg
+  };
+}
+
+function sniffImageMime(bytes) {
+  if (!bytes || bytes.length === 0) return '';
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (bytes.length >= 6) {
+    const hdr6 = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+    if (hdr6 === 'GIF87a' || hdr6 === 'GIF89a') return 'image/gif';
+  }
+  if (bytes.length >= 12) {
+    const riff = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+    const webp = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+    if (riff === 'RIFF' && webp === 'WEBP') return 'image/webp';
+    const ftyp = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
+    if (ftyp === 'ftyp') {
+      const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+      if (brand === 'avif' || brand === 'avis') return 'image/avif';
+    }
+  }
+  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+    return 'image/bmp';
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x00 && bytes[2] === 0x01 && bytes[3] === 0x00) {
+    return 'image/x-icon';
+  }
+
+  let head = '';
+  const limit = Math.min(bytes.length, 512);
+  for (let i = 0; i < limit; i++) {
+    const b = bytes[i];
+    if (b === 0) return '';
+    head += String.fromCharCode(b);
+  }
+  const cleanHead = head.replace(/^\uFEFF/, '').trimStart().toLowerCase();
+  if (
+    cleanHead.startsWith('<!doctype') ||
+    cleanHead.startsWith('<html') ||
+    cleanHead.startsWith('<head') ||
+    cleanHead.startsWith('<body') ||
+    cleanHead.startsWith('<script') ||
+    cleanHead.startsWith('{') ||
+    cleanHead.startsWith('[')
+  ) {
+    return 'text/invalid';
+  }
+  if (cleanHead.startsWith('<svg') || (cleanHead.startsWith('<?xml') && cleanHead.includes('<svg'))) {
+    return 'image/svg+xml';
+  }
+  return '';
+}
+
+function parseImageDataUrl(rawDataUrl) {
+  const str = String(rawDataUrl || '').trim();
+  const match = str.match(/^data:(image\/[a-z0-9.+-]+)((?:;[a-z0-9=._+-]+)*),(.*)$/i);
+  if (!match) {
+    throw makeVisionError('無效的圖片 Data URL', 'FETCH_FAILED');
+  }
+  let mimeType = match[1].toLowerCase();
+  if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
+  const params = String(match[2] || '').toLowerCase();
+  const payload = match[3] || '';
+
+  let rawBytes;
+  if (params.includes(';base64')) {
+    try {
+      rawBytes = base64ToUint8(payload.replace(/\s+/g, ''));
+    } catch (_) {
+      throw makeVisionError('圖片 Base64 編碼無效', 'FETCH_FAILED');
+    }
+  } else if (mimeType === 'image/svg+xml') {
+    try {
+      rawBytes = new TextEncoder().encode(decodeURIComponent(payload));
+    } catch (_) {
+      rawBytes = new TextEncoder().encode(payload);
+    }
+  } else {
+    throw makeVisionError('不支援的非 Base64 圖片 Data URL', 'FETCH_FAILED');
+  }
+
+  if (rawBytes.byteLength === 0) {
+    throw makeVisionError('圖片內容為空', 'FETCH_FAILED');
+  }
+  if (rawBytes.byteLength > MAX_RAW_IMAGE_BYTES) {
+    throw makeVisionError('圖片超過 16MB 上限', 'FETCH_FAILED');
+  }
+  const sniffed = sniffImageMime(rawBytes);
+  if (sniffed === 'text/invalid') {
+    throw makeVisionError('圖片資料內容無效', 'FETCH_FAILED');
+  }
+  if (sniffed === 'image/svg+xml') {
+    mimeType = 'image/svg+xml';
+  }
+  return { mimeType, rawBytes };
+}
+
+function normalizeHttpImageUrl(rawUrl) {
+  const str = String(rawUrl || '').trim();
+  if (!str) return '';
+  let parsed;
+  try {
+    parsed = new URL(str);
+  } catch (_) {
+    return '';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return '';
+  }
+  return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+}
+
+async function readResponseBytesBounded(resp, maxBytes) {
+  if (resp.body && typeof resp.body.getReader === 'function') {
+    const reader = resp.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength > 0) {
+          total += value.byteLength;
+          if (total > maxBytes) {
+            try {
+              await reader.cancel();
+            } catch (_) {}
+            throw makeVisionError('圖片超過 16MB 上限', 'FETCH_FAILED');
+          }
+          chunks.push(value);
+        }
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch (_) {}
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return merged;
+  }
+  const buf = await resp.arrayBuffer();
+  if (buf.byteLength > maxBytes) {
+    throw makeVisionError('圖片超過 16MB 上限', 'FETCH_FAILED');
+  }
+  return new Uint8Array(buf);
+}
+
+async function computeImageDigest(rawBytes, fallbackIdentity) {
+  if (rawBytes && rawBytes.byteLength > 0 && globalThis.crypto?.subtle?.digest) {
+    try {
+      const digestBuf = await globalThis.crypto.subtle.digest('SHA-256', rawBytes);
+      const view = new Uint8Array(digestBuf);
+      let hex = '';
+      for (let i = 0; i < view.length; i++) {
+        hex += view[i].toString(16).padStart(2, '0');
+      }
+      if (hex) return hex;
+    } catch (_) {}
+  }
+  return hashText(String(fallbackIdentity || ''));
+}
+
+async function prepareImagePayloadForVision(srcUrl, dataUrl) {
+  let mimeType = 'image/png';
+  let rawBytes = null;
+
+  const cleanDataUrl = String(dataUrl || '').trim();
+  const cleanSrcUrl = String(srcUrl || '').trim();
+
+  if (cleanDataUrl) {
+    const parsedData = parseImageDataUrl(cleanDataUrl);
+    mimeType = parsedData.mimeType;
+    rawBytes = parsedData.rawBytes;
+  } else if (/^data:/i.test(cleanSrcUrl)) {
+    const parsedData = parseImageDataUrl(cleanSrcUrl);
+    mimeType = parsedData.mimeType;
+    rawBytes = parsedData.rawBytes;
+  } else if (/^https?:\/\//i.test(cleanSrcUrl)) {
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(cleanSrcUrl);
+    } catch (_) {
+      throw makeVisionError('無效的圖片網址', 'FETCH_FAILED');
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      throw makeVisionError('不支援此圖片來源協定', 'FETCH_FAILED');
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      let resp;
+      try {
+        resp = await fetch(cleanSrcUrl, { credentials: 'include', signal: controller.signal });
+      } catch (e) {
+        if (controller.signal.aborted) throw e;
+        resp = await fetch(cleanSrcUrl, { credentials: 'omit', signal: controller.signal });
+      }
+      if (!resp.ok) {
+        throw makeVisionError(`無法下載圖片 (HTTP ${resp.status})`, 'FETCH_FAILED', resp.status);
+      }
+      const clHeader = resp.headers?.get?.('content-length');
+      if (clHeader !== null && clHeader !== undefined && clHeader !== '') {
+        const cl = Number(clHeader);
+        if (Number.isFinite(cl) && cl > MAX_RAW_IMAGE_BYTES) {
+          throw makeVisionError('圖片超過 16MB 上限', 'FETCH_FAILED');
+        }
+      }
+      const ct = (resp.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
+      const isOctetStream = ct === 'application/octet-stream' || ct === 'binary/octet-stream';
+      if (ct && !ct.startsWith('image/') && !isOctetStream) {
+        throw makeVisionError(`來源非圖片格式 (${ct})`, 'FETCH_FAILED');
+      }
+
+      rawBytes = await readResponseBytesBounded(resp, MAX_RAW_IMAGE_BYTES);
+      if (rawBytes.byteLength === 0) {
+        throw makeVisionError('圖片內容為空', 'FETCH_FAILED');
+      }
+
+      const sniffed = sniffImageMime(rawBytes);
+      if (sniffed === 'text/invalid') {
+        throw makeVisionError('來源回傳內容非有效圖片', 'FETCH_FAILED');
+      }
+      if (!ct || isOctetStream) {
+        if (!sniffed || !sniffed.startsWith('image/')) {
+          throw makeVisionError('無法辨識圖片來源格式', 'FETCH_FAILED');
+        }
+        mimeType = sniffed;
+      } else {
+        mimeType = ct === 'image/jpg' ? 'image/jpeg' : ct;
+        if (sniffed === 'image/svg+xml') {
+          mimeType = 'image/svg+xml';
+        }
+      }
+    } catch (err) {
+      if (err?.errorCode) throw err;
+      if (err?.name === 'AbortError') {
+        throw makeVisionError('下載圖片逾時', 'FETCH_FAILED');
+      }
+      throw makeVisionError(err?.message || '無法下載圖片', 'FETCH_FAILED');
+    } finally {
+      clearTimeout(timer);
+    }
+  } else if (/^blob:/i.test(cleanSrcUrl)) {
+    throw makeVisionError('blob: 圖片需由頁面轉換後傳送', 'FETCH_FAILED');
+  } else {
+    throw makeVisionError('不支援此圖片來源協定', 'FETCH_FAILED');
+  }
+
+  const blob = new Blob([rawBytes], { type: mimeType });
+  let samplePixels = null;
+  let sampleW = 0;
+  let sampleH = 0;
+  let sendBytes = null;
+  let sendMime = mimeType;
+  let width = 0;
+  let height = 0;
+
+  if (typeof createImageBitmap === 'function' && typeof OffscreenCanvas === 'function') {
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(blob);
+      const origW = bitmap.width;
+      const origH = bitmap.height;
+      width = origW;
+      height = origH;
+
+      // Sample buffer (~480px max edge) preserving alpha for accurate color & transparency sampling
+      const sampleScale = Math.min(1, 480 / Math.max(origW, origH, 1));
+      sampleW = Math.max(16, Math.round(origW * sampleScale));
+      sampleH = Math.max(16, Math.round(origH * sampleScale));
+      const sCanvas = new OffscreenCanvas(sampleW, sampleH);
+      const sCtx = sCanvas.getContext('2d', { willReadFrequently: true });
+      sCtx.drawImage(bitmap, 0, 0, sampleW, sampleH);
+      samplePixels = sCtx.getImageData(0, 0, sampleW, sampleH).data;
+
+      let transparentCount = 0;
+      let opaqueLumSum = 0;
+      let opaqueCount = 0;
+      const pixelTotal = sampleW * sampleH;
+      for (let i = 0; i < samplePixels.length; i += 4) {
+        if (samplePixels[i + 3] < 245) {
+          transparentCount += 1;
+        }
+        if (samplePixels[i + 3] >= 128) {
+          opaqueLumSum += computeRelativeLuminance(samplePixels[i], samplePixels[i + 1], samplePixels[i + 2]);
+          opaqueCount += 1;
+        }
+      }
+      const hasAlpha = pixelTotal > 0 && transparentCount / pixelTotal > 0.02;
+      const opaqueAvgLum = opaqueCount > 0 ? opaqueLumSum / opaqueCount : 0.2;
+
+      const needsReencode =
+        Math.max(origW, origH) > MAX_VISION_DIMENSION ||
+        rawBytes.byteLength > MAX_DIRECT_VISION_BYTES ||
+        !['image/png', 'image/jpeg', 'image/webp'].includes(mimeType);
+
+      if (needsReencode) {
+        const scale = Math.min(1, MAX_VISION_DIMENSION / Math.max(origW, origH, 1));
+        const outW = Math.max(32, Math.round(origW * scale));
+        const outH = Math.max(32, Math.round(origH * scale));
+        const oCanvas = new OffscreenCanvas(outW, outH);
+        const oCtx = oCanvas.getContext('2d');
+
+        let exported = null;
+        if (hasAlpha) {
+          oCtx.drawImage(bitmap, 0, 0, outW, outH);
+          const pngBlob = await oCanvas.convertToBlob({ type: 'image/png' });
+          if (pngBlob.size <= MAX_DIRECT_VISION_BYTES) {
+            exported = { blob: pngBlob, mime: 'image/png' };
+          } else {
+            oCtx.clearRect(0, 0, outW, outH);
+            oCtx.fillStyle = opaqueAvgLum > 0.45 ? '#0f172a' : '#ffffff';
+            oCtx.fillRect(0, 0, outW, outH);
+            oCtx.drawImage(bitmap, 0, 0, outW, outH);
+          }
+        } else {
+          oCtx.drawImage(bitmap, 0, 0, outW, outH);
+        }
+
+        if (!exported) {
+          const jpgBlob = await oCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.88 });
+          exported = { blob: jpgBlob, mime: 'image/jpeg' };
+        }
+        sendBytes = new Uint8Array(await exported.blob.arrayBuffer());
+        sendMime = exported.mime;
+        width = outW;
+        height = outH;
+      }
+    } catch (_) {
+      if (mimeType === 'image/svg+xml') {
+        throw makeVisionError(
+          '目前模型不支援未點陣化的 SVG 向量圖，請改用 PNG / JPEG / WebP 圖片。',
+          'VISION_UNSUPPORTED'
+        );
+      }
+    } finally {
+      try {
+        bitmap?.close?.();
+      } catch (_) {}
+    }
+  } else if (mimeType === 'image/svg+xml') {
+    throw makeVisionError(
+      '目前環境無法將 SVG 向量圖點陣化以進行視覺翻譯。',
+      'VISION_UNSUPPORTED'
+    );
+  }
+
+  if (!sendBytes) {
+    if (mimeType === 'image/svg+xml') {
+      throw makeVisionError(
+        '目前模型不支援未點陣化的 SVG 向量圖，請改用 PNG / JPEG / WebP 圖片。',
+        'VISION_UNSUPPORTED'
+      );
+    }
+    sendBytes = rawBytes;
+  }
+
+  const base64 = uint8ToBase64(sendBytes);
+  return {
+    base64,
+    mimeType: sendMime,
+    dataUrl: `data:${sendMime};base64,${base64}`,
+    width,
+    height,
+    rawBytes,
+    samplePixels,
+    sampleW,
+    sampleH
+  };
+}
+
+function buildVisionImagePrompts(settings, pageContext = null, dims = null) {
+  const lang = resolveTargetLanguage(settings);
+  const glossarySection = buildGlossarySection(settings, pageContext);
+  const { roleLine, topicLine } = buildRoleAndTopicLines(pageContext);
+
+  const systemPrompt = [
+    'You are an expert multimodal infographic & technical diagram translator.',
+    roleLine,
+    buildLanguageGuidance(lang),
+    'Task: Detect every readable text block (titles, panel badges like "(A) ...", headings, wrapped paragraphs, subheadings, captions, diagram callouts, axis labels) inside the image that is NOT already in the target language, and translate it accurately and naturally.',
+    'Strict Layout & Bounding-Box Rules:',
+    '1. Group lines belonging to the SAME heading, sentence, or short paragraph into ONE block so the translation reads naturally; keep visually distinct UI elements (e.g. badge vs bold summary vs colored subheading vs small caption) as SEPARATE non-overlapping boxes.',
+    '2. Keep each `box_2d` [ymin, xmin, ymax, xmax] (integers 0..1000) TIGHT around ONLY the text itself — NEVER cover pure illustrations, 3D schematics, photos, icons, vertical accent bars, or card borders.',
+    '3. Preserve symbols, parenthetical codes like (A) or (IFC), units, numbers, bullets (•), formulas, and brand/product names accurately. If there is no untranslated readable text, return {"blocks":[]}.',
+    '4. Output ONLY valid JSON in this exact shape: {"blocks":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"translated text","role":"title|badge|body"}]}',
+    '5. No markdown code fences, no commentary.',
+    glossarySection
+  ].filter(Boolean).join('\n');
+
+  const dimLine = dims?.width > 0 && dims?.height > 0
+    ? `Image dimensions: ${dims.width}x${dims.height} px.`
+    : '';
+  const userPrompt = [
+    topicLine,
+    dimLine,
+    `Detect and translate all readable text blocks into ${lang.promptName || lang.label}. Return strict JSON {"blocks":[...]}.`
+  ].filter(Boolean).join('\n');
+
+  return { systemPrompt, userPrompt };
+}
+
+function parseVisionBlocksJson(rawContent) {
+  const parsed = extractJsonObject(rawContent);
+  let rawBlocks = null;
+  if (Array.isArray(parsed)) {
+    rawBlocks = parsed;
+  } else if (parsed && typeof parsed === 'object') {
+    if (Array.isArray(parsed.blocks)) {
+      rawBlocks = parsed.blocks;
+    } else if (Array.isArray(parsed.data)) {
+      rawBlocks = parsed.data;
+    }
+  }
+  if (!rawBlocks) {
+    throw makeVisionError('JSON 缺少 blocks 陣列', 'PARSE_FAILED');
+  }
+
+  const blocks = [];
+  for (const b of rawBlocks) {
+    if (!b || typeof b !== 'object') continue;
+    const coords = Array.isArray(b.box_2d)
+      ? b.box_2d
+      : (Array.isArray(b.box) ? b.box : [b.ymin, b.xmin, b.ymax, b.xmax]);
+    if (!Array.isArray(coords) || coords.length < 4) continue;
+
+    let ymin = Number(coords[0]);
+    let xmin = Number(coords[1]);
+    let ymax = Number(coords[2]);
+    let xmax = Number(coords[3]);
+    if (![ymin, xmin, ymax, xmax].every(Number.isFinite)) continue;
+
+    // Handle models that return 0..1 normalized floats instead of 0..1000
+    if (ymin >= 0 && xmin >= 0 && ymax > ymin && xmax > xmin && ymax <= 1 && xmax <= 1) {
+      ymin *= 1000;
+      xmin *= 1000;
+      ymax *= 1000;
+      xmax *= 1000;
+    }
+
+    ymin = Math.max(0, Math.min(1000, Math.round(ymin)));
+    xmin = Math.max(0, Math.min(1000, Math.round(xmin)));
+    ymax = Math.max(0, Math.min(1000, Math.round(ymax)));
+    xmax = Math.max(0, Math.min(1000, Math.round(xmax)));
+
+    if (ymin >= ymax || xmin >= xmax || (ymax - ymin) < 2 || (xmax - xmin) < 2) {
+      continue;
+    }
+
+    const translated = String(b.text || b.zh || b.translation || '').trim();
+    if (!translated) continue;
+    const role = b.role === 'title' || b.role === 'badge' ? b.role : 'body';
+    blocks.push({ ymin, xmin, ymax, xmax, text: translated, role });
+  }
+  return blocks;
+}
+
+async function callVisionImageLLM(settings, systemPrompt, userPrompt, mimeType, base64Data) {
+  const endpoint = resolveEndpoint(settings);
+  if (!endpoint) {
+    throw makeVisionError('API 地址無效，請檢查設定中的 Base URL', 'INVALID_ENDPOINT');
+  }
+
+  const cleanKey = sanitizeApiKey(settings.apiKey);
+  // Locating text boxes and translating in one multimodal call is too hard at MINIMAL thinking (boxes get
+  // dropped or swapped between cards), so on-demand image translation uses at least the 'balanced' level.
+  const visionEffort = settings.thinkingEffort === 'deep' ? 'deep' : 'balanced';
+  const thinkingConfig = resolveThinkingConfig(settings.model, visionEffort);
+
+  await acquireRequestSlot();
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 60000);
+
+  try {
+    let resp;
+    let preReadErrText = null;
+
+    if (settings.protocol === 'gemini') {
+      const normModel = normalizeGeminiModelId(settings.model);
+      const isGemini3Or4 = /^gemini-(?:3|4)(?:[.\-]|$)/.test(normModel);
+      const generationConfig = {
+        responseMimeType: 'application/json'
+      };
+      if (!isGemini3Or4) {
+        generationConfig.temperature = 0.15;
+      }
+      if (thinkingConfig) {
+        generationConfig.thinkingConfig = thinkingConfig;
+      }
+      const headers = { 'Content-Type': 'application/json' };
+      if (cleanKey) headers['x-goog-api-key'] = cleanKey;
+      resp = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: userPrompt },
+                { inlineData: { mimeType, data: base64Data } }
+              ]
+            }
+          ],
+          generationConfig
+        })
+      });
+    } else {
+      const model = String(settings.model || '').trim();
+      const effort = settings.thinkingEffort || 'fastest';
+      const isOpenAIReasoning = /^o[134](?:-|$)/i.test(model);
+      const isDeepSeekReasoner = /deepseek-reasoner|^r1\b/i.test(model);
+
+      const headers = { 'Content-Type': 'application/json' };
+      if (cleanKey) headers.Authorization = `Bearer ${cleanKey}`;
+      const bodyObj = {
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: userPrompt },
+              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}` } }
+            ]
+          }
+        ],
+        response_format: { type: 'json_object' }
+      };
+      if (!isOpenAIReasoning && !isDeepSeekReasoner) {
+        bodyObj.temperature = 0.15;
+      }
+      if (effort === 'fastest') {
+        if (isOpenAIReasoning && /api\.openai\.com/i.test(endpoint)) {
+          bodyObj.reasoning_effort = 'low';
+        } else if (/^qwen3/i.test(model) && /dashscope\.aliyuncs\.com/i.test(endpoint)) {
+          bodyObj.enable_thinking = false;
+        }
+      }
+
+      resp = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify(bodyObj)
+      });
+
+      // Pre-inference HTTP 400 optional-param fallback (only when NOT a Vision-unsupported error)
+      if (!resp.ok && resp.status === 400) {
+        const errText = await resp.text();
+        if (
+          !isVisionUnsupportedError(errText, 400) &&
+          /response_format|json_object|reasoning_effort|enable_thinking|temperature/i.test(errText)
+        ) {
+          delete bodyObj.response_format;
+          delete bodyObj.reasoning_effort;
+          delete bodyObj.enable_thinking;
+          if (/temperature/i.test(errText)) delete bodyObj.temperature;
+          resp = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            signal: controller.signal,
+            body: JSON.stringify(bodyObj)
+          });
+        } else {
+          preReadErrText = errText;
+        }
+      }
+    }
+
+    if (!resp.ok) {
+      const rawErrText = preReadErrText !== null ? preReadErrText : await resp.text();
+      const safeRawText = redactApiKey(rawErrText, settings.apiKey);
+
+      if (resp.status === 429) {
+        const isDailyOrZeroQuota = /PerDay|RequestsPerDay|GenerateRequestsPerDay|"quotaValue"\s*:\s*"0"|limit:\s*0/i.test(safeRawText);
+        const retryDelayMs = parseRetryDelayMs(safeRawText, resp);
+        if (!isDailyOrZeroQuota) {
+          const waitMs = Math.min(26000, retryDelayMs > 0 ? retryDelayMs + 400 : 4500);
+          const now = Date.now();
+          adaptivePacingUntil = Math.max(adaptivePacingUntil, now + 90000);
+          globalCooldownUntil = Math.max(globalCooldownUntil, now + waitMs);
+        }
+        const waitSec = retryDelayMs > 0 ? Math.ceil(retryDelayMs / 1000) : null;
+        const msg = isDailyOrZeroQuota
+          ? 'HTTP 429：已達每日免費額度上限（或模型配額為 0）'
+          : waitSec
+            ? `HTTP 429：請求頻率達上限，請等待約 ${waitSec}s 後再試`
+            : `HTTP 429：請求頻率達上限 (${safeRawText.slice(0, 160) || resp.statusText})`;
+        throw makeVisionError(msg, isDailyOrZeroQuota ? 'QUOTA_EXCEEDED' : 'RATE_LIMIT', 429);
+      }
+
+      if (isVisionUnsupportedError(safeRawText, resp.status)) {
+        throw makeVisionError(
+          '目前模型不支援圖片視覺翻譯，請於設定頁改用多模態模型（如 Gemini / GPT-4o）。',
+          'VISION_UNSUPPORTED',
+          resp.status
+        );
+      }
+
+      throw makeVisionError(
+        `Vision API 錯誤 (${resp.status}): ${safeRawText.slice(0, 240)}`,
+        `HTTP_${resp.status}`,
+        resp.status
+      );
+    }
+
+    const rawText = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (_) {
+      throw makeVisionError('Vision API 回應非有效 JSON', 'PARSE_FAILED');
+    }
+
+    if (data?.error?.message) {
+      throw makeVisionError(redactApiKey(data.error.message, settings.apiKey), 'API_ERROR');
+    }
+
+    let outText = '';
+    if (settings.protocol === 'gemini') {
+      const candidate = data?.candidates?.[0];
+      const parts = candidate?.content?.parts || [];
+      const answerParts = parts.filter((p) => !p.thought && typeof p.text === 'string');
+      outText = (answerParts.length ? answerParts : parts)
+        .map((p) => (typeof p.text === 'string' ? p.text : ''))
+        .join('\n')
+        .trim();
+    } else {
+      outText = String(data?.choices?.[0]?.message?.content || '').trim();
+    }
+
+    if (!outText) {
+      throw makeVisionError('模型未返回有效的圖片翻譯內容', 'PARSE_FAILED');
+    }
+    return outText;
+  } catch (err) {
+    if (err?.name === 'AbortError' || timedOut) {
+      throw makeVisionError('圖片視覺翻譯逾時 (60s)，請檢查網路或稍後重試', 'TIMEOUT');
+    }
+    if (err?.message) {
+      err.message = redactApiKey(err.message, settings.apiKey);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    releaseRequestSlot();
+  }
+}
+
+function extractCachedVisionBlocks(cachedRaw) {
+  if (!cachedRaw || typeof cachedRaw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(cachedRaw);
+    const list = Array.isArray(parsed)
+      ? parsed
+      : (Array.isArray(parsed?.blocks) ? parsed.blocks : null);
+    if (Array.isArray(list) && list.length > 0) {
+      return list;
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function handleTranslateImage(message) {
+  const settings = await getSettings();
+  const cleanKey = sanitizeApiKey(settings.apiKey);
+  if (!cleanKey && !isLocalEndpoint(settings.baseUrl)) {
+    return {
+      ok: false,
+      errorCode: 'NO_API_KEY',
+      error: '請先於 NativeRead 設定頁填入 API Key'
+    };
+  }
+
+  const effectiveSettings = { ...settings };
+  const reqTargetLang = typeof message?.targetLang === 'string' ? message.targetLang.trim() : '';
+  if (reqTargetLang && (TARGET_LANGUAGES?.[reqTargetLang] || reqTargetLang === 'custom')) {
+    effectiveSettings.targetLang = reqTargetLang;
+  }
+  if (typeof message?.customTargetLang === 'string' && message.customTargetLang.trim()) {
+    effectiveSettings.customTargetLang = message.customTargetLang.trim();
+  }
+
+  const srcUrl = String(message?.srcUrl || '').trim();
+  const dataUrl = String(message?.dataUrl || '').trim();
+  const pageContext = message?.pageContext || null;
+  const force = Boolean(message?.force);
+
+  if (!srcUrl && !dataUrl) {
+    return { ok: false, errorCode: 'FETCH_FAILED', error: '找不到圖片來源' };
+  }
+
+  const lang = resolveTargetLanguage(effectiveSettings);
+  const cacheSig = buildCacheSignature(effectiveSettings, pageContext);
+  const modelPart = String(effectiveSettings.model || '').trim() || 'default';
+  const langAndSig = `${lang.id}:${hashText(cacheSig)}`;
+
+  const normalizedHttpUrl = !dataUrl ? normalizeHttpImageUrl(srcUrl) : '';
+  const urlCacheKey = normalizedHttpUrl
+    ? `img:v4:u_${hashText(normalizedHttpUrl)}:${modelPart}:${langAndSig}`
+    : '';
+
+  if (!force && urlCacheKey) {
+    try {
+      const hitMap = await CacheDB.getMany([urlCacheKey]);
+      const cachedBlocks = extractCachedVisionBlocks(hitMap.get(urlCacheKey));
+      if (cachedBlocks) {
+        return { ok: true, cached: true, blocks: cachedBlocks };
+      }
+    } catch (_) {}
+  }
+
+  let prepared;
+  try {
+    prepared = await prepareImagePayloadForVision(srcUrl, dataUrl);
+  } catch (err) {
+    return {
+      ok: false,
+      errorCode: err?.errorCode || 'FETCH_FAILED',
+      error: redactApiKey(err?.message || '無法讀取圖片內容', effectiveSettings.apiKey)
+    };
+  }
+
+  const fallbackIdentity = normalizedHttpUrl || (dataUrl ? hashText(dataUrl) : srcUrl);
+  const imgDigest = await computeImageDigest(prepared.rawBytes, fallbackIdentity);
+  const shaCacheKey = `img:v4:${imgDigest}:${modelPart}:${langAndSig}`;
+
+  if (!force) {
+    try {
+      const hitMap = await CacheDB.getMany([shaCacheKey]);
+      const cachedBlocks = extractCachedVisionBlocks(hitMap.get(shaCacheKey));
+      if (cachedBlocks) {
+        if (urlCacheKey) {
+          try {
+            await CacheDB.putMany([{ key: urlCacheKey, zh: JSON.stringify({ blocks: cachedBlocks }) }]);
+          } catch (_) {}
+        }
+        return { ok: true, cached: true, blocks: cachedBlocks };
+      }
+    } catch (_) {}
+  }
+
+  const reqWidth = Number(message?.width) > 0 ? Math.round(Number(message.width)) : (prepared.width || 0);
+  const reqHeight = Number(message?.height) > 0 ? Math.round(Number(message.height)) : (prepared.height || 0);
+  const prompts = buildVisionImagePrompts(effectiveSettings, pageContext, {
+    width: reqWidth,
+    height: reqHeight
+  });
+
+  let rawContent;
+  try {
+    rawContent = await callVisionImageLLM(
+      effectiveSettings,
+      prompts.systemPrompt,
+      prompts.userPrompt,
+      prepared.mimeType,
+      prepared.base64
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      errorCode: err?.errorCode || (err?.httpStatus ? `HTTP_${err.httpStatus}` : 'VISION_ERROR'),
+      error: redactApiKey(err?.message || '圖片視覺翻譯失敗', effectiveSettings.apiKey)
+    };
+  }
+
+  let blocks;
+  try {
+    blocks = parseVisionBlocksJson(rawContent);
+  } catch (err) {
+    return {
+      ok: false,
+      errorCode: 'PARSE_FAILED',
+      error: redactApiKey(err?.message || '無法解析圖片翻譯結果，請重試', effectiveSettings.apiKey)
+    };
+  }
+
+  const enriched = blocks.map((b) => {
+    const colors = sampleImageBoxColors(prepared.samplePixels, prepared.sampleW, prepared.sampleH, b);
+    const bgRgb = hexToRgbTriplet(colors.bg);
+    const refined = bgRgb
+      ? refineImageBoxToInk(prepared.samplePixels, prepared.sampleW, prepared.sampleH, b, bgRgb)
+      : null;
+    return {
+      ...b,
+      ...(refined || {}),
+      bg: colors.bg,
+      fg: colors.fg,
+      isDarkBg: colors.isDarkBg
+    };
+  });
+
+  if (enriched.length > 0) {
+    const serialized = JSON.stringify({ blocks: enriched });
+    const cacheEntries = [{ key: shaCacheKey, zh: serialized }];
+    if (urlCacheKey && urlCacheKey !== shaCacheKey) {
+      cacheEntries.push({ key: urlCacheKey, zh: serialized });
+    }
+    try {
+      await CacheDB.putMany(cacheEntries);
+    } catch (_) {}
+  }
+
+  return { ok: true, cached: false, blocks: enriched };
+}
 
 // ============================================================
 // Runtime Message Router
@@ -1744,6 +3652,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             message.mode || 'selection',
             message.pageContext || null
           );
+          sendResponse(res);
+          break;
+        }
+        case 'TRANSLATE_IMAGE': {
+          const res = await handleTranslateImage(message);
           sendResponse(res);
           break;
         }
@@ -1793,8 +3706,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             } catch (_) {}
           }
           const pdfUrl = typeof message.url === 'string' && message.url.trim() ? message.url.trim() : '';
-          await openPdfViewer(pdfUrl, sourceTab);
-          sendResponse({ ok: true });
+          const viewerRes = await openPdfViewer(pdfUrl, sourceTab);
+          sendResponse({ ok: true, ...viewerRes });
           break;
         }
         case 'GET_CACHE_STATS': {
@@ -1842,9 +3755,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: 'Unknown message type' });
       }
     } catch (err) {
+      let safeErr = err?.message || '未知錯誤';
+      try {
+        const currentSettings = await getSettings();
+        if (currentSettings?.apiKey) {
+          safeErr = redactApiKey(safeErr, currentSettings.apiKey);
+        }
+      } catch (_) {}
       sendResponse({
         ok: false,
-        error: err?.message || '未知錯誤',
+        error: safeErr,
         errorCode: err?.errorCode || (err?.httpStatus ? `HTTP_${err.httpStatus}` : undefined)
       });
     }

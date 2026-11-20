@@ -81,11 +81,38 @@
     rootNode.appendChild(styleEl);
   }
 
+  function detectPageDarkBackground() {
+    if (
+      document.body?.dataset?.jpThemeLight === 'false' ||
+      document.documentElement?.getAttribute('data-theme') === 'dark' ||
+      document.documentElement?.classList.contains('dark') ||
+      document.body?.classList.contains('theme-dark')
+    ) {
+      return true;
+    }
+    const candidates = [document.body, document.documentElement].filter(Boolean);
+    for (const el of candidates) {
+      const bg = getComputedStyle(el).backgroundColor || '';
+      const m = bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i);
+      if (m) {
+        const alpha = m[4] !== undefined ? parseFloat(m[4]) : 1;
+        if (alpha < 0.15) continue;
+        const r = Number(m[1]);
+        const g = Number(m[2]);
+        const b = Number(m[3]);
+        const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        return lum < 115;
+      }
+    }
+    return false;
+  }
+
   function applyDisplayModeClass(settings) {
     const root = document.documentElement;
     if (!root) return;
 
     root.classList.toggle('kct-active', settings?.enabled !== false);
+    root.classList.toggle('kct-page-dark', detectPageDarkBackground());
 
     root.classList.remove('kct-mode-bilingual', 'kct-mode-replace', 'kct-mode-original');
     const resolvedMode = settings?.displayMode || 'replace';
@@ -116,11 +143,11 @@
 
   function buildTranslatedFragment(zhText, placeholders) {
     const frag = document.createDocumentFragment();
-    const tokens = String(zhText || '').split(/(\[\[\s*[CM]\d+\s*\]\])/g);
+    const tokens = String(zhText || '').split(/(\[\[\s*[CML]\d+\s*\]\])/g);
 
     for (const part of tokens) {
       if (!part) continue;
-      const m = part.match(/^\[\[\s*([CM]\d+)\s*\]\]$/);
+      const m = part.match(/^\[\[\s*([CML]\d+)\s*\]\]$/);
       if (m && placeholders) {
         const canonical = `[[${m[1]}]]`;
         const origNode = placeholders.get(canonical);
@@ -136,11 +163,11 @@
 
   function needsInlineInjection(el) {
     const tag = el.tagName;
-    if (tag === 'TD' || tag === 'TH' || tag === 'A' || tag === 'SPAN') {
+    if (tag === 'TD' || tag === 'TH' || tag === 'A' || tag === 'SPAN' || tag === 'BUTTON') {
       return true;
     }
     const display = getComputedStyle(el).display || '';
-    if (display.includes('inline')) return true;
+    if (display.includes('inline') || display.includes('flex') || display.includes('grid')) return true;
     const parent = el.parentElement;
     if (!parent) return false;
     const parentDisplay = getComputedStyle(parent).display || '';
@@ -160,13 +187,15 @@
     try {
       const W = 400;
       const H = 520;
-      if (!img._kctSamplePixels) {
+      const srcKey = img.currentSrc || img.src || '';
+      if (!img._kctSamplePixels || img._kctSampleSrc !== srcKey) {
         const canvas = document.createElement('canvas');
         canvas.width = W;
         canvas.height = H;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.drawImage(img, 0, 0, W, H);
         img._kctSamplePixels = ctx.getImageData(0, 0, W, H).data;
+        img._kctSampleSrc = srcKey;
       }
       const data = img._kctSamplePixels;
       const x0 = Math.max(0, Math.min(W - 1, Math.floor((leftPct / 100) * W)));
@@ -259,6 +288,245 @@
     }
   }
 
+  // ---- Native glyph metrics measured from the rasterised PDF page image ----
+  const PDF_LATIN_XHEIGHT_RATIO = 0.53; // x-height / em of typical Latin text faces
+  const PDF_CJK_GLYPH_RATIO = 0.88;     // ink height / em of CJK source glyphs
+  const PDF_TARGET_EM_SCALE = 0.94;     // CJK glyphs fill more of the em box than Latin, so step down slightly
+  const PDF_SIZE_CLUSTER_TOLERANCE = 1.08;
+  const PDF_BOLD_STROKE_RATIO = 1.3;
+
+  function parsePdfBox(boxStr) {
+    const parts = String(boxStr || '').split(',').map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+    return { left: parts[0], top: parts[1], width: parts[2], height: parts[3] };
+  }
+
+  function readInkGrid(ctx, canvas, img, sx, sy, sw, sh) {
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    sx = Math.max(0, Math.min(nw - 1, Math.floor(sx)));
+    sy = Math.max(0, Math.min(nh - 1, Math.floor(sy)));
+    sw = Math.max(1, Math.min(nw - sx, Math.ceil(sw)));
+    sh = Math.max(1, Math.min(nh - sy, Math.ceil(sh)));
+    canvas.width = sw;
+    canvas.height = sh;
+    ctx.clearRect(0, 0, sw, sh);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    const data = ctx.getImageData(0, 0, sw, sh).data;
+    const lums = new Float32Array(sw * sh);
+    const hist = new Uint32Array(256);
+    for (let i = 0, j = 0; j < lums.length; i += 4, j += 1) {
+      const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      lums[j] = lum;
+      hist[Math.min(255, Math.round(lum))] += 1;
+    }
+    // Background = dominant luminance (the paper), robust to light-on-dark pages
+    let bgLum = 255;
+    let bgCount = -1;
+    for (let v = 0; v < 256; v++) {
+      if (hist[v] > bgCount) {
+        bgCount = hist[v];
+        bgLum = v;
+      }
+    }
+    return { lums, sw, sh, bgLum };
+  }
+
+  function measurePdfBlockGlyphs(ctx, canvas, img, el) {
+    const box = parsePdfBox(el.getAttribute('data-kct-pdf-box'));
+    if (!box) return null;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    const lineHPct = parseFloat(el.getAttribute('data-kct-pdf-line-h')) || box.height;
+    const isToc = el.getAttribute('data-kct-pdf-toc') === '1';
+
+    // Only the first line is needed; TOC rows only measure the title area so leader dots don't skew the result
+    const widthFrac = isToc ? 0.3 : 1;
+    const grid = readInkGrid(
+      ctx,
+      canvas,
+      img,
+      (box.left / 100) * nw,
+      ((box.top - lineHPct * 0.2) / 100) * nh,
+      Math.min((box.width * widthFrac / 100) * nw, 1400),
+      (lineHPct * 1.4 / 100) * nh
+    );
+    const { lums, sw, sh, bgLum } = grid;
+    const rowInk = new Uint32Array(sh);
+    let runSum = 0;
+    let runCount = 0;
+    for (let y = 0; y < sh; y++) {
+      let run = 0;
+      for (let x = 0; x < sw; x++) {
+        if (Math.abs(lums[y * sw + x] - bgLum) >= 70) {
+          rowInk[y] += 1;
+          run += 1;
+        } else if (run) {
+          runSum += run;
+          runCount += 1;
+          run = 0;
+        }
+      }
+      if (run) {
+        runSum += run;
+        runCount += 1;
+      }
+    }
+
+    let maxRow = 0;
+    for (let y = 0; y < sh; y++) if (rowInk[y] > maxRow) maxRow = rowInk[y];
+    if (maxRow < 3 || runCount < 6) return null;
+
+    // x-height band = longest contiguous run of densely inked rows
+    let best = 0;
+    let cur = 0;
+    for (let y = 0; y < sh; y++) {
+      if (rowInk[y] >= maxRow * 0.4) {
+        cur += 1;
+        if (cur > best) best = cur;
+      } else {
+        cur = 0;
+      }
+    }
+    if (best < 4) return null;
+
+    const sourceText = el.getAttribute('data-kct-orig-text') || '';
+    const cjk = (sourceText.match(/[\p{Script=Han}\u3040-\u30ff\uac00-\ud7af]/gu) || []).length;
+    const glyphRatio = cjk > sourceText.length * 0.3 ? PDF_CJK_GLYPH_RATIO : PDF_LATIN_XHEIGHT_RATIO;
+
+    const result = {
+      fsPct: (best / glyphRatio / nh) * 100,
+      strokeRatio: (runSum / runCount) / best,
+      leader: null
+    };
+
+    if (isToc) {
+      // Look for leader dots between the title and the page number (55%-85% of the row)
+      const gap = readInkGrid(
+        ctx,
+        canvas,
+        img,
+        ((box.left + box.width * 0.55) / 100) * nw,
+        (box.top / 100) * nh,
+        (box.width * 0.3 / 100) * nw,
+        (box.height / 100) * nh
+      );
+      let inkCols = 0;
+      for (let x = 0; x < gap.sw; x++) {
+        for (let y = 0; y < gap.sh; y++) {
+          if (Math.abs(gap.lums[y * gap.sw + x] - gap.bgLum) >= 50) {
+            inkCols += 1;
+            break;
+          }
+        }
+      }
+      result.leader = inkCols >= gap.sw * 0.12 ? 'dots' : 'none';
+    }
+    return result;
+  }
+
+  function median(values) {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+
+  // Measure every merged block of one page together, then snap near-equal sizes to one shared size so
+  // sibling rows (TOC entries, body paragraphs) never drift apart just because Drive's text boxes differ.
+  function ensurePdfLayerTypography(layer, img) {
+    if (!layer || !img || !img.complete || !img.naturalWidth || !img.naturalHeight) return false;
+    const blocks = Array.from(layer.querySelectorAll(':scope > p[data-kct-pdf-block="1"]'));
+    const key = `${img.currentSrc || img.src}|${img.naturalWidth}x${img.naturalHeight}|${blocks.length}`;
+    if (layer._kctTypoKey === key) return true;
+
+    let canvas;
+    let ctx;
+    try {
+      canvas = document.createElement('canvas');
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
+    } catch (_) {
+      return false;
+    }
+
+    const measured = [];
+    for (const el of blocks) {
+      let m = null;
+      try {
+        m = measurePdfBlockGlyphs(ctx, canvas, img, el);
+      } catch (_) {
+        // Tainted or unreadable image: keep the geometric fallback for this layer
+        layer._kctTypoKey = key;
+        return false;
+      }
+      if (m) {
+        measured.push({ el, ...m });
+      } else {
+        el.removeAttribute('data-kct-pdf-fs-pct');
+        el.removeAttribute('data-kct-pdf-bold');
+      }
+    }
+
+    // TOC entries always share one size
+    const tocItems = measured.filter((m) => m.el.getAttribute('data-kct-pdf-toc') === '1');
+    if (tocItems.length > 0) {
+      const tocFs = median(tocItems.map((m) => m.fsPct));
+      const dotted = tocItems.filter((m) => m.leader === 'dots').length;
+      const sharedLeader = dotted * 2 >= tocItems.length ? 'dots' : 'none';
+      for (const m of tocItems) {
+        m.fsPct = tocFs;
+        m.leader = sharedLeader; // one TOC = one leader style, even if a single row's sample was off
+      }
+    }
+
+    // Cluster remaining sizes: consecutive values within ~8% collapse to their median
+    const sorted = [...measured].sort((a, b) => a.fsPct - b.fsPct);
+    let cluster = [];
+    const flush = () => {
+      if (cluster.length === 0) return;
+      const shared = median(cluster.map((m) => m.fsPct));
+      for (const m of cluster) m.fsPct = shared;
+      cluster = [];
+    };
+    for (const m of sorted) {
+      if (cluster.length > 0 && m.fsPct > cluster[0].fsPct * PDF_SIZE_CLUSTER_TOLERANCE) flush();
+      cluster.push(m);
+    }
+    flush();
+
+    const strokeBaseline = median(measured.map((m) => m.strokeRatio));
+    for (const m of measured) {
+      m.el.setAttribute('data-kct-pdf-fs-pct', m.fsPct.toFixed(4));
+      if (strokeBaseline > 0 && m.strokeRatio >= strokeBaseline * PDF_BOLD_STROKE_RATIO) {
+        m.el.setAttribute('data-kct-pdf-bold', '1');
+      } else {
+        m.el.removeAttribute('data-kct-pdf-bold');
+      }
+      if (m.leader) m.el.setAttribute('data-kct-pdf-toc-leader', m.leader);
+    }
+
+    layer._kctTypoKey = key;
+    return true;
+  }
+
+  function appendPdfTocTail(el) {
+    const num = el.getAttribute('data-kct-pdf-toc-num');
+    const existing = el.querySelector(':scope > [data-kct-ui="toc"]');
+    if (existing) existing.remove();
+    if (!num) return;
+    const tail = document.createElement('span');
+    tail.className = 'kct-pdf-toc-tail';
+    tail.setAttribute('data-kct-ui', 'toc');
+    tail.setAttribute('translate', 'no');
+    const leader = document.createElement('span');
+    leader.className = 'kct-pdf-toc-leader';
+    leader.setAttribute('aria-hidden', 'true');
+    const numEl = document.createElement('span');
+    numEl.className = 'kct-pdf-toc-num';
+    numEl.textContent = num;
+    tail.append(leader, numEl);
+    el.appendChild(tail);
+  }
+
   function styleAndFitPdfOverlayBlock(el) {
     if (!el || !el.isConnected || el.getAttribute('data-kct-pdf-block') !== '1') return;
     const layer = el.closest('[data-kct-pdf-layer="1"]');
@@ -292,35 +560,76 @@
     const avgLineHPct = parseFloat(el.getAttribute('data-kct-pdf-line-h')) || 1.8;
     const lineCount = parseInt(el.getAttribute('data-kct-pdf-lines'), 10) || 1;
     const linePx = (avgLineHPct / 100) * pageH;
+    const isToc = el.getAttribute('data-kct-pdf-toc') === '1';
+
+    const img = pageContainer?.querySelector('img');
+    const measuredReady = ensurePdfLayerTypography(layer, img);
+    if (!measuredReady && img && !img.complete && !el._kctFitOnLoad) {
+      el._kctFitOnLoad = true;
+      img.addEventListener('load', () => {
+        el._kctFitOnLoad = false;
+        if (el.isConnected && el.hasAttribute('data-kct-has-trans')) styleAndFitPdfOverlayBlock(el);
+      }, { once: true });
+    }
 
     let fontSize;
     let lineHeight;
     let fontWeight = '400';
+    const fsPct = parseFloat(el.getAttribute('data-kct-pdf-fs-pct'));
 
-    if (lineCount === 1 && avgLineHPct >= 2.2) {
+    if (Number.isFinite(fsPct) && fsPct > 0) {
+      // Native size measured from the page raster
+      fontSize = +((fsPct / 100) * pageH * PDF_TARGET_EM_SCALE).toFixed(2);
+      fontWeight = el.getAttribute('data-kct-pdf-bold') === '1' ? '600' : '400';
+      const pitchPct = parseFloat(el.getAttribute('data-kct-pdf-pitch'));
+      if (lineCount > 1 && Number.isFinite(pitchPct) && pitchPct > 0) {
+        // Keep the original line pitch so the paragraph occupies the same vertical rhythm
+        lineHeight = Math.max(1.3, Math.min(1.9, ((pitchPct / 100) * pageH) / fontSize)).toFixed(2);
+      } else {
+        lineHeight = '1.3';
+      }
+    } else if (lineCount === 1 && avgLineHPct >= 2.2) {
       fontSize = Math.round(linePx * 0.80);
       lineHeight = '1.22';
-      fontWeight = '700';
+      fontWeight = '600';
     } else if (avgLineHPct >= 2.8) {
       fontSize = Math.round(linePx * 0.74);
       lineHeight = '1.28';
-      fontWeight = '400';
     } else {
       fontSize = Math.round(linePx * 0.78);
       lineHeight = '1.42';
-      fontWeight = '400';
     }
 
-    fontSize = Math.max(10, Math.min(42, fontSize));
+    fontSize = Math.max(9, Math.min(48, fontSize));
     el.style.setProperty('--kct-pdf-fs', `${fontSize}px`);
     el.style.setProperty('--kct-pdf-lh', lineHeight);
     el.style.setProperty('--kct-pdf-fw', fontWeight);
 
-    const targetH = el.clientHeight;
+    let fs = fontSize;
+    let guard = 0;
+    if (isToc) {
+      // TOC rows never wrap: only shrink if the translated title cannot fit beside its page number
+      const titleEl = el.querySelector(':scope > [data-kct-ui="trans"]');
+      while (
+        titleEl &&
+        guard < 12 &&
+        fs > 9.5 &&
+        titleEl.scrollWidth > titleEl.clientWidth + 1
+      ) {
+        fs = Math.max(9.5, +(fs * 0.94).toFixed(2));
+        el.style.setProperty('--kct-pdf-fs', `${fs}px`);
+        guard += 1;
+      }
+      return;
+    }
+
+    // A single-line source block may overflow its (often too tight) text-layer box vertically,
+    // as long as the translation itself still fits on one line; only wrapping should trigger shrinking.
+    const targetH = lineCount === 1
+      ? Math.max(el.clientHeight, fontSize * parseFloat(lineHeight) + 4)
+      : el.clientHeight;
     const targetW = el.clientWidth;
     if (targetH > 8 && targetW > 12) {
-      let fs = fontSize;
-      let guard = 0;
       while (
         guard < 16 &&
         fs > 9.5 &&
@@ -395,6 +704,7 @@
 
     el.setAttribute('data-kct-has-trans', '1');
     if (el.getAttribute('data-kct-pdf-block') === '1') {
+      if (el.getAttribute('data-kct-pdf-toc') === '1') appendPdfTocTail(el);
       styleAndFitPdfOverlayBlock(el);
     }
     if (state?.elementState) state.elementState.set(el, 'done');
@@ -478,6 +788,8 @@
       if (transWrap) {
         transWrap.remove();
       }
+      const tocTail = el.querySelector(':scope > [data-kct-ui="toc"]');
+      if (tocTail) tocTail.remove();
       el.removeAttribute('data-kct-has-trans');
       el.removeAttribute('data-kct-inline-layout');
       el.removeAttribute('data-kct-typo');
@@ -499,6 +811,8 @@
       notebookAdapter.clearNotebookOverlays(state);
     }
 
+    clearAllImageVisionOverlays();
+
     if (state) {
       // Reset WeakMap completely so any previously 'queued' or 'observed' blocks can be re-scanned
       state.elementState = new WeakMap();
@@ -517,6 +831,156 @@
     for (const el of blocks) {
       styleAndFitPdfOverlayBlock(el);
     }
+    refitAllImageVisionOverlays();
+  }
+
+  // =========================================================
+  // R4: On-Demand Vision Image Overlay Renderer
+  // =========================================================
+  function fitVisionOverlayBlock(blockEl, role) {
+    if (!blockEl || !blockEl.isConnected) return;
+    const h = blockEl.clientHeight;
+    const w = blockEl.clientWidth;
+    if (h < 6 || w < 10) return;
+
+    let fs = role === 'title'
+      ? Math.min(24, Math.max(11, Math.round(h * 0.42)))
+      : (role === 'badge'
+        ? Math.min(15, Math.max(9.5, Math.round(h * 0.62)))
+        : Math.min(16, Math.max(10, Math.round(h * 0.34))));
+
+    blockEl.style.fontSize = `${fs}px`;
+    let guard = 0;
+    while (
+      guard < 16 &&
+      fs > 8.5 &&
+      (blockEl.scrollHeight > h + 3 || blockEl.scrollWidth > w + 4)
+    ) {
+      fs = Math.max(8.5, +(fs - (fs > 15 ? 1.25 : 0.65)).toFixed(2));
+      blockEl.style.fontSize = `${fs}px`;
+      guard += 1;
+    }
+  }
+
+  // Sibling labels of the same role (all card titles, all badges, all body lines) share one size,
+  // like the original design; the smallest fitted size is used so every label still fits its box.
+  function unifyVisionOverlayRoleSizes(layer) {
+    if (!layer) return;
+    const byRole = new Map();
+    for (const blockEl of layer.querySelectorAll('.kct-img-overlay-block')) {
+      const fs = parseFloat(blockEl.style.fontSize);
+      if (!Number.isFinite(fs)) continue;
+      const role = blockEl.getAttribute('data-kct-role') || 'body';
+      if (!byRole.has(role)) byRole.set(role, []);
+      byRole.get(role).push({ blockEl, fs });
+    }
+    for (const items of byRole.values()) {
+      if (items.length < 2) continue;
+      const shared = Math.min(...items.map((it) => it.fs));
+      for (const it of items) it.blockEl.style.fontSize = `${shared}px`;
+    }
+  }
+
+  function renderImageVisionOverlay(imgEl, blocks) {
+    if (!imgEl || !imgEl.isConnected || !Array.isArray(blocks)) return null;
+    const parent = imgEl.parentElement;
+    if (!parent) return null;
+
+    // Reuse or wrap inside a dedicated relative host so overlay tracks exact image geometry
+    let host = imgEl.closest('.kct-img-overlay-host[data-kct-ui="img-host"]');
+    if (!host) {
+      host = document.createElement('span');
+      host.className = 'kct-img-overlay-host';
+      host.setAttribute('data-kct-ui', 'img-host');
+      const imgCs = getComputedStyle(imgEl);
+      host.style.display = imgCs.display === 'block' ? 'block' : 'inline-block';
+      host.style.position = 'relative';
+      host.style.maxWidth = '100%';
+      parent.insertBefore(host, imgEl);
+      host.appendChild(imgEl);
+    }
+
+    let layer = host.querySelector(':scope > .kct-img-overlay-layer[data-kct-ui="img-overlay"]');
+    if (layer) layer.remove();
+
+    layer = document.createElement('div');
+    layer.className = 'kct-img-overlay-layer';
+    layer.setAttribute('data-kct-ui', 'img-overlay');
+    layer.setAttribute('translate', 'no');
+
+    const syncLayerBounds = () => {
+      if (!imgEl.isConnected || !layer.isConnected) return;
+      layer.style.left = `${imgEl.offsetLeft}px`;
+      layer.style.top = `${imgEl.offsetTop}px`;
+      layer.style.width = `${imgEl.clientWidth || imgEl.offsetWidth}px`;
+      layer.style.height = `${imgEl.clientHeight || imgEl.offsetHeight}px`;
+    };
+    syncLayerBounds();
+
+    for (const b of blocks) {
+      const item = document.createElement('div');
+      item.className = `kct-img-overlay-block kct-img-role-${b.role || 'body'}`;
+      item.setAttribute('data-kct-ui', 'img-block');
+      item.setAttribute('data-kct-role', b.role || 'body');
+      const leftPct = Math.max(0, Math.min(99, b.xmin / 10));
+      const topPct = Math.max(0, Math.min(99, b.ymin / 10));
+      const widthPct = Math.max(1, Math.min(100 - leftPct, (b.xmax - b.xmin) / 10));
+      const heightPct = Math.max(1, Math.min(100 - topPct, (b.ymax - b.ymin) / 10));
+      item.style.left = `${leftPct.toFixed(2)}%`;
+      item.style.top = `${topPct.toFixed(2)}%`;
+      item.style.width = `${widthPct.toFixed(2)}%`;
+      item.style.height = `${heightPct.toFixed(2)}%`;
+      item.style.setProperty('--kct-img-bg', b.bg || '#ffffff');
+      item.style.setProperty('--kct-img-fg', b.fg || '#1e293b');
+      // Vision output sometimes inserts spaces between CJK characters; drop them so the label reads naturally
+      const labelText = String(b.text || '').replace(/([\p{Script=Han}\u3000-\u303f\uff00-\uffef])\s+(?=[\p{Script=Han}\u3000-\u303f\uff00-\uffef])/gu, '$1');
+      item.appendChild(document.createTextNode(labelText));
+      layer.appendChild(item);
+    }
+
+    host.appendChild(layer);
+    imgEl.setAttribute('data-kct-img-translated', '1');
+    imgEl.setAttribute('data-kct-img-mode', 'translated');
+
+    requestAnimationFrame(() => {
+      syncLayerBounds();
+      for (const blockEl of layer.querySelectorAll('.kct-img-overlay-block')) {
+        fitVisionOverlayBlock(blockEl, blockEl.getAttribute('data-kct-role') || 'body');
+      }
+      unifyVisionOverlayRoleSizes(layer);
+    });
+
+    return layer;
+  }
+
+  function refitAllImageVisionOverlays() {
+    const hosts = document.querySelectorAll('.kct-img-overlay-host[data-kct-ui="img-host"]');
+    for (const host of hosts) {
+      const imgEl = host.querySelector('img');
+      const layer = host.querySelector(':scope > .kct-img-overlay-layer[data-kct-ui="img-overlay"]');
+      if (!imgEl || !layer) continue;
+      layer.style.left = `${imgEl.offsetLeft}px`;
+      layer.style.top = `${imgEl.offsetTop}px`;
+      layer.style.width = `${imgEl.clientWidth || imgEl.offsetWidth}px`;
+      layer.style.height = `${imgEl.clientHeight || imgEl.offsetHeight}px`;
+      for (const blockEl of layer.querySelectorAll('.kct-img-overlay-block')) {
+        fitVisionOverlayBlock(blockEl, blockEl.getAttribute('data-kct-role') || 'body');
+      }
+      unifyVisionOverlayRoleSizes(layer);
+    }
+  }
+
+  function clearAllImageVisionOverlays() {
+    const hosts = Array.from(document.querySelectorAll('.kct-img-overlay-host[data-kct-ui="img-host"]'));
+    for (const host of hosts) {
+      const img = host.querySelector('img');
+      if (img && host.parentElement) {
+        img.removeAttribute('data-kct-img-translated');
+        img.removeAttribute('data-kct-img-mode');
+        host.parentElement.insertBefore(img, host);
+      }
+      host.remove();
+    }
   }
 
   globalThis.KCTRenderer = {
@@ -527,6 +991,9 @@
     buildTranslatedFragment,
     sanitizeFontFamily,
     styleAndFitPdfOverlayBlock,
-    refitAllPdfOverlayBlocks
+    refitAllPdfOverlayBlocks,
+    renderImageVisionOverlay,
+    refitAllImageVisionOverlays,
+    clearAllImageVisionOverlays
   };
 })();

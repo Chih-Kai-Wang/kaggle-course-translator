@@ -12,7 +12,7 @@
     <div class="nr-toolbar-left">
       <div class="nr-brand">
         <img class="nr-brand-icon" src="../icons/icon-48.png" alt="" width="24" height="24">
-        <span class="nr-brand-name">NativeRead PDF</span>
+        <span class="nr-brand-name">NativeRead</span>
       </div>
       <span class="nr-divider" aria-hidden="true"></span>
       <span class="nr-doc-title" id="docTitle" title="尚未載入 PDF">尚未載入 PDF</span>
@@ -44,8 +44,8 @@
         <button type="button" class="nr-status-action" id="statusActionBtn" hidden>前往設定</button>
       </div>
 
-      <button type="button" id="openFileBtn" class="nr-action-btn" title="開啟電腦上的 PDF 檔案">
-        開啟本機 PDF
+      <button type="button" id="openFileBtn" class="nr-action-btn" title="開啟本機 PDF 檔案" aria-label="開啟本機 PDF 檔案">
+        開啟 PDF
       </button>
       <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden>
 
@@ -56,10 +56,9 @@
   <main class="nr-main" id="viewerMain" data-mode="overlay">
     <!-- Empty / Dropzone State -->
     <section class="nr-state-card nr-empty-state" id="emptyState">
-      <div class="nr-empty-badge">NativeRead PDF</div>
-      <h1 class="nr-empty-title">原版美感 PDF 沉浸翻譯閱讀器</h1>
+      <h1 class="nr-empty-title">PDF 沉浸翻譯閱讀器</h1>
       <p class="nr-empty-desc">
-        拖放任何英文論文、Kaggle 白皮書或技術手冊到此視窗，自動偵測多欄排版與背景色，提供「原位覆蓋」、「雙欄對照」與即時串流翻譯。
+        拖放或載入公開 PDF 網址，自動保留原版排版進行翻譯。
       </p>
 
       <div class="nr-drop-hint-box" id="dropHintBox">
@@ -108,7 +107,6 @@
     <div class="nr-drag-box">
       <div class="nr-drag-icon" aria-hidden="true">PDF</div>
       <p class="nr-drag-title">放開滑鼠以開啟並翻譯 PDF</p>
-      <p class="nr-drag-sub">完全於本機瀏覽器渲染，不經過第三方伺服器</p>
     </div>
   </div>
 

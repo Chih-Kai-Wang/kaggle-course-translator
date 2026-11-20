@@ -40,18 +40,7 @@ html.kct-lang-latin {
   --kct-font-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --kct-accent: #38bdf8;
-    --kct-accent-soft: rgba(56, 189, 248, 0.12);
-    --kct-hairline: rgba(148, 163, 184, 0.34);
-    --kct-border: rgba(255, 255, 255, 0.16);
-    --kct-text: #f1f5f9;
-    --kct-bilingual-ink: #cbd5e1;
-    --kct-bg: rgba(15, 23, 42, 0.9);
-  }
-}
-
+html.kct-page-dark,
 body[data-jp-theme-light="false"],
 html[data-theme="dark"],
 html.dark,
@@ -63,6 +52,19 @@ body.theme-dark {
   --kct-text: #f1f5f9;
   --kct-bilingual-ink: #cbd5e1;
   --kct-bg: rgba(15, 23, 42, 0.9);
+}
+
+/* Preserve table & Infobox column widths when CJK labels sit next to long unbroken URLs */
+html.kct-active:not(.kct-mode-original) table th[data-kct-has-trans="1"] {
+  min-width: 4.5em;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+html.kct-active:not(.kct-mode-original) table td[data-kct-has-trans="1"],
+html.kct-active:not(.kct-mode-original) .infobox td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* =========================================================
@@ -305,7 +307,7 @@ html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pd
   opacity: 1 !important;
   pointer-events: auto !important;
   background-color: var(--kct-pdf-bg, #ffffff) !important;
-  box-shadow: 0 0 0 5px var(--kct-pdf-bg, #ffffff) !important;
+  box-shadow: 0 0 0 2px var(--kct-pdf-bg, #ffffff) !important;
   color: var(--kct-pdf-fg, #1e293b) !important;
   font-size: var(--kct-pdf-fs, 13px) !important;
   line-height: var(--kct-pdf-lh, 1.42) !important;
@@ -317,8 +319,14 @@ html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pd
   display: block !important;
   white-space: normal !important;
   word-break: break-word !important;
-  overflow: visible !important;
+  overflow: hidden !important;
   transition: box-shadow 0.14s ease;
+}
+
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-has-trans="1"]:hover {
+  z-index: 30 !important;
+  overflow: visible !important;
+  height: auto !important;
 }
 
 /* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */
@@ -354,4 +362,121 @@ html.kct-active.kct-mode-bilingual [data-kct-pdf-layer="1"] > p[data-kct-pdf-blo
   margin-bottom: 6px !important;
   padding-bottom: 6px !important;
   border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;
+}
+
+/* =========================================================
+   Google Drive PDF: table-of-contents rows
+   (translated title + native dot leader + right-aligned page number).
+   Placed last so it overrides the generic overlay / bilingual hover rules above.
+   ========================================================= */
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-pdf-toc="1"][data-kct-has-trans="1"] {
+  display: flex !important;
+  align-items: baseline !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+}
+
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-pdf-toc="1"][data-kct-has-trans="1"] > .kct-orig-wrap,
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-pdf-toc="1"][data-kct-has-trans="1"]:hover > .kct-orig-wrap {
+  display: none !important;
+}
+
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-pdf-toc="1"][data-kct-has-trans="1"] > .kct-trans-wrap {
+  display: block !important;
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+html.kct-active.kct-mode-bilingual [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-pdf-toc="1"][data-kct-has-trans="1"]:hover {
+  height: auto !important;
+  padding: 1px 4px !important;
+}
+
+[data-kct-pdf-layer="1"] > p > .kct-pdf-toc-tail {
+  display: none;
+}
+
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-pdf-toc="1"][data-kct-has-trans="1"] > .kct-pdf-toc-tail {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  align-items: baseline !important;
+  min-width: 2.2em !important;
+}
+
+[data-kct-pdf-layer="1"] .kct-pdf-toc-leader {
+  flex: 1 1 auto;
+  height: 0;
+  margin: 0 0.5em;
+  border-bottom: 0.13em dotted currentColor;
+  opacity: 0.6;
+}
+
+[data-kct-pdf-layer="1"] > p[data-kct-pdf-toc-leader="none"] .kct-pdf-toc-leader {
+  border-bottom-color: transparent;
+}
+
+[data-kct-pdf-layer="1"] .kct-pdf-toc-num {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* =========================================================
+   6. R4: On-Demand Vision Image Overlay Translation
+   ========================================================= */
+.kct-img-overlay-host {
+  position: relative;
+  line-height: 0;
+}
+
+.kct-img-overlay-layer {
+  position: absolute;
+  pointer-events: none;
+  z-index: 6;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+html.kct-mode-original .kct-img-overlay-layer,
+.kct-img-overlay-host > img[data-kct-img-mode="original"] ~ .kct-img-overlay-layer {
+  display: none !important;
+}
+
+.kct-img-overlay-block {
+  position: absolute;
+  box-sizing: border-box;
+  background-color: var(--kct-img-bg, #ffffff);
+  box-shadow: 0 0 0 2px var(--kct-img-bg, #ffffff);
+  color: var(--kct-img-fg, #1e293b);
+  font-family: var(--kct-font-sans);
+  line-height: 1.28;
+  padding: 1px 3px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  white-space: normal;
+  word-break: break-word;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.kct-img-overlay-block.kct-img-role-title {
+  font-weight: 700;
+  line-height: 1.22;
+}
+
+.kct-img-overlay-block.kct-img-role-badge {
+  font-weight: 600;
+  justify-content: center;
+  text-align: center;
+  border-radius: 999px;
+}
+
+.kct-img-overlay-block:hover {
+  z-index: 20;
+  overflow: visible;
+  height: auto !important;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--kct-accent);
 }
