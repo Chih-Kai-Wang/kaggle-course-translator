@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * NativeRead v2.2.0 Mobile & Multi-Platform Build Script
+ * NativeRead Mobile & Multi-Platform Build Script
+ * The release version is read from manifest.json (single source of truth).
  * Generates:
  *  1. docs/vendor/pdfjs/* & docs/icons/* & docs/.nojekyll
  *  2. docs/nativeread.user.js (Universal iOS Safari / Android / Desktop Userscript)
  *  3. docs/nativeread-android-extension.zip (Android Chromium Extension Package)
+ *  4. docs/nativeread.meta.js (Userscript update-check header) & docs/version.json
+ *  5. Syncs the version into docs/sw.js CACHE_NAME and the docs/index.html badge
  */
 const fs = require('fs');
 const path = require('path');
@@ -34,20 +37,34 @@ function readUtf8(relPath) {
   return fs.readFileSync(path.join(ROOT, relPath), 'utf8');
 }
 
-function buildUserscript() {
-  const configJs = readUtf8('shared/config.js');
-  const siteAnalyzerJs = readUtf8('content/site-analyzer.js');
-  const codeOverlayJs = readUtf8('content/code-overlay.js');
-  const rendererJs = readUtf8('content/renderer.js');
-  const contentCss = readUtf8('content/content.css');
+const PAGES_BASE = 'https://chih-kai-wang.github.io/native-read/';
+const USERSCRIPT_URL = PAGES_BASE + 'nativeread.user.js';
+const USERSCRIPT_META_URL = PAGES_BASE + 'nativeread.meta.js';
 
-  const header = [
+function readReleaseVersion() {
+  const manifestPath = path.join(ROOT, 'manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const version = typeof manifest.version === 'string' ? manifest.version.trim() : '';
+  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error(
+      `Invalid release version "${manifest.version}" in ${manifestPath}: expected MAJOR.MINOR.PATCH (digits only)`
+    );
+  }
+  return version;
+}
+
+function buildUserscriptHeader(version) {
+  return [
     '// ==UserScript==',
     '// @name         NativeRead — 原版美感 AI 網頁翻譯 (Mobile & Desktop)',
     '// @namespace    https://chih-kai-wang.github.io/native-read/',
-    '// @version      2.2.0',
+    `// @version      ${version}`,
     '// @description  保留原網站 Serif / Sans 排版氣質的 AI 串流網頁與程式碼註解翻譯器（支援 iOS Safari Stay / Userscripts 與 Android Tampermonkey / 狐猴 / Kiwi）',
     '// @author       Chih-Kai Wang',
+    '// @homepageURL  https://github.com/Chih-Kai-Wang/native-read',
+    '// @supportURL   https://github.com/Chih-Kai-Wang/native-read/issues',
+    `// @updateURL    ${USERSCRIPT_META_URL}`,
+    `// @downloadURL  ${USERSCRIPT_URL}`,
     '// @match        *://*/*',
     '// @grant        GM_getValue',
     '// @grant        GM_setValue',
@@ -57,6 +74,62 @@ function buildUserscript() {
     '// @run-at       document-idle',
     '// ==/UserScript=='
   ].join('\n');
+}
+
+function writeUserscriptMeta(header) {
+  const metaPath = path.join(DOCS_DIR, 'nativeread.meta.js');
+  const content = `${header}\n`;
+  fs.writeFileSync(metaPath, content, 'utf8');
+  console.log(`[build-mobile] Generated ${metaPath} (${Buffer.byteLength(content)} bytes)`);
+}
+
+function syncPwaVersion(version) {
+  const swPath = path.join(DOCS_DIR, 'sw.js');
+  const swOrig = fs.readFileSync(swPath, 'utf8');
+  const swRe = /^const CACHE_NAME = '[^']*';$/m;
+  if (!swRe.test(swOrig)) {
+    throw new Error(`Could not find CACHE_NAME declaration in ${swPath}`);
+  }
+  const swNext = swOrig.replace(swRe, `const CACHE_NAME = 'nativeread-pwa-v${version}';`);
+  if (swNext !== swOrig) {
+    fs.writeFileSync(swPath, swNext, 'utf8');
+    console.log(`[build-mobile] Updated ${swPath} -> nativeread-pwa-v${version}`);
+  }
+
+  const indexPath = path.join(DOCS_DIR, 'index.html');
+  const indexOrig = fs.readFileSync(indexPath, 'utf8');
+  const brandRe = /(<span class="nr-brand-tag">)[^<]*(<\/span>)/;
+  if (!brandRe.test(indexOrig)) {
+    throw new Error(`Could not find <span class="nr-brand-tag">...</span> in ${indexPath}`);
+  }
+  const indexNext = indexOrig.replace(brandRe, `$1v${version} Mobile &amp; PWA$2`);
+  if (indexNext !== indexOrig) {
+    fs.writeFileSync(indexPath, indexNext, 'utf8');
+    console.log(`[build-mobile] Updated ${indexPath} -> v${version} Mobile & PWA`);
+  }
+}
+
+function writeVersionJson(version) {
+  const versionPath = path.join(DOCS_DIR, 'version.json');
+  const payload = {
+    version,
+    userscript: USERSCRIPT_URL,
+    androidZip: PAGES_BASE + 'nativeread-android-extension.zip',
+    pwa: PAGES_BASE
+  };
+  const content = `${JSON.stringify(payload, null, 2)}\n`;
+  fs.writeFileSync(versionPath, content, 'utf8');
+  console.log(`[build-mobile] Generated ${versionPath} (${Buffer.byteLength(content)} bytes)`);
+}
+
+function buildUserscript(version) {
+  const configJs = readUtf8('shared/config.js');
+  const siteAnalyzerJs = readUtf8('content/site-analyzer.js');
+  const codeOverlayJs = readUtf8('content/code-overlay.js');
+  const rendererJs = readUtf8('content/renderer.js');
+  const contentCss = readUtf8('content/content.css');
+
+  const header = buildUserscriptHeader(version);
 
   const runtimeJs = `
 (() => {
@@ -1269,6 +1342,7 @@ function buildUserscript() {
   const outPath = path.join(DOCS_DIR, 'nativeread.user.js');
   fs.writeFileSync(outPath, output, 'utf8');
   console.log(`[build-mobile] Generated ${outPath} (${Buffer.byteLength(output)} bytes)`);
+  writeUserscriptMeta(header);
 }
 
 function buildAndroidExtensionZip() {
@@ -1299,6 +1373,9 @@ function buildAndroidExtensionZip() {
 }
 
 function main() {
+  const version = readReleaseVersion();
+  console.log(`[build-mobile] Release version ${version}`);
+
   ensureDir(DOCS_DIR);
 
   // 1. Copy vendor/pdfjs/* -> docs/vendor/pdfjs/ and icons/* -> docs/icons/
@@ -1308,11 +1385,17 @@ function main() {
   // 2. Write docs/.nojekyll so GitHub Pages serves .mjs and all assets without Jekyll filtering
   fs.writeFileSync(path.join(DOCS_DIR, '.nojekyll'), '', 'utf8');
 
-  // 3. Build docs/nativeread.user.js
-  buildUserscript();
+  // 3. Sync version into PWA service worker cache name & index.html badge
+  syncPwaVersion(version);
 
-  // 4. Build docs/nativeread-android-extension.zip
+  // 4. Build docs/nativeread.user.js and docs/nativeread.meta.js
+  buildUserscript(version);
+
+  // 5. Build docs/nativeread-android-extension.zip
   buildAndroidExtensionZip();
+
+  // 6. Write docs/version.json
+  writeVersionJson(version);
 }
 
 main();
