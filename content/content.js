@@ -4,582 +4,222 @@
 
   const {
     TARGET_LANGUAGES,
-    resolveTargetLanguage,
     getSettings,
     saveSettings,
     hashText,
-    SETTINGS_KEY
+    SETTINGS_KEY,
+    isHostWhitelisted,
+    toggleHostWhitelist
   } = globalThis.KCTConfig;
 
-  const BLOCK_SELECTOR = 'h1, h2, h3, h4, h5, h6, p, li, blockquote, td, th, figcaption, summary, dt, dd';
-  const SKIP_ANCESTOR_SELECTOR = [
-    '[data-kct-ui]',
-    '[translate="no"]',
-    '.notranslate',
-    'pre',
-    'code',
-    'kbd',
-    'samp',
-    'var',
-    'textarea',
-    'input',
-    'select',
-    'option',
-    'svg',
-    'canvas',
-    'script',
-    'style',
-    'noscript',
-    '.CodeMirror',
-    '.cm-editor',
-    '.monaco-editor',
-    '.jp-CodeCell .jp-InputArea',
-    '.jp-InputPrompt',
-    '.jp-CodeMirrorEditor',
-    '.jp-OutputArea-prompt',
-    '.jp-CodeCell .jp-OutputArea-output',
-    '.jp-OutputArea-executeResult',
-    '.output_result',
-    '.output_subarea',
-    '.katex',
-    '.MathJax',
-    'mjx-container',
-    'table.dataframe',
-    '.dataframe',
-    '.material-icons',
-    '.material-icons-outlined',
-    '.material-symbols-outlined',
-    '.material-symbols-rounded',
-    '.google-symbols',
-    '.anchor-link',
-    '.jp-InternalAnchorLink',
-    '[contenteditable="true"]'
-  ].join(', ');
+  const SiteAnalyzer = globalThis.KCTSiteAnalyzer;
+  const NotebookAdapter = globalThis.KCTNotebookAdapter;
+  const Renderer = globalThis.KCTRenderer;
 
-  const NAV_EXCLUDE_SELECTOR = 'nav, header, footer, [role="navigation"], [role="banner"], [role="tablist"], button';
-  const LESSON_CELL_SELECTOR = [
-    '.jp-RenderedHTMLCommon',
-    '.jp-MarkdownOutput',
-    '.rendered_html',
-    '.text_cell_render',
-    '.markdown-converter__text--rendered'
-  ].join(', ');
-  const COURSE_CONTAINER_SELECTOR = [
-    LESSON_CELL_SELECTOR,
-    'main',
-    'article',
-    '[role="main"]'
-  ].join(', ');
+  const {
+    BLOCK_SELECTOR,
+    SKIP_ANCESTOR_SELECTOR,
+    NAV_EXCLUDE_SELECTOR,
+    isTopFrame,
+    isElementVisible,
+    classifyPage,
+    findContentRoots,
+    queryAllDeep,
+    shouldTranslateText,
+    probeTypography,
+    extractBlockContent,
+    shouldSkipBlock
+  } = SiteAnalyzer;
 
-  const INLINE_PROTECT_SELECTOR = 'code, kbd, var, .katex, .MathJax, mjx-container';
-
-  let settings = null;
-  let lastPageKey = location.origin + location.pathname;
-  let scanTimer = null;
-  let isProcessingQueue = false;
-  let activeRequests = 0;
   const MAX_CONCURRENT_BATCHES = 3;
 
-  // Track elements already queued or translated in this document
-  const elementState = new WeakMap(); // el -> 'queued' | 'done' | 'error'
-  const commentState = new WeakMap(); // span/line -> 'queued' | 'done'
-  const cmOverlayBySpan = new WeakMap(); // cm span/line -> overlay div inside .cm-scroller
-  const cmSpanByOverlay = new WeakMap(); // overlay div -> cm span/line
-  const commentCacheByBody = new Map(); // rawCommentBody -> cleanedTranslatedBody
-  const pendingItems = []; // { kind?: 'block' | 'comment', el, key, text, placeholders?, nestedListEl?, commentInfo? }
-  let totalDetected = 0;
-  let totalTranslated = 0;
-  let translationEpoch = 0;
-  let lastErrorMsg = '';
+  // Shared mutable runtime state passed to renderer & notebook adapter
+  const state = {
+    settings: null,
+    elementState: new WeakMap(), // el -> 'observed' | 'queued' | 'done' | 'error'
+    commentState: new WeakMap(), // span/line -> 'queued' | 'done'
+    cmOverlayBySpan: new WeakMap(),
+    cmSpanByOverlay: new WeakMap(),
+    commentCacheByBody: new Map(),
+    pendingItems: [],
+    totalDetected: 0,
+    totalTranslated: 0,
+    translationEpoch: 0,
+    lastErrorMsg: ''
+  };
+
+  let pageActive = false;
+  let pageInfo = classifyPage();
+  let lastPageKey = location.origin + location.pathname;
+  let scanTimer = null;
+  let hydrationTimers = [];
+  let isProcessingQueue = false;
+  let activeRequests = 0;
+
   const subframeStats = new Map(); // frameId -> { totalDetected, totalTranslated, isBusy, lastErrorMsg }
 
-  // Floating widget & selection UI refs (top frame / active frame)
-  let widgetEl = null;
+  // Viewport-first IntersectionObserver state
+  let lazyObserver = null;
+  const observedJobs = new Map(); // el -> job
+
+  // Streaming Port ('kct-stream') state
+  let streamPort = null;
+  let streamReqSeq = 0;
+  const activeStreamRequests = new Map(); // requestId -> { epoch, itemsByKey, receivedKeys, resolve, reject, timer }
+  const streamRenderBuffer = [];
+  let streamFlushScheduled = false;
+  let pendingFlushPromise = Promise.resolve();
+  let renderChain = Promise.resolve();
+  let cmSyncScheduled = false;
+
+  // Shadow DOM UI refs
+  let widgetHostEl = null;
+  let widgetShadow = null;
+  let widgetCollapsed = false;
+
+  let selHostEl = null;
+  let selShadow = null;
   let selBtnEl = null;
   let selPopoverEl = null;
   let currentSelectionText = '';
 
-  function isTopFrame() {
-    try {
-      return window === window.top;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function applyDisplayModeClass(mode) {
-    const root = document.documentElement;
-    root.classList.toggle('kct-active', settings?.enabled !== false);
-    root.classList.remove('kct-mode-bilingual', 'kct-mode-replace', 'kct-mode-original');
-    const resolvedMode = mode || settings?.displayMode || 'replace';
-    if (resolvedMode === 'original') {
-      root.classList.add('kct-mode-original');
-    } else if (resolvedMode === 'bilingual') {
-      root.classList.add('kct-mode-bilingual');
-    } else {
-      root.classList.add('kct-mode-replace');
-    }
-
-    root.classList.toggle('kct-comments-on', settings?.translateCodeComments !== false);
-
-    root.classList.remove('kct-lang-tc', 'kct-lang-sc', 'kct-lang-ja', 'kct-lang-ko', 'kct-lang-latin');
-    const langInfo = resolveTargetLanguage(settings);
-    root.classList.add(langInfo.fontClass || 'kct-lang-tc');
-
-    updateWidgetUI();
-  }
-
-  function isElementVisible(el) {
-    if (!el.isConnected) return false;
-    if (el.closest('[hidden], .sr-only, [aria-hidden="true"]')) return false;
-    const style = getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden') return false;
-    return true;
-  }
-
-  function isMostlyCJK(text) {
-    const stripped = text.replace(/\s+/g, '');
-    if (!stripped) return false;
-    const cjk = (stripped.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/g) || []).length;
-    return cjk / stripped.length > 0.25;
-  }
-
-  function hasMeaningfulEnglish(text) {
-    const clean = text.replace(/\[\[[CM]\d+\]\]/g, '').trim();
-    if (clean.length < 3) return false;
-    if (!/[a-zA-Z]{2,}/.test(clean)) return false;
-    if (/^https?:\/\/\S+$/i.test(clean)) return false;
-    if (/^(In|Out)\s*\[\s*\d*\s*\]:?$/i.test(clean)) return false;
-    // Skip single-token code identifiers like train_test_split or model.fit(X, y)
-    if (!/\s/.test(clean) && /[_().=<>[\]]/.test(clean)) return false;
-    return !isMostlyCJK(clean);
-  }
-
-  function extractBlockContent(el) {
-    const placeholders = new Map();
-    let codeIdx = 0;
-    let mathIdx = 0;
-    let nestedListEl = null;
-    const parts = [];
-
-    function walk(node, insideLiRoot) {
-      if (!node) return;
-      if (node.nodeType === Node.TEXT_NODE) {
-        parts.push(node.nodeValue);
-        return;
-      }
-      if (node.nodeType !== Node.ELEMENT_NODE) return;
-
-      if (node.matches('[data-kct-ui]')) return;
-
-      // For <li>, stop before nested <ul>/<ol> so we only translate the parent bullet's own text
-      if (insideLiRoot && (node.tagName === 'UL' || node.tagName === 'OL')) {
-        if (!nestedListEl) nestedListEl = node;
-        return;
-      }
-
-      if (node.matches(INLINE_PROTECT_SELECTOR)) {
-        const isMath = node.matches('.katex, .MathJax, mjx-container');
-        const token = isMath ? `[[M${mathIdx++}]]` : `[[C${codeIdx++}]]`;
-        placeholders.set(token, node);
-        parts.push(token);
-        return;
-      }
-
-      if (node.tagName === 'BR') {
-        parts.push('\n');
-        return;
-      }
-
-      if (node.matches('script, style, noscript, svg, canvas, textarea, input, select, .anchor-link, .jp-InternalAnchorLink, .material-icons, .material-symbols-outlined, .material-symbols-rounded, .google-symbols, [aria-hidden="true"]')) {
-        return;
-      }
-
-      for (const child of node.childNodes) {
-        walk(child, insideLiRoot);
-      }
-    }
-
-    const isLi = el.tagName === 'LI';
-    for (const child of el.childNodes) {
-      walk(child, isLi);
-    }
-
-    let text = parts.join('').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-    if (/^H[1-6]$/.test(el.tagName)) {
-      text = text.replace(/\s*¶\s*$/g, '').trim();
-    }
-    return { text, placeholders, nestedListEl };
-  }
-
-  function getCandidateRoots() {
-    if (settings.scope === 'all') {
-      return [document.body].filter(Boolean);
-    }
-    // On Kaggle Notebook Editor host page (/code/.../edit), actual cells live inside the JupyterLab iframe;
-    // keep the host IDE sidebar chrome (Notebook / Input / Output / /kaggle/working) uncluttered in course mode.
-    if (isTopFrame() && /\/code\/[^/]+\/[^/]+\/edit(?:\/|$)/i.test(location.pathname)) {
-      return [];
-    }
-
-    // On Kaggle Notebook viewer (/code/...), prefer actual rendered notebook cells + top h1
-    // so right-hand metadata sidebars (Input / Leaderboard / etc.) don't consume course-mode API quota.
-    if (isTopFrame() && /^\/code\//i.test(location.pathname)) {
-      const cells = Array.from(document.querySelectorAll(LESSON_CELL_SELECTOR)).filter(
-        (node) => !node.closest('[data-testid="notebook-editor-render-tid"]')
-      );
-      if (cells.length > 0) {
-        const dedupedCells = cells.filter((node) => !cells.some((other) => other !== node && other.contains(node)));
-        const h1 = document.querySelector('main h1');
-        if (h1 && !dedupedCells.some((c) => c.contains(h1))) {
-          return [h1, ...dedupedCells];
-        }
-        return dedupedCells;
-      }
-    }
-
-    const found = Array.from(document.querySelectorAll(COURSE_CONTAINER_SELECTOR));
-    // Keep only top-most matched containers to avoid scanning same subtree twice
-    const filtered = found.filter((node) => {
-      if (node.closest('[data-testid="notebook-editor-render-tid"]')) return false;
-      return !found.some((other) => other !== node && other.contains(node));
-    });
-    if (filtered.length > 0) return filtered;
-
-    const siteContent = document.getElementById('site-content');
-    if (siteContent && !siteContent.querySelector('[data-testid="notebook-editor-render-tid"]')) {
-      return [siteContent];
-    }
-
-    // In notebook subframes, markdown might sit directly under body
-    if (!isTopFrame() && document.body) {
-      return [document.body];
-    }
-    return [];
-  }
-
-  function shouldSkipBlock(el) {
-    if (!el || !el.isConnected) return true;
-    if (elementState.has(el)) return true;
-    if (el.closest(SKIP_ANCESTOR_SELECTOR)) return true;
-    if (settings.scope === 'course' && el.closest(NAV_EXCLUDE_SELECTOR)) return true;
-    if (!isElementVisible(el)) return true;
-
-    // Skip if element already contains our injected translation
-    if (el.hasAttribute('data-kct-has-trans') || el.querySelector('[data-kct-ui="trans"]')) return true;
-
-    // Leaf-block check: if element contains child block elements (other than nested ul/ol in li), let child blocks handle it
-    const childBlock = el.querySelector('p, h1, h2, h3, h4, h5, h6, blockquote, td, th');
-    if (childBlock && childBlock !== el) {
-      // Edge case: <li><p>...</p></li> -> skip <li>, let <p> be translated
-      return true;
-    }
-
-    return false;
-  }
-
-  function getTextOffsetInParent(parent, targetNode) {
-    let offset = 0;
-    const walker = document.createTreeWalker(parent, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      if (targetNode === node || targetNode.contains(node)) {
-        return offset;
-      }
-      offset += node.nodeValue ? node.nodeValue.length : 0;
-    }
-    return -1;
-  }
-
-  function isCommentOffsetInPythonLine(lineText, targetOffset) {
-    if (targetOffset < 0) return false;
-    let quote = null;
-    for (let i = 0; i < targetOffset; i++) {
-      const ch = lineText[i];
-      if (quote) {
-        if (ch === '\\') {
-          i += 1;
-          continue;
-        }
-        if (quote.length === 3) {
-          if (lineText.slice(i, i + 3) === quote) {
-            quote = null;
-            i += 2;
-          }
-        } else if (ch === quote) {
-          quote = null;
-        }
-      } else {
-        if (ch === '#') {
-          return i === targetOffset;
-        }
-        const tri = lineText.slice(i, i + 3);
-        if (tri === "'''" || tri === '"""') {
-          quote = tri;
-          i += 2;
-        } else if (ch === "'" || ch === '"') {
-          quote = ch;
-        }
-      }
-    }
-    return quote === null;
-  }
-
-  function parseTranslatableComment(rawText) {
-    const raw = String(rawText || '');
-    if (!raw || raw.includes('\n')) return null;
-    const match = raw.match(/^(\s*)(#+)(\s*)(.*)$/);
-    if (!match) return null;
-    const [, leadWs, hashes, midWs, body] = match;
-    const trimmedBody = body.trim();
-    if (trimmedBody.length < 3) return null;
-    if (/^(?:type:\s*ignore|noqa\b|pylint:|pyright:|mypy:|-\*-|coding[:=]|!\/|In\s*\[|Out\s*\[|%%\w+|%%|[-=*#_~]{3,}$)/i.test(trimmedBody)) {
-      return null;
-    }
-    if (!hasMeaningfulEnglish(trimmedBody)) return null;
-    if (isMostlyCJK(trimmedBody)) return null;
+  function getPageContext() {
     return {
-      leadWs,
-      hashes,
-      midWs: midWs || ' ',
-      body: trimmedBody
+      pageType: pageInfo.pageType,
+      title: pageInfo.title,
+      host: pageInfo.host,
+      useTechGlossary: pageInfo.useTechGlossary
     };
   }
 
-  function ensureCodeFontSizeVar(containerEl, sampleSpan) {
-    if (!containerEl || containerEl.dataset.kctFontMeasured === '1') return;
-    const fs = getComputedStyle(sampleSpan).fontSize;
-    if (fs && fs !== '0px') {
-      containerEl.style.setProperty('--kct-code-font-size', fs);
-      containerEl.dataset.kctFontMeasured = '1';
-    }
+  function isDarkPageHint() {
+    if (document.body?.dataset?.jpThemeLight === 'false') return true;
+    const html = document.documentElement;
+    if (html?.getAttribute('data-theme') === 'dark' || html?.classList.contains('dark')) return true;
+    if (document.body?.classList.contains('theme-dark')) return true;
+    return false;
   }
 
-  function resolveOpaqueBackground(el) {
-    let cur = el;
-    while (cur && cur.nodeType === Node.ELEMENT_NODE) {
-      const bg = getComputedStyle(cur).backgroundColor;
-      if (bg && bg !== 'transparent') {
-        const m = bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\)/i);
-        if (!m || m[4] === undefined || parseFloat(m[4]) > 0.85) {
-          return m ? `rgb(${m[1]}, ${m[2]}, ${m[3]})` : bg;
-        }
-      }
-      cur = cur.parentElement;
+  function clearHydrationTimers() {
+    for (const id of hydrationTimers) {
+      clearTimeout(id);
     }
-    return document.body?.dataset?.jpThemeLight === 'false' ? '#202124' : '#ffffff';
+    hydrationTimers = [];
   }
 
-  function renderCmCommentOverlay(ed, span, fullComment) {
-    if (!ed || !span || !ed.isConnected || !span.isConnected) return;
-    const scroller = ed.querySelector('.cm-scroller');
-    if (!scroller) return;
-
-    if (getComputedStyle(scroller).position === 'static') {
-      scroller.style.position = 'relative';
+  function cancelAllActiveStreams() {
+    for (const [requestId, req] of activeStreamRequests.entries()) {
+      if (req.timer) clearTimeout(req.timer);
+      if (streamPort) {
+        try {
+          streamPort.postMessage({ type: 'CANCEL_STREAM', requestId });
+        } catch (_) {}
+      }
+      req.resolve({ cancelled: true });
     }
-
-    let layer = scroller.querySelector(':scope > [data-kct-ui="cm-layer"]');
-    if (!layer) {
-      layer = document.createElement('div');
-      layer.className = 'kct-cm-layer';
-      layer.setAttribute('data-kct-ui', 'cm-layer');
-      layer.setAttribute('translate', 'no');
-      scroller.appendChild(layer);
-    }
-
-    const scRect = scroller.getBoundingClientRect();
-    const spRect = span.getBoundingClientRect();
-    if (spRect.width === 0 || spRect.height === 0) return;
-
-    let badge = cmOverlayBySpan.get(span);
-    if (!badge || !badge.isConnected || badge.parentElement !== layer) {
-      badge = document.createElement('div');
-      badge.className = 'kct-cm-comment';
-      badge.setAttribute('data-kct-ui', 'cm-comment');
-      badge.setAttribute('translate', 'no');
-      layer.appendChild(badge);
-      cmOverlayBySpan.set(span, badge);
-    }
-    cmSpanByOverlay.set(badge, span);
-
-    const spanStyle = getComputedStyle(span);
-    const top = Math.round(spRect.top - scRect.top + scroller.scrollTop);
-    const left = Math.floor(spRect.left - scRect.left + scroller.scrollLeft);
-    const height = Math.ceil(spRect.height);
-    const minWidth = Math.ceil(spRect.width + 6);
-    const availWidth = Math.max(minWidth, Math.floor(scroller.clientWidth - left - 10));
-
-    badge.textContent = fullComment;
-    badge.style.top = `${top}px`;
-    badge.style.left = `${left}px`;
-    badge.style.height = `${height}px`;
-    badge.style.minWidth = `${minWidth}px`;
-    badge.style.maxWidth = `${availWidth}px`;
-    badge.style.fontSize = spanStyle.fontSize || '14px';
-    badge.style.lineHeight = `${height}px`;
-    badge.style.fontStyle = spanStyle.fontStyle || 'italic';
-    badge.style.color = spanStyle.color;
-    badge.style.backgroundColor = resolveOpaqueBackground(ed);
+    activeStreamRequests.clear();
+    streamRenderBuffer.length = 0;
   }
 
-  function syncCmOverlays() {
-    if (!settings || settings.translateCodeComments === false || settings.displayMode === 'original') return;
-    const activeSpans = new Set();
-    const editors = document.querySelectorAll('.cm-editor');
-    for (const ed of editors) {
-      if (ed.closest('.jp-MarkdownCell') || !isElementVisible(ed)) continue;
-      const lines = ed.querySelectorAll('.cm-line');
-      for (const line of lines) {
-        const lineText = line.textContent || '';
-        if (!lineText.includes('#')) continue;
-        const leafSpans = Array.from(line.querySelectorAll('span')).filter((s) => s.children.length === 0);
-        const targets = leafSpans.length > 0 ? leafSpans : [line];
-        for (const t of targets) {
-          const info = parseTranslatableComment(t.textContent);
-          if (!info) continue;
-          const spanOffset = t === line ? info.leadWs.length : getTextOffsetInParent(line, t) + info.leadWs.length;
-          if (!isCommentOffsetInPythonLine(lineText, spanOffset)) continue;
-          const cached = commentCacheByBody.get(info.body);
-          if (cached) {
-            activeSpans.add(t);
-            renderCmCommentOverlay(ed, t, `${info.leadWs}${info.hashes}${info.midWs}${cached}`);
-          }
-        }
+  // =========================================================
+  // Viewport-First Lazy IntersectionObserver
+  // =========================================================
+  function resetLazyObserver() {
+    if (lazyObserver) {
+      try {
+        lazyObserver.disconnect();
+      } catch (_) {}
+      lazyObserver = null;
+    }
+    for (const el of observedJobs.keys()) {
+      if (state.elementState.get(el) === 'observed') {
+        state.elementState.delete(el);
       }
     }
-    const layers = document.querySelectorAll('.kct-cm-layer');
-    for (const layer of layers) {
-      for (const badge of Array.from(layer.children)) {
-        const linkedSpan = cmSpanByOverlay.get(badge);
-        if (!linkedSpan || !linkedSpan.isConnected || !activeSpans.has(linkedSpan)) {
-          badge.remove();
-        }
-      }
-    }
+    observedJobs.clear();
   }
 
-  function collectCodeComments(force = false) {
-    if (!settings || (!settings.enabled && !force) || settings.translateCodeComments === false) return [];
-    const items = [];
-    const seen = new Set();
-
-    // 1. Static tutorial / viewer <pre> code blocks (Pygments spans)
-    const pres = document.querySelectorAll('pre');
-    for (const pre of pres) {
-      if (pre.closest('.cm-editor, .CodeMirror, .monaco-editor, [data-kct-ui]')) continue;
-      if (!isElementVisible(pre)) continue;
-      const commentSpans = pre.querySelectorAll('span.c1, span.c, span.cm, span.cs, span.ch');
-      for (const span of commentSpans) {
-        if (seen.has(span) || commentState.has(span)) continue;
-        if (span.hasAttribute('data-kct-comment-trans')) continue;
-        if (span.children.length > 0) continue;
-        seen.add(span);
-
-        const info = parseTranslatableComment(span.textContent);
-        if (!info) continue;
-        ensureCodeFontSizeVar(pre, span);
-        commentState.set(span, 'queued');
-        items.push({
-          kind: 'comment',
-          el: span,
-          key: hashText(`COMMENT::${info.body}`),
-          text: `# ${info.body}`,
-          commentInfo: info
-        });
-      }
-    }
-
-    // 2. Interactive JupyterLab v4 CodeMirror 6 code cells (non-intrusive overlay layer)
-    const cmEditors = document.querySelectorAll('.cm-editor');
-    for (const ed of cmEditors) {
-      if (ed.closest('.jp-MarkdownCell')) continue;
-      if (!isElementVisible(ed)) continue;
-      const lines = ed.querySelectorAll('.cm-line');
-      for (const line of lines) {
-        const lineText = line.textContent || '';
-        if (!lineText.includes('#')) continue;
-
-        const leafSpans = Array.from(line.querySelectorAll('span')).filter((s) => s.children.length === 0);
-        if (leafSpans.length > 0) {
-          for (const span of leafSpans) {
-            if (seen.has(span)) continue;
-            const info = parseTranslatableComment(span.textContent);
-            if (!info) continue;
-
-            const spanOffset = getTextOffsetInParent(line, span);
-            const hashOffset = spanOffset + info.leadWs.length;
-            if (!isCommentOffsetInPythonLine(lineText, hashOffset)) continue;
-
-            seen.add(span);
-            const cachedTrans = commentCacheByBody.get(info.body);
-            if (cachedTrans) {
-              renderCmCommentOverlay(ed, span, `${info.leadWs}${info.hashes}${info.midWs}${cachedTrans}`);
-              commentState.set(span, 'done');
-              continue;
+  function ensureLazyObserver() {
+    if (lazyObserver) return lazyObserver;
+    lazyObserver = new IntersectionObserver(
+      (entries) => {
+        if (!pageActive) return;
+        const newlyVisible = [];
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const el = entry.target;
+          lazyObserver.unobserve(el);
+          const job = observedJobs.get(el);
+          observedJobs.delete(el);
+          if (!job) continue;
+          if (!el.isConnected || el.hasAttribute('data-kct-has-trans')) {
+            if (state.elementState.get(el) === 'observed') {
+              state.elementState.delete(el);
             }
-            if (commentState.has(span)) continue;
-
-            commentState.set(span, 'queued');
-            items.push({
-              kind: 'comment',
-              cmEditor: ed,
-              el: span,
-              key: hashText(`COMMENT::${info.body}`),
-              text: `# ${info.body}`,
-              commentInfo: info
-            });
+            continue;
           }
-        } else if (!seen.has(line)) {
-          const info = parseTranslatableComment(lineText);
-          if (info) {
-            seen.add(line);
-            const cachedTrans = commentCacheByBody.get(info.body);
-            if (cachedTrans) {
-              renderCmCommentOverlay(ed, line, `${info.leadWs}${info.hashes}${info.midWs}${cachedTrans}`);
-              commentState.set(line, 'done');
-              continue;
-            }
-            if (commentState.has(line)) continue;
-            commentState.set(line, 'queued');
-            items.push({
-              kind: 'comment',
-              cmEditor: ed,
-              el: line,
-              key: hashText(`COMMENT::${info.body}`),
-              text: `# ${info.body}`,
-              commentInfo: info
-            });
-          }
+          state.elementState.set(el, 'queued');
+          newlyVisible.push(job);
         }
-      }
-    }
 
-    return items;
+        if (newlyVisible.length > 0) {
+          state.totalDetected += newlyVisible.length;
+          state.pendingItems.push(...newlyVisible);
+          sortViewportFirst(state.pendingItems);
+          updateWidgetUI();
+          processQueue();
+        }
+      },
+      { rootMargin: '600px 0px', threshold: 0 }
+    );
+    return lazyObserver;
   }
 
-  function collectBlocks(force = false) {
+  function collectCandidateBlocks(force = false) {
+    const settings = state.settings;
     if (!settings || (!settings.enabled && !force)) return [];
-    const roots = getCandidateRoots();
-    const collected = [];
+
+    const roots = findContentRoots(settings.scope, pageInfo);
+    const targetLangId = settings.targetLang || 'zh-TW';
+    const useLazy = settings.lazyViewport !== false;
+    const vh = window.innerHeight || 800;
+
+    const immediate = [];
     const seen = new Set();
 
     for (const root of roots) {
-      const candidates = root.querySelectorAll(BLOCK_SELECTOR);
+      const candidates = queryAllDeep(root, BLOCK_SELECTOR);
       for (const el of candidates) {
         if (seen.has(el)) continue;
         seen.add(el);
-        if (shouldSkipBlock(el)) continue;
+        if (shouldSkipBlock(el, settings.scope, state.elementState)) continue;
 
         const { text, placeholders, nestedListEl } = extractBlockContent(el);
-        if (!hasMeaningfulEnglish(text)) continue;
+        if (!shouldTranslateText(text, targetLangId)) continue;
 
+        const typo = probeTypography(el);
         const key = hashText(text);
-        elementState.set(el, 'queued');
-        collected.push({ el, key, text, placeholders, nestedListEl });
+        const job = { kind: 'block', el, key, text, placeholders, nestedListEl, typo };
+
+        if (useLazy) {
+          const rect = el.getBoundingClientRect();
+          const nearViewport = rect.bottom >= -200 && rect.top <= vh + 600;
+          if (nearViewport) {
+            state.elementState.set(el, 'queued');
+            immediate.push(job);
+          } else {
+            state.elementState.set(el, 'observed');
+            observedJobs.set(el, job);
+            ensureLazyObserver().observe(el);
+          }
+        } else {
+          state.elementState.set(el, 'queued');
+          immediate.push(job);
+        }
       }
     }
-    return collected;
+
+    return immediate;
   }
 
   function sortViewportFirst(items) {
@@ -594,160 +234,267 @@
     });
   }
 
-  function buildTranslatedFragment(zhText, placeholders) {
-    const frag = document.createDocumentFragment();
-    const tokens = String(zhText || '').split(/(\[\[\s*[CM]\d+\s*\]\])/g);
-
-    for (const part of tokens) {
-      if (!part) continue;
-      const m = part.match(/^\[\[\s*([CM]\d+)\s*\]\]$/);
-      if (m) {
-        const canonical = `[[${m[1]}]]`;
-        const origNode = placeholders.get(canonical);
-        if (origNode) {
-          frag.appendChild(origNode.cloneNode(true));
-          continue;
-        }
+  // =========================================================
+  // Streaming Micro-Batch RAF Flusher & Port Management
+  // =========================================================
+  function scheduleCmSync() {
+    if (cmSyncScheduled || !document.querySelector('.cm-editor')) return;
+    cmSyncScheduled = true;
+    requestAnimationFrame(() => {
+      cmSyncScheduled = false;
+      if (pageActive) {
+        NotebookAdapter.syncCmOverlays(state);
       }
-      frag.appendChild(document.createTextNode(part));
-    }
-    return frag;
+    });
   }
 
-  function needsInlineInjection(el) {
-    const tag = el.tagName;
-    if (tag === 'TD' || tag === 'TH' || tag === 'A' || tag === 'SPAN') {
-      return true;
-    }
-    const display = getComputedStyle(el).display || '';
-    if (display.includes('inline')) return true;
-    const parent = el.parentElement;
-    if (!parent) return false;
-    const parentDisplay = getComputedStyle(parent).display || '';
-    return parentDisplay.includes('flex') || parentDisplay.includes('grid');
+  function scheduleStreamRenderFlush() {
+    if (streamFlushScheduled) return;
+    streamFlushScheduled = true;
+
+    let resolveFlush;
+    const flushGate = new Promise((r) => {
+      resolveFlush = r;
+    });
+    pendingFlushPromise = flushGate;
+
+    let fired = false;
+    const runFlush = () => {
+      if (fired) return;
+      fired = true;
+      streamFlushScheduled = false;
+      if (streamRenderBuffer.length === 0) {
+        resolveFlush();
+        return;
+      }
+
+      const jobs = streamRenderBuffer.splice(0, streamRenderBuffer.length);
+      renderChain = renderChain
+        .then(async () => {
+          await Renderer.renderJobsWithRAF(jobs, state.settings, NotebookAdapter, state);
+          updateWidgetUI();
+        })
+        .catch(() => {})
+        .finally(resolveFlush);
+    };
+
+    const fallbackTimer = setTimeout(runFlush, 300);
+    requestAnimationFrame(() => {
+      clearTimeout(fallbackTimer);
+      runFlush();
+    });
   }
 
-  async function renderBatchWithRAF(renderJobs) {
-    const BATCH = 15;
-    for (let i = 0; i < renderJobs.length; i += BATCH) {
-      const slice = renderJobs.slice(i, i + BATCH);
-      const flushSlice = () => {
-        for (const job of slice) {
-          try {
-            if (job.kind === 'comment') {
-              const { el, zh, commentInfo, cmEditor } = job;
-              const cleaned = String(zh || '').replace(/^\s*#+\s*/, '').trim();
-              if (cleaned) {
-                commentCacheByBody.set(commentInfo.body, cleaned);
-              }
-              if (!el.isConnected) {
-                totalDetected = Math.max(totalTranslated, totalDetected - 1);
-                continue;
-              }
-              if (cleaned) {
-                const fullComment = `${commentInfo.leadWs}${commentInfo.hashes}${commentInfo.midWs}${cleaned}`;
-                if (cmEditor && cmEditor.isConnected) {
-                  renderCmCommentOverlay(cmEditor, el, fullComment);
-                } else {
-                  el.setAttribute('data-kct-comment-trans', fullComment);
-                }
-                commentState.set(el, 'done');
-                totalTranslated += 1;
-              } else {
-                commentState.delete(el);
-                totalDetected = Math.max(totalTranslated, totalDetected - 1);
-              }
-              continue;
-            }
+  async function waitForAllRenders() {
+    await pendingFlushPromise;
+    await renderChain;
+  }
 
-            const { el, zh, placeholders, nestedListEl } = job;
-            if (!el.isConnected) {
-              totalDetected = Math.max(totalTranslated, totalDetected - 1);
-              continue;
-            }
-            if (el.hasAttribute('data-kct-has-trans') || el.querySelector('[data-kct-ui="trans"]')) {
-              elementState.set(el, 'done');
-              totalDetected = Math.max(totalTranslated, totalDetected - 1);
-              continue;
-            }
+  function cancelRemoteStream(requestId) {
+    if (!streamPort || !requestId) return;
+    try {
+      streamPort.postMessage({ type: 'CANCEL_STREAM', requestId });
+    } catch (_) {}
+  }
 
-            const origWrap = document.createElement('span');
-            origWrap.className = 'kct-orig-wrap';
-            origWrap.setAttribute('data-kct-ui', 'orig');
+  function handleStreamMessage(msg) {
+    if (!msg || typeof msg !== 'object' || !msg.requestId) return;
+    const req = activeStreamRequests.get(msg.requestId);
+    if (!req) return;
 
-            const children = Array.from(el.childNodes);
-            for (const child of children) {
-              if (nestedListEl && child === nestedListEl) continue;
-              origWrap.appendChild(child);
-            }
+    if (req.timer) {
+      clearTimeout(req.timer);
+      req.timer = setTimeout(() => {
+        activeStreamRequests.delete(msg.requestId);
+        cancelRemoteStream(msg.requestId);
+        req.reject({ error: '串流回應逾時', portFallback: true });
+      }, 60000);
+    }
 
-            const transWrap = document.createElement('span');
-            transWrap.className = 'kct-trans-wrap';
-            transWrap.setAttribute('data-kct-ui', 'trans');
-            transWrap.setAttribute('translate', 'no');
-            transWrap.appendChild(buildTranslatedFragment(zh, placeholders));
-
-            if (needsInlineInjection(el)) {
-              el.setAttribute('data-kct-inline-layout', '1');
-            }
-
-            if (nestedListEl && nestedListEl.parentElement === el) {
-              el.insertBefore(origWrap, nestedListEl);
-              el.insertBefore(transWrap, nestedListEl);
-            } else {
-              el.append(origWrap, transWrap);
-            }
-
-            el.setAttribute('data-kct-has-trans', '1');
-            elementState.set(el, 'done');
-            totalTranslated += 1;
-          } catch (jobErr) {
-            console.warn('[KCT] render job error:', jobErr);
-            if (!lastErrorMsg) {
-              lastErrorMsg = `渲染錯誤: ${jobErr?.message || jobErr}`;
-            }
-          }
+    if (msg.type === 'ITEM') {
+      if (req.epoch !== state.translationEpoch) return;
+      const matchedItems = req.itemsByKey.get(msg.key);
+      if (matchedItems && msg.zh) {
+        req.receivedKeys.add(msg.key);
+        for (const item of matchedItems) {
+          streamRenderBuffer.push({
+            kind: item.kind || 'block',
+            cmEditor: item.cmEditor,
+            el: item.el,
+            zh: msg.zh,
+            placeholders: item.placeholders,
+            nestedListEl: item.nestedListEl,
+            commentInfo: item.commentInfo,
+            typo: item.typo,
+            epoch: req.epoch
+          });
         }
-      };
+        scheduleStreamRenderFlush();
+      }
+      return;
+    }
 
-      await new Promise((resolve) => {
-        let flushed = false;
-        const complete = () => {
-          if (flushed) return;
-          flushed = true;
-          try {
-            flushSlice();
-          } finally {
-            resolve();
-          }
-        };
-        const timer = setTimeout(complete, 600);
-        requestAnimationFrame(() => {
-          clearTimeout(timer);
-          complete();
-        });
+    if (msg.type === 'DONE') {
+      if (req.timer) clearTimeout(req.timer);
+      activeStreamRequests.delete(msg.requestId);
+      req.resolve({ ok: true, translatedCount: msg.translatedCount || 0 });
+      return;
+    }
+
+    if (msg.type === 'ERROR') {
+      if (req.timer) clearTimeout(req.timer);
+      activeStreamRequests.delete(msg.requestId);
+      req.reject({
+        error: msg.error || '翻譯失敗',
+        errorCode: msg.errorCode || ''
       });
     }
-    updateWidgetUI();
+  }
+
+  function ensureStreamPort() {
+    if (streamPort) return streamPort;
+    const port = chrome.runtime.connect({ name: 'kct-stream' });
+    port.onMessage.addListener(handleStreamMessage);
+    port.onDisconnect.addListener(() => {
+      void chrome.runtime.lastError;
+      if (streamPort === port) {
+        streamPort = null;
+      }
+      for (const [reqId, req] of activeStreamRequests.entries()) {
+        if (req.timer) clearTimeout(req.timer);
+        activeStreamRequests.delete(reqId);
+        req.reject({
+          portFallback: true,
+          error: '串流連線中斷'
+        });
+      }
+    });
+    streamPort = port;
+    return port;
+  }
+
+  function sendBatchOverStreamPort(itemsByKey, uniqueItems, pageContext, batchEpoch, receivedKeys) {
+    return new Promise((resolve, reject) => {
+      let port;
+      try {
+        port = ensureStreamPort();
+      } catch (err) {
+        reject({ portFallback: true, error: err?.message || '無法建立串流連線' });
+        return;
+      }
+
+      const requestId = `kct_${Date.now()}_${++streamReqSeq}`;
+      const req = {
+        epoch: batchEpoch,
+        itemsByKey,
+        receivedKeys: receivedKeys || new Set(),
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          activeStreamRequests.delete(requestId);
+          cancelRemoteStream(requestId);
+          reject({ portFallback: true, error: '串流連線逾時' });
+        }, 60000)
+      };
+      activeStreamRequests.set(requestId, req);
+
+      try {
+        port.postMessage({
+          type: 'TRANSLATE_STREAM',
+          requestId,
+          items: uniqueItems,
+          pageContext
+        });
+      } catch (err) {
+        if (req.timer) clearTimeout(req.timer);
+        activeStreamRequests.delete(requestId);
+        streamPort = null;
+        reject({ portFallback: true, error: err?.message || '傳送串流訊息失敗' });
+      }
+    });
+  }
+
+  function releaseUnreceivedItems(batch, receivedKeys) {
+    let missingCount = 0;
+    for (const item of batch) {
+      if (receivedKeys && receivedKeys.has(item.key)) continue;
+      if (item.kind === 'comment') state.commentState.delete(item.el);
+      else state.elementState.delete(item.el);
+      missingCount += 1;
+    }
+    if (missingCount > 0) {
+      state.totalDetected = Math.max(state.totalTranslated, state.totalDetected - missingCount);
+    }
+  }
+
+  async function translateBatchViaFallback(batch, uniqueItems, pageContext, batchEpoch) {
+    const response = await chrome.runtime.sendMessage({
+      type: 'TRANSLATE_BATCH',
+      items: uniqueItems,
+      pageContext
+    });
+
+    if (batchEpoch !== state.translationEpoch) return;
+
+    if (!response?.ok) {
+      state.lastErrorMsg = response?.error || '翻譯失敗';
+      releaseUnreceivedItems(batch, null);
+      if (response?.errorCode === 'NO_API_KEY') {
+        state.pendingItems.length = 0;
+      }
+      return;
+    }
+
+    const results = response.results || {};
+    const jobs = [];
+    const matchedKeys = new Set();
+    for (const item of batch) {
+      const hit = results[item.key];
+      if (hit?.zh) {
+        matchedKeys.add(item.key);
+        jobs.push({
+          kind: item.kind || 'block',
+          cmEditor: item.cmEditor,
+          el: item.el,
+          zh: hit.zh,
+          placeholders: item.placeholders,
+          nestedListEl: item.nestedListEl,
+          commentInfo: item.commentInfo,
+          typo: item.typo,
+          epoch: batchEpoch
+        });
+      }
+    }
+    releaseUnreceivedItems(batch, matchedKeys);
+
+    if (jobs.length > 0 && batchEpoch === state.translationEpoch) {
+      renderChain = renderChain
+        .then(async () => {
+          await Renderer.renderJobsWithRAF(jobs, state.settings, NotebookAdapter, state);
+          updateWidgetUI();
+        })
+        .catch(() => {});
+      await renderChain;
+    }
   }
 
   function takeNextBatch() {
-    const maxCount = Number(settings.batchSize || 24);
-    const maxChars = Number(settings.maxBatchChars || 6500);
+    const maxCount = Number(state.settings?.batchSize || 20);
+    const maxChars = Number(state.settings?.maxBatchChars || 5500);
     const batch = [];
     let chars = 0;
 
-    while (pendingItems.length > 0 && batch.length < maxCount) {
-      const next = pendingItems[0];
-      if (!next.el.isConnected) {
-        pendingItems.shift();
-        totalDetected = Math.max(totalTranslated, totalDetected - 1);
+    while (state.pendingItems.length > 0 && batch.length < maxCount) {
+      const next = state.pendingItems[0];
+      if (!next.el || !next.el.isConnected) {
+        state.pendingItems.shift();
+        state.totalDetected = Math.max(state.totalTranslated, state.totalDetected - 1);
         continue;
       }
       if (batch.length > 0 && chars + next.text.length > maxChars) {
         break;
       }
-      pendingItems.shift();
+      state.pendingItems.shift();
       batch.push(next);
       chars += next.text.length;
     }
@@ -757,18 +504,18 @@
   async function processQueue() {
     if (isProcessingQueue) return;
     isProcessingQueue = true;
-    lastErrorMsg = '';
+    state.lastErrorMsg = '';
     updateWidgetUI();
 
     try {
       const workers = [];
       const spawnWorker = async () => {
-        while (pendingItems.length > 0) {
+        while (state.pendingItems.length > 0 && pageActive) {
           const batch = takeNextBatch();
           if (batch.length === 0) break;
 
-          // Deduplicate same text keys within this batch
           const uniqueMap = new Map();
+          const itemsByKey = new Map();
           for (const item of batch) {
             if (!uniqueMap.has(item.key)) {
               uniqueMap.set(item.key, {
@@ -776,69 +523,75 @@
                 text: item.text,
                 kind: item.kind || 'block'
               });
+              itemsByKey.set(item.key, []);
             }
+            itemsByKey.get(item.key).push(item);
           }
 
-          const batchEpoch = translationEpoch;
+          const uniqueItems = Array.from(uniqueMap.values());
+          const pageContext = getPageContext();
+          const batchEpoch = state.translationEpoch;
+          const useStream = state.settings?.streamTranslation !== false;
+
           activeRequests += 1;
           updateWidgetUI();
+
           try {
-            const response = await chrome.runtime.sendMessage({
-              type: 'TRANSLATE_BATCH',
-              items: Array.from(uniqueMap.values())
-            });
+            if (useStream) {
+              const receivedKeys = new Set();
+              let needFallback = false;
+              let streamErrObj = null;
 
-            if (batchEpoch !== translationEpoch) {
-              continue;
-            }
+              try {
+                const res = await sendBatchOverStreamPort(
+                  itemsByKey,
+                  uniqueItems,
+                  pageContext,
+                  batchEpoch,
+                  receivedKeys
+                );
+                if (res?.cancelled || batchEpoch !== state.translationEpoch) {
+                  continue;
+                }
+                // Wait for any buffered rAF renders to complete before counting missing keys
+                await waitForAllRenders();
+                releaseUnreceivedItems(batch, receivedKeys);
+              } catch (errObj) {
+                streamErrObj = errObj;
+                if (batchEpoch !== state.translationEpoch) continue;
+                await waitForAllRenders();
+                if (errObj?.portFallback) {
+                  needFallback = true;
+                } else {
+                  state.lastErrorMsg = errObj?.error || '翻譯失敗';
+                  releaseUnreceivedItems(batch, receivedKeys);
+                  if (errObj?.errorCode === 'NO_API_KEY') {
+                    state.pendingItems.length = 0;
+                    break;
+                  }
+                }
+              }
 
-            if (!response?.ok) {
-              lastErrorMsg = response?.error || '翻譯失敗';
-              for (const item of batch) {
-                if (item.kind === 'comment') commentState.delete(item.el);
-                else elementState.delete(item.el);
+              if (needFallback && batchEpoch === state.translationEpoch) {
+                const remainingBatch = batch.filter((it) => !receivedKeys.has(it.key));
+                const remainingUnique = uniqueItems.filter((it) => !receivedKeys.has(it.key));
+                if (remainingUnique.length > 0) {
+                  try {
+                    await translateBatchViaFallback(remainingBatch, remainingUnique, pageContext, batchEpoch);
+                  } catch (fbErr) {
+                    if (batchEpoch !== state.translationEpoch) continue;
+                    state.lastErrorMsg = fbErr?.message || streamErrObj?.error || '通訊失敗';
+                    releaseUnreceivedItems(remainingBatch, null);
+                  }
+                }
               }
-              totalDetected = Math.max(totalTranslated, totalDetected - batch.length);
-              if (response?.errorCode === 'NO_API_KEY') {
-                pendingItems.length = 0;
-                break;
-              }
-              continue;
-            }
-
-            const results = response.results || {};
-            const jobs = [];
-            for (const item of batch) {
-              const hit = results[item.key];
-              if (hit?.zh) {
-                jobs.push({
-                  kind: item.kind || 'block',
-                  cmEditor: item.cmEditor,
-                  el: item.el,
-                  zh: hit.zh,
-                  placeholders: item.placeholders,
-                  nestedListEl: item.nestedListEl,
-                  commentInfo: item.commentInfo
-                });
-              } else {
-                if (item.kind === 'comment') commentState.delete(item.el);
-                else elementState.delete(item.el);
-                totalDetected = Math.max(totalTranslated, totalDetected - 1);
-              }
-            }
-            if (jobs.length > 0 && batchEpoch === translationEpoch) {
-              await renderBatchWithRAF(jobs);
+            } else {
+              await translateBatchViaFallback(batch, uniqueItems, pageContext, batchEpoch);
             }
           } catch (err) {
-            if (batchEpoch !== translationEpoch) {
-              continue;
-            }
-            lastErrorMsg = err?.message || '通訊失敗';
-            for (const item of batch) {
-              if (item.kind === 'comment') commentState.delete(item.el);
-              else elementState.delete(item.el);
-            }
-            totalDetected = Math.max(totalTranslated, totalDetected - batch.length);
+            if (batchEpoch !== state.translationEpoch) continue;
+            state.lastErrorMsg = err?.message || '通訊失敗';
+            releaseUnreceivedItems(batch, null);
           } finally {
             activeRequests -= 1;
             updateWidgetUI();
@@ -846,92 +599,39 @@
         }
       };
 
-      const batchTarget = Math.max(1, Number(settings.batchSize || 24));
-      const concurrency = Math.min(MAX_CONCURRENT_BATCHES, Math.max(1, Math.ceil(pendingItems.length / batchTarget)));
+      const batchTarget = Math.max(1, Number(state.settings?.batchSize || 20));
+      const concurrency = Math.min(
+        MAX_CONCURRENT_BATCHES,
+        Math.max(1, Math.ceil(state.pendingItems.length / batchTarget))
+      );
       for (let i = 0; i < concurrency; i++) {
         workers.push(spawnWorker());
       }
       await Promise.all(workers);
+      await waitForAllRenders();
     } finally {
       isProcessingQueue = false;
       updateWidgetUI();
-    }
-  }
-
-  function injectOutputTranslateButtons() {
-    if (!settings || settings.showOutputTranslateBtn === false) return;
-    const outputAreas = document.querySelectorAll(
-      '.jp-OutputArea-output .jp-RenderedText, .output_subarea.output_text, .output_subarea.output_stream, .output_subarea.output_error'
-    );
-    for (const area of outputAreas) {
-      if (area.dataset.kctOutputBound === '1') continue;
-      if (area.closest('.dataframe, table.dataframe')) continue;
-      const rawText = (area.innerText || area.textContent || '').trim();
-      if (rawText.length < 6 || !/[a-zA-Z]{3,}/.test(rawText) || isMostlyCJK(rawText)) continue;
-
-      area.dataset.kctOutputBound = '1';
-      area.classList.add('kct-output-host');
-
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'kct-output-btn';
-      btn.setAttribute('data-kct-ui', 'output-btn');
-      btn.setAttribute('translate', 'no');
-      btn.textContent = '譯';
-      btn.title = '翻譯此執行輸出（如 Hint 提示 / Check 驗證 / 錯誤訊息）';
-
-      btn.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        const existing = area.querySelector('.kct-output-trans');
-        if (existing) {
-          existing.remove();
-          btn.textContent = '譯';
-          return;
-        }
-        const clone = area.cloneNode(true);
-        for (const uiNode of clone.querySelectorAll('[data-kct-ui]')) {
-          uiNode.remove();
-        }
-        const latestText = (clone.innerText || clone.textContent || '').trim();
-        btn.textContent = '翻譯中...';
-        btn.disabled = true;
-        try {
-          const res = await chrome.runtime.sendMessage({
-            type: 'TRANSLATE_SINGLE',
-            mode: 'output',
-            text: latestText.slice(0, 3500)
-          });
-          const box = document.createElement('div');
-          box.className = 'kct-output-trans';
-          box.setAttribute('data-kct-ui', 'output-trans');
-          box.setAttribute('translate', 'no');
-          box.textContent = res?.ok ? res.zh : (res?.error || '翻譯失敗');
-          area.appendChild(box);
-          btn.textContent = '收起譯文';
-        } catch (err) {
-          btn.textContent = '重試';
-        } finally {
-          btn.disabled = false;
-        }
-      });
-
-      area.appendChild(btn);
+      // If IntersectionObserver enqueued new items while winding down, continue seamlessly
+      if (pageActive && state.pendingItems.length > 0 && !state.lastErrorMsg) {
+        processQueue();
+      }
     }
   }
 
   function scanAndTranslate(force = false) {
-    if (!settings) return;
-    injectOutputTranslateButtons();
-    if (!settings.enabled && !force) return;
-    if (!settings.autoTranslate && !force) return;
+    if (!state.settings || !pageActive) return;
+    NotebookAdapter.injectOutputTranslateButtons(state.settings, getPageContext());
+    if (!state.settings.enabled && !force) return;
 
-    const newBlocks = collectBlocks(force);
-    const newComments = collectCodeComments(force);
+    const newBlocks = collectCandidateBlocks(force);
+    const newComments = NotebookAdapter.collectCodeComments(force, state.settings, state);
     const newItems = [...newBlocks, ...newComments];
+
     if (newItems.length > 0) {
-      totalDetected += newItems.length;
-      pendingItems.push(...newItems);
-      sortViewportFirst(pendingItems);
+      state.totalDetected += newItems.length;
+      state.pendingItems.push(...newItems);
+      sortViewportFirst(state.pendingItems);
       updateWidgetUI();
       processQueue();
     } else {
@@ -945,168 +645,45 @@
       const curKey = location.origin + location.pathname;
       if (curKey !== lastPageKey) {
         lastPageKey = curKey;
-        translationEpoch += 1;
-        totalDetected = 0;
-        totalTranslated = 0;
-        pendingItems.length = 0;
-        lastErrorMsg = '';
+        pageInfo = classifyPage();
+        cancelAllActiveStreams();
+        resetLazyObserver();
+        state.translationEpoch += 1;
+        state.totalDetected = 0;
+        state.totalTranslated = 0;
+        state.pendingItems.length = 0;
+        state.lastErrorMsg = '';
+        if (isTopFrame()) subframeStats.clear();
       }
+      if (!pageActive) return;
       scanAndTranslate(false);
     }, delay);
   }
 
-  function clearAllInjectedTranslations() {
-    const wrappedHosts = document.querySelectorAll('[data-kct-has-trans="1"]');
-    for (const el of wrappedHosts) {
-      const origWrap = el.querySelector(':scope > [data-kct-ui="orig"]');
-      const transWrap = el.querySelector(':scope > [data-kct-ui="trans"]');
-      if (origWrap) {
-        while (origWrap.firstChild) {
-          el.insertBefore(origWrap.firstChild, origWrap);
-        }
-        origWrap.remove();
-      }
-      if (transWrap) {
-        transWrap.remove();
-      }
-      el.removeAttribute('data-kct-has-trans');
-      el.removeAttribute('data-kct-inline-layout');
-      elementState.delete(el);
+  function resetAndClearPage(deactivate = false) {
+    clearHydrationTimers();
+    cancelAllActiveStreams();
+    resetLazyObserver();
+    Renderer.clearAllInjectedTranslations(state, NotebookAdapter);
+    if (isTopFrame()) {
+      subframeStats.clear();
     }
-
-    const commentedEls = document.querySelectorAll('[data-kct-comment-trans]');
-    for (const cel of commentedEls) {
-      cel.removeAttribute('data-kct-comment-trans');
-      commentState.delete(cel);
+    if (deactivate) {
+      pageActive = false;
+      removeFloatingWidget();
+    } else {
+      updateWidgetUI();
     }
-    const cmLayers = document.querySelectorAll('[data-kct-ui="cm-layer"]');
-    for (const layer of cmLayers) {
-      layer.remove();
-    }
-    commentCacheByBody.clear();
-
-    translationEpoch += 1;
-    pendingItems.length = 0;
-    totalDetected = 0;
-    totalTranslated = 0;
-    lastErrorMsg = '';
-    updateWidgetUI();
   }
 
-  // --- Floating Control Widget (Top Frame Only) ---
-  function createFloatingWidget() {
-    if (!isTopFrame() || widgetEl) return;
-    if (settings && settings.showFloatingBall === false) return;
-
-    const el = document.createElement('div');
-    el.id = 'kct-floating-widget';
-    el.setAttribute('data-kct-ui', 'widget');
-    el.setAttribute('translate', 'no');
-
-    const brand = document.createElement('span');
-    brand.className = 'kct-brand';
-    brand.title = '點擊展開/收起 Kaggle 翻譯工具列';
-
-    const dot = document.createElement('span');
-    dot.className = 'kct-dot';
-    const brandText = document.createElement('span');
-    brandText.textContent = 'K譯';
-    brand.append(dot, brandText);
-
-    const status = document.createElement('span');
-    status.className = 'kct-status';
-    status.textContent = '就緒';
-
-    const controls = document.createElement('div');
-    controls.className = 'kct-controls';
-
-    const seg = document.createElement('div');
-    seg.className = 'kct-seg';
-    const modes = [
-      { id: 'replace', label: '譯文' },
-      { id: 'original', label: '原文' },
-      { id: 'bilingual', label: '雙語' }
-    ];
-    for (const m of modes) {
-      const btn = document.createElement('button');
-      btn.dataset.mode = m.id;
-      btn.textContent = m.label;
-      btn.title = m.id === 'replace'
-        ? '以譯文呈現，保持與原文相同的版面排版'
-        : m.id === 'original'
-          ? '顯示英文原文'
-          : '簡潔雙語對照';
-      btn.addEventListener('click', async () => {
-        settings = await saveSettings({ displayMode: m.id });
-        applyDisplayModeClass(m.id);
-      });
-      seg.appendChild(btn);
-    }
-
-    const langSelect = document.createElement('select');
-    langSelect.className = 'kct-lang-select';
-    langSelect.title = '切換目標翻譯語言';
-    for (const lang of Object.values(TARGET_LANGUAGES)) {
-      const opt = document.createElement('option');
-      opt.value = lang.id;
-      opt.textContent = lang.shortLabel;
-      langSelect.appendChild(opt);
-    }
-    langSelect.value = settings?.targetLang || 'zh-TW';
-    langSelect.addEventListener('change', async (e) => {
-      const val = e.target.value;
-      if (val === 'custom' && !settings?.customTargetLang) {
-        await chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' });
-        langSelect.value = settings?.targetLang || 'zh-TW';
-        return;
-      }
-      settings = await saveSettings({ targetLang: val });
-      applyDisplayModeClass(settings.displayMode);
-    });
-
-    const translateBtn = document.createElement('button');
-    translateBtn.className = 'kct-icon-btn';
-    translateBtn.textContent = '↻';
-    translateBtn.title = '立即掃描並翻譯目前頁面（含程式碼註解與內嵌 Notebook）';
-    translateBtn.addEventListener('click', async () => {
-      await chrome.runtime.sendMessage({
-        type: 'BROADCAST_TO_TAB',
-        payload: { type: 'KCT_COMMAND', action: 'TRANSLATE_NOW' }
-      });
-    });
-
-    const optBtn = document.createElement('button');
-    optBtn.className = 'kct-icon-btn';
-    optBtn.textContent = '⚙';
-    optBtn.title = '開啟 API Key、語言與術語表設定';
-    optBtn.addEventListener('click', async () => {
-      await chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' });
-    });
-
-    const minBtn = document.createElement('button');
-    minBtn.className = 'kct-icon-btn';
-    minBtn.textContent = '—';
-    minBtn.title = '收起懸浮工具列';
-    minBtn.addEventListener('click', () => {
-      el.classList.add('kct-collapsed');
-    });
-
-    brand.addEventListener('click', () => {
-      el.classList.toggle('kct-collapsed');
-    });
-
-    controls.append(seg, langSelect, translateBtn, optBtn, minBtn);
-    el.append(brand, status, controls);
-    document.body.appendChild(el);
-    widgetEl = el;
-    updateWidgetUI();
-  }
-
+  // =========================================================
+  // Aggregated Cross-Frame Status
+  // =========================================================
   function getAggregatedStats() {
-    let detected = totalDetected;
-    let translated = totalTranslated;
+    let detected = state.totalDetected;
+    let translated = state.totalTranslated;
     let isBusy = isProcessingQueue || activeRequests > 0;
-    let err = lastErrorMsg;
+    let err = state.lastErrorMsg;
 
     for (const s of subframeStats.values()) {
       detected += Number(s.totalDetected || 0);
@@ -1129,15 +706,395 @@
       await chrome.runtime.sendMessage({
         type: 'FRAME_STATUS',
         stats: {
-          totalDetected,
-          totalTranslated,
+          totalDetected: state.totalDetected,
+          totalTranslated: state.totalTranslated,
           isBusy: isProcessingQueue || activeRequests > 0,
-          lastErrorMsg
+          lastErrorMsg: state.lastErrorMsg
         }
       });
-    } catch (_) {
-      // Ignore if tab/extension context is unloading
+    } catch (_) {}
+  }
+
+  // =========================================================
+  // Shadow DOM Floating Control Pill (Top Frame Only)
+  // =========================================================
+  const WIDGET_SHADOW_CSS = `
+    :host {
+      all: initial;
+      color-scheme: light dark;
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 2147483000;
+      pointer-events: none;
+      --kct-accent: #0284c7;
+      --kct-accent-soft: rgba(2, 132, 199, 0.12);
+      --kct-star: #f59e0b;
+      --kct-border: rgba(15, 23, 42, 0.12);
+      --kct-text: #0f172a;
+      --kct-muted: #64748b;
+      --kct-bg: rgba(255, 255, 255, 0.88);
+      --kct-pill-bg: rgba(15, 23, 42, 0.06);
+      --kct-pill-active: #ffffff;
+      --kct-shadow: 0 10px 30px rgba(15, 23, 42, 0.14), 0 1px 3px rgba(15, 23, 42, 0.08);
+      --kct-font: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
     }
+
+    @media (prefers-color-scheme: dark) {
+      :host {
+        --kct-accent: #38bdf8;
+        --kct-accent-soft: rgba(56, 189, 248, 0.16);
+        --kct-border: rgba(255, 255, 255, 0.15);
+        --kct-text: #f1f5f9;
+        --kct-muted: #94a3b8;
+        --kct-bg: rgba(15, 23, 42, 0.88);
+        --kct-pill-bg: rgba(255, 255, 255, 0.1);
+        --kct-pill-active: rgba(255, 255, 255, 0.18);
+        --kct-shadow: 0 10px 32px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+      }
+    }
+
+    :host(.kct-dark) {
+      color-scheme: dark;
+      --kct-accent: #38bdf8;
+      --kct-accent-soft: rgba(56, 189, 248, 0.16);
+      --kct-border: rgba(255, 255, 255, 0.15);
+      --kct-text: #f1f5f9;
+      --kct-muted: #94a3b8;
+      --kct-bg: rgba(15, 23, 42, 0.88);
+      --kct-pill-bg: rgba(255, 255, 255, 0.1);
+      --kct-pill-active: rgba(255, 255, 255, 0.18);
+      --kct-shadow: 0 10px 32px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+    }
+
+    .kct-pill {
+      pointer-events: auto;
+      font-family: var(--kct-font);
+      color: var(--kct-text);
+      background: var(--kct-bg);
+      backdrop-filter: blur(18px) saturate(165%);
+      -webkit-backdrop-filter: blur(18px) saturate(165%);
+      border: 1px solid var(--kct-border);
+      border-radius: 999px;
+      box-shadow: var(--kct-shadow);
+      padding: 5px 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      line-height: 1.2;
+      user-select: none;
+      box-sizing: border-box;
+      transition: opacity 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .kct-pill.kct-collapsed {
+      padding: 5px 10px;
+    }
+
+    .kct-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-weight: 700;
+      color: var(--kct-text);
+      cursor: pointer;
+      padding: 3px 6px;
+      border-radius: 999px;
+      border: none;
+      background: transparent;
+      font-family: inherit;
+      font-size: 12px;
+    }
+
+    .kct-brand:hover {
+      background: var(--kct-pill-bg);
+    }
+
+    .kct-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #0ea5e9;
+      flex-shrink: 0;
+    }
+
+    .kct-dot.kct-busy {
+      background: #f59e0b;
+      animation: kct-pulse 1.1s infinite ease-in-out;
+    }
+
+    .kct-dot.kct-err {
+      background: #ef4444;
+    }
+
+    @keyframes kct-pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.38); opacity: 0.55; }
+    }
+
+    .kct-status {
+      color: var(--kct-muted);
+      font-size: 11px;
+      max-width: 118px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .kct-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .kct-pill.kct-collapsed .kct-controls,
+    .kct-pill.kct-collapsed .kct-status {
+      display: none;
+    }
+
+    .kct-seg {
+      display: inline-flex;
+      background: var(--kct-pill-bg);
+      border-radius: 999px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    button {
+      all: unset;
+      box-sizing: border-box;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-family: var(--kct-font);
+      font-size: 12px;
+      line-height: 1.2;
+      color: var(--kct-muted);
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    button:hover {
+      background: var(--kct-pill-bg);
+      color: var(--kct-text);
+    }
+
+    .kct-seg button {
+      background: transparent;
+      padding: 4px 9px;
+      font-weight: 500;
+    }
+
+    .kct-seg button.kct-active {
+      background: var(--kct-pill-active);
+      color: var(--kct-accent);
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+    }
+
+    .kct-lang-select {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 1px solid transparent;
+      background: var(--kct-pill-bg);
+      color: var(--kct-text);
+      font-family: var(--kct-font);
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 8px;
+      border-radius: 999px;
+      cursor: pointer;
+      outline: none;
+      max-width: 92px;
+    }
+
+    .kct-lang-select:hover,
+    .kct-lang-select:focus {
+      border-color: var(--kct-border);
+    }
+
+    .kct-icon-btn {
+      padding: 4px 7px;
+      font-size: 13px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .kct-star-btn.kct-starred {
+      color: var(--kct-star);
+    }
+
+    .kct-close-btn:hover {
+      color: #ef4444;
+    }
+  `;
+
+  function removeFloatingWidget() {
+    if (widgetHostEl) {
+      widgetHostEl.remove();
+      widgetHostEl = null;
+      widgetShadow = null;
+    }
+  }
+
+  function createFloatingWidget() {
+    if (!isTopFrame() || widgetHostEl) return;
+    if (state.settings && state.settings.showFloatingBall === false) return;
+    if (!document.body) return;
+
+    const host = document.createElement('div');
+    host.id = 'kct-widget-host';
+    host.setAttribute('data-kct-ui', 'widget');
+    host.setAttribute('translate', 'no');
+    if (isDarkPageHint()) {
+      host.classList.add('kct-dark');
+    }
+
+    const shadow = host.attachShadow({ mode: 'open' });
+    const styleEl = document.createElement('style');
+    styleEl.textContent = WIDGET_SHADOW_CSS;
+
+    const pill = document.createElement('div');
+    pill.className = widgetCollapsed ? 'kct-pill kct-collapsed' : 'kct-pill';
+
+    // Brand / collapse toggle
+    const brand = document.createElement('button');
+    brand.type = 'button';
+    brand.className = 'kct-brand';
+    brand.title = '點擊展開或收起翻譯控制列';
+
+    const dot = document.createElement('span');
+    dot.className = 'kct-dot';
+    const brandText = document.createElement('span');
+    brandText.textContent = '譯';
+    brand.append(dot, brandText);
+
+    brand.addEventListener('click', () => {
+      widgetCollapsed = !widgetCollapsed;
+      pill.classList.toggle('kct-collapsed', widgetCollapsed);
+    });
+
+    const status = document.createElement('span');
+    status.className = 'kct-status';
+    status.textContent = '就緒';
+
+    const controls = document.createElement('div');
+    controls.className = 'kct-controls';
+
+    // Mode segmented control
+    const seg = document.createElement('div');
+    seg.className = 'kct-seg';
+    const modes = [
+      { id: 'replace', label: '譯文', title: '以原版排版風格呈現譯文' },
+      { id: 'original', label: '原文', title: '瞬間切回網頁原文' },
+      { id: 'bilingual', label: '雙語', title: '簡潔雙語對照模式' }
+    ];
+    for (const m of modes) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.dataset.mode = m.id;
+      btn.textContent = m.label;
+      btn.title = m.title;
+      btn.addEventListener('click', async () => {
+        state.settings = await saveSettings({ displayMode: m.id });
+        Renderer.applyDisplayModeClass(state.settings);
+        updateWidgetUI();
+      });
+      seg.appendChild(btn);
+    }
+
+    // Target language selector
+    const langSelect = document.createElement('select');
+    langSelect.className = 'kct-lang-select';
+    langSelect.title = '切換目標翻譯語言';
+    for (const lang of Object.values(TARGET_LANGUAGES)) {
+      const opt = document.createElement('option');
+      opt.value = lang.id;
+      opt.textContent = lang.shortLabel;
+      langSelect.appendChild(opt);
+    }
+    langSelect.value = state.settings?.targetLang || 'zh-TW';
+    langSelect.addEventListener('change', async (e) => {
+      const val = e.target.value;
+      if (val === 'custom' && !state.settings?.customTargetLang) {
+        await chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' });
+        langSelect.value = state.settings?.targetLang || 'zh-TW';
+        return;
+      }
+      // Do NOT overwrite state.settings before storage.onChanged fires so prev.targetLang diff triggers re-translation
+      await saveSettings({ targetLang: val });
+    });
+
+    // Per-site auto-translate whitelist star button
+    const starBtn = document.createElement('button');
+    starBtn.type = 'button';
+    starBtn.className = 'kct-icon-btn kct-star-btn';
+    starBtn.textContent = '☆';
+    starBtn.addEventListener('click', async () => {
+      if (typeof toggleHostWhitelist !== 'function') return;
+      try {
+        const res = await toggleHostWhitelist(location.hostname);
+        if (res?.settings) {
+          state.settings = res.settings;
+        }
+        updateWidgetUI();
+      } catch (_) {}
+    });
+
+    // Re-scan button
+    const rescanBtn = document.createElement('button');
+    rescanBtn.type = 'button';
+    rescanBtn.className = 'kct-icon-btn';
+    rescanBtn.textContent = '↻';
+    rescanBtn.title = '重新掃描並翻譯目前頁面（含程式碼註解與內嵌框架）';
+    rescanBtn.addEventListener('click', async () => {
+      try {
+        await chrome.runtime.sendMessage({
+          type: 'BROADCAST_TO_TAB',
+          payload: { type: 'KCT_COMMAND', action: 'TRANSLATE_NOW' }
+        });
+      } catch (_) {
+        scanAndTranslate(true);
+      }
+    });
+
+    // Options button
+    const optBtn = document.createElement('button');
+    optBtn.type = 'button';
+    optBtn.className = 'kct-icon-btn';
+    optBtn.textContent = '⚙';
+    optBtn.title = '開啟翻譯引擎、API Key、排版與白名單設定';
+    optBtn.addEventListener('click', async () => {
+      try {
+        await chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' });
+      } catch (_) {}
+    });
+
+    // Close & revert button
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'kct-icon-btn kct-close-btn';
+    closeBtn.textContent = '✕';
+    closeBtn.title = '還原網頁原文並關閉翻譯工具列';
+    closeBtn.addEventListener('click', async () => {
+      try {
+        await chrome.runtime.sendMessage({
+          type: 'BROADCAST_TO_TAB',
+          payload: { type: 'KCT_COMMAND', action: 'CLEAR_PAGE' }
+        });
+      } catch (_) {}
+      resetAndClearPage(true);
+    });
+
+    controls.append(seg, langSelect, starBtn, rescanBtn, optBtn, closeBtn);
+    pill.append(brand, status, controls);
+    shadow.append(styleEl, pill);
+    document.body.appendChild(host);
+
+    widgetHostEl = host;
+    widgetShadow = shadow;
+    updateWidgetUI();
   }
 
   function updateWidgetUI() {
@@ -1145,14 +1102,23 @@
       reportStatusToTop();
       return;
     }
-    if (!widgetEl) return;
-    const dot = widgetEl.querySelector('.kct-dot');
-    const status = widgetEl.querySelector('.kct-status');
-    const modeBtns = widgetEl.querySelectorAll('.kct-seg button');
+    if (!widgetShadow) return;
+
+    const dot = widgetShadow.querySelector('.kct-dot');
+    const status = widgetShadow.querySelector('.kct-status');
+    const modeBtns = widgetShadow.querySelectorAll('.kct-seg button');
+    const langSel = widgetShadow.querySelector('.kct-lang-select');
+    const starBtn = widgetShadow.querySelector('.kct-star-btn');
     const agg = getAggregatedStats();
 
+    if (widgetHostEl) {
+      widgetHostEl.classList.toggle('kct-dark', isDarkPageHint());
+    }
+
     dot.classList.remove('kct-busy', 'kct-err');
-    const hasKey = Boolean(settings?.apiKey?.trim()) || /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(settings?.baseUrl || '');
+    const hasKey =
+      Boolean(state.settings?.apiKey?.trim()) ||
+      /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)/i.test(state.settings?.baseUrl || '');
 
     if (agg.lastErrorMsg) {
       dot.classList.add('kct-err');
@@ -1160,34 +1126,190 @@
       status.title = agg.lastErrorMsg;
     } else if (agg.isBusy) {
       dot.classList.add('kct-busy');
-      status.textContent = `翻譯中 ${agg.totalTranslated}/${agg.totalDetected}`;
+      const label = state.settings?.streamTranslation !== false ? '串流中' : '翻譯中';
+      status.textContent = `${label} ${agg.totalTranslated}/${agg.totalDetected}`;
       status.title = status.textContent;
     } else if (!hasKey) {
       dot.classList.add('kct-err');
       status.textContent = '未設定 API Key';
       status.title = '請點選「⚙」填寫大模型 API Key';
-    } else if (!settings?.enabled) {
+    } else if (!state.settings?.enabled) {
       status.textContent = agg.totalTranslated > 0 ? `已譯 ${agg.totalTranslated} 項（已暫停）` : '已暫停';
-      status.title = '全域翻譯開關已關閉，點擊右上角擴充圖示或按「↻」可啟用並翻譯';
+      status.title = '全域翻譯開關已關閉，點擊「↻」可啟用並翻譯';
     } else if (agg.totalTranslated > 0) {
       status.textContent = `已譯 ${agg.totalTranslated} 項`;
       status.title = status.textContent;
     } else {
-      status.textContent = settings?.autoTranslate ? '自動監聽中' : '就緒';
+      status.textContent = '就緒';
       status.title = status.textContent;
     }
 
-    const curMode = settings?.displayMode || 'replace';
+    const curMode = state.settings?.displayMode || 'replace';
     for (const btn of modeBtns) {
       btn.classList.toggle('kct-active', btn.dataset.mode === curMode);
     }
-    const langSel = widgetEl.querySelector('.kct-lang-select');
-    if (langSel && settings?.targetLang) {
-      langSel.value = settings.targetLang;
+
+    if (langSel && state.settings?.targetLang) {
+      langSel.value = state.settings.targetLang;
+    }
+
+    if (starBtn) {
+      const whitelisted = typeof isHostWhitelisted === 'function'
+        ? isHostWhitelisted(location.hostname, state.settings)
+        : false;
+      starBtn.textContent = whitelisted ? '★' : '☆';
+      starBtn.classList.toggle('kct-starred', whitelisted);
+      starBtn.title = whitelisted
+        ? `已加入自動翻譯白名單（${location.hostname}），點擊移除`
+        : `將 ${location.hostname} 加入自動翻譯白名單`;
     }
   }
 
-  // --- Selection Translation (Works in both Main Page & Jupyter Iframe) ---
+  // =========================================================
+  // Shadow DOM Selection Trigger & Popover
+  // =========================================================
+  const SELECTION_SHADOW_CSS = `
+    :host {
+      all: initial;
+      color-scheme: light dark;
+      position: fixed;
+      inset: 0;
+      z-index: 2147483002;
+      pointer-events: none;
+      --kct-accent: #0284c7;
+      --kct-accent-hover: #0369a1;
+      --kct-border: rgba(15, 23, 42, 0.12);
+      --kct-text: #0f172a;
+      --kct-muted: #64748b;
+      --kct-bg: rgba(255, 255, 255, 0.92);
+      --kct-pill-bg: rgba(15, 23, 42, 0.06);
+      --kct-font: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :host {
+        --kct-accent: #38bdf8;
+        --kct-accent-hover: #0ea5e9;
+        --kct-border: rgba(255, 255, 255, 0.16);
+        --kct-text: #f1f5f9;
+        --kct-muted: #94a3b8;
+        --kct-bg: rgba(15, 23, 42, 0.92);
+        --kct-pill-bg: rgba(255, 255, 255, 0.1);
+      }
+    }
+
+    :host(.kct-dark) {
+      color-scheme: dark;
+      --kct-accent: #38bdf8;
+      --kct-accent-hover: #0ea5e9;
+      --kct-border: rgba(255, 255, 255, 0.16);
+      --kct-text: #f1f5f9;
+      --kct-muted: #94a3b8;
+      --kct-bg: rgba(15, 23, 42, 0.92);
+      --kct-pill-bg: rgba(255, 255, 255, 0.1);
+    }
+
+    .kct-sel-btn {
+      pointer-events: auto;
+      position: fixed;
+      font-family: var(--kct-font);
+      background: var(--kct-accent);
+      color: #ffffff;
+      border: none;
+      border-radius: 999px;
+      padding: 4px 11px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 6px 18px rgba(2, 132, 199, 0.36);
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+
+    .kct-sel-btn:hover {
+      background: var(--kct-accent-hover);
+      transform: translateY(-1px);
+    }
+
+    .kct-sel-popover {
+      pointer-events: auto;
+      position: fixed;
+      width: min(390px, calc(100vw - 24px));
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: var(--kct-font);
+      background: var(--kct-bg);
+      backdrop-filter: blur(16px) saturate(160%);
+      -webkit-backdrop-filter: blur(16px) saturate(160%);
+      color: var(--kct-text);
+      border: 1px solid var(--kct-border);
+      border-radius: 12px;
+      padding: 10px 13px;
+      box-shadow: 0 14px 36px rgba(15, 23, 42, 0.22);
+      font-size: 13px;
+      line-height: 1.68;
+      box-sizing: border-box;
+    }
+
+    .kct-pop-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--kct-accent);
+      font-weight: 600;
+    }
+
+    .kct-pop-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .kct-pop-actions button {
+      all: unset;
+      cursor: pointer;
+      color: var(--kct-muted);
+      font-size: 12px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-family: var(--kct-font);
+    }
+
+    .kct-pop-actions button:hover {
+      background: var(--kct-pill-bg);
+      color: var(--kct-text);
+    }
+
+    .kct-pop-body {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  `;
+
+  function ensureSelectionHost() {
+    if (selHostEl && selHostEl.isConnected && selShadow) {
+      selHostEl.classList.toggle('kct-dark', isDarkPageHint());
+      return selShadow;
+    }
+    const host = document.createElement('div');
+    host.id = 'kct-selection-host';
+    host.setAttribute('data-kct-ui', 'selection');
+    host.setAttribute('translate', 'no');
+    if (isDarkPageHint()) {
+      host.classList.add('kct-dark');
+    }
+
+    const shadow = host.attachShadow({ mode: 'open' });
+    const styleEl = document.createElement('style');
+    styleEl.textContent = SELECTION_SHADOW_CSS;
+    shadow.appendChild(styleEl);
+
+    (document.body || document.documentElement).appendChild(host);
+    selHostEl = host;
+    selShadow = shadow;
+    return shadow;
+  }
+
   function removeSelectionUI() {
     if (selBtnEl) {
       selBtnEl.remove();
@@ -1196,6 +1318,11 @@
     if (selPopoverEl) {
       selPopoverEl.remove();
       selPopoverEl = null;
+    }
+    if (selHostEl) {
+      selHostEl.remove();
+      selHostEl = null;
+      selShadow = null;
     }
   }
 
@@ -1209,23 +1336,28 @@
   }
 
   function showSelectionPopover(x, y, text) {
+    const cleanText = String(text || '').trim();
+    if (!cleanText) return;
     removeSelectionUI();
+
+    const shadow = ensureSelectionHost();
+
     const pop = document.createElement('div');
-    pop.id = 'kct-sel-popover';
-    pop.setAttribute('data-kct-ui', 'selection');
-    pop.setAttribute('translate', 'no');
+    pop.className = 'kct-sel-popover';
 
     const head = document.createElement('div');
     head.className = 'kct-pop-head';
     const title = document.createElement('span');
-    title.textContent = 'Kaggle 劃詞翻譯';
+    title.textContent = 'AI 劃詞翻譯';
 
     const actions = document.createElement('div');
     actions.className = 'kct-pop-actions';
 
     const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
     copyBtn.textContent = '複製';
     const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
     closeBtn.textContent = '✕';
     closeBtn.addEventListener('click', removeSelectionUI);
 
@@ -1240,46 +1372,77 @@
       try {
         await navigator.clipboard.writeText(body.textContent || '');
         copyBtn.textContent = '已複製';
-        setTimeout(() => { copyBtn.textContent = '複製'; }, 1200);
+        setTimeout(() => {
+          copyBtn.textContent = '複製';
+        }, 1200);
       } catch (_) {}
     });
 
     pop.append(head, body);
-    document.body.appendChild(pop);
-    const pos = clampPosition(x, y + 10, 380, 220);
+    shadow.appendChild(pop);
+
+    const pos = clampPosition(x, y + 10, 390, 220);
     pop.style.left = `${pos.left}px`;
     pop.style.top = `${pos.top}px`;
     selPopoverEl = pop;
 
     (async () => {
-      const res = await chrome.runtime.sendMessage({
-        type: 'TRANSLATE_SINGLE',
-        text
-      });
-      if (!pop.isConnected) return;
-      body.textContent = res?.ok ? res.zh : (res?.error || '翻譯失敗');
+      try {
+        const res = await chrome.runtime.sendMessage({
+          type: 'TRANSLATE_SINGLE',
+          text: cleanText.slice(0, 3000),
+          pageContext: getPageContext()
+        });
+        if (!pop.isConnected) return;
+        body.textContent = res?.ok ? res.zh : (res?.error || '翻譯失敗');
+      } catch (err) {
+        if (!pop.isConnected) return;
+        body.textContent = err?.message || '翻譯失敗';
+      }
     })();
+  }
+
+  function getSelectionAnchorCoords() {
+    try {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        if (rect && (rect.width > 0 || rect.height > 0)) {
+          return { x: rect.left, y: rect.bottom };
+        }
+      }
+    } catch (_) {}
+    return {
+      x: Math.max(24, Math.floor((window.innerWidth - 390) / 2)),
+      y: Math.min(120, Math.floor(window.innerHeight * 0.2))
+    };
   }
 
   function setupSelectionListener() {
     document.addEventListener('mouseup', (e) => {
-      if (!settings?.selectionTranslate) return;
+      if (!state.settings?.selectionTranslate) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      if (path.some((n) => n === widgetHostEl || n === selHostEl)) return;
       if (e.target && e.target.closest && e.target.closest('[data-kct-ui]')) return;
 
       setTimeout(() => {
         const sel = window.getSelection();
         const text = sel ? sel.toString().trim() : '';
-        if (!text || text.length < 3 || text.length > 2500 || !/[a-zA-Z]{2,}/.test(text) || isMostlyCJK(text)) {
+        const targetLangId = state.settings?.targetLang || 'zh-TW';
+        if (!text || text.length < 2 || text.length > 2500 || !shouldTranslateText(text, targetLangId)) {
           if (!selPopoverEl) removeSelectionUI();
           return;
         }
         currentSelectionText = text;
-        if (selBtnEl) selBtnEl.remove();
+        if (selBtnEl) {
+          selBtnEl.remove();
+          selBtnEl = null;
+        }
 
+        const shadow = ensureSelectionHost();
         const btn = document.createElement('button');
-        btn.id = 'kct-sel-btn';
-        btn.setAttribute('data-kct-ui', 'selection');
-        btn.setAttribute('translate', 'no');
+        btn.type = 'button';
+        btn.className = 'kct-sel-btn';
         btn.textContent = '譯';
         const pos = clampPosition(e.clientX + 8, e.clientY + 10, 44, 28);
         btn.style.left = `${pos.left}px`;
@@ -1288,13 +1451,14 @@
           ev.stopPropagation();
           showSelectionPopover(pos.left, pos.top, currentSelectionText);
         });
-        document.body.appendChild(btn);
+        shadow.appendChild(btn);
         selBtnEl = btn;
       }, 20);
     });
 
     document.addEventListener('mousedown', (e) => {
-      if (e.target && e.target.closest && e.target.closest('[data-kct-ui="selection"]')) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      if (path.some((n) => n === selHostEl)) return;
       removeSelectionUI();
     });
 
@@ -1303,9 +1467,12 @@
     });
   }
 
-  // --- Observers & Messaging ---
+  // =========================================================
+  // Observers & SPA Lifecycle
+  // =========================================================
   function setupObservers() {
     const observer = new MutationObserver((mutations) => {
+      if (!pageActive) return;
       let hasExternalNodes = false;
       for (const m of mutations) {
         if (m.target && m.target.closest && m.target.closest('[data-kct-ui]')) continue;
@@ -1329,27 +1496,78 @@
     }
 
     window.addEventListener('resize', () => {
-      requestAnimationFrame(syncCmOverlays);
+      if (!pageActive) return;
+      scheduleCmSync();
     });
 
     window.addEventListener('popstate', () => scheduleScan(400));
     window.addEventListener('hashchange', () => scheduleScan(400));
+    window.addEventListener('pagehide', () => {
+      cancelAllActiveStreams();
+      if (streamPort) {
+        try {
+          streamPort.disconnect();
+        } catch (_) {}
+        streamPort = null;
+      }
+    });
 
-    // Also trigger re-prioritized scan on inner or window scroll & focusout (JupyterLab hydration)
     let scrollTimer = null;
     const onScrollOrBlur = () => {
-      requestAnimationFrame(syncCmOverlays);
-      if (pendingItems.length > 0) {
-        sortViewportFirst(pendingItems);
-      }
+      if (!pageActive) return;
+      scheduleCmSync();
       if (scrollTimer) clearTimeout(scrollTimer);
-      scrollTimer = setTimeout(() => scheduleScan(250), 250);
+      scrollTimer = setTimeout(() => {
+        if (!pageActive) return;
+        if (state.pendingItems.length > 0) {
+          sortViewportFirst(state.pendingItems);
+        }
+        // Only trigger DOM rescan on scroll for notebook/virtualized editors or when lazyViewport is off
+        if (pageInfo.pageType === 'notebook' || state.settings?.lazyViewport === false) {
+          scheduleScan(280);
+        }
+      }, 280);
     };
     document.addEventListener('scroll', onScrollOrBlur, { passive: true, capture: true });
     document.addEventListener('focusout', () => {
-      requestAnimationFrame(syncCmOverlays);
-      scheduleScan(200);
+      if (!pageActive) return;
+      scheduleCmSync();
+      if (pageInfo.pageType === 'notebook') {
+        scheduleScan(220);
+      }
     });
+  }
+
+  // =========================================================
+  // Activation Helper & Runtime Message Router
+  // =========================================================
+  async function activateAndTranslate() {
+    state.settings = await getSettings();
+    const patch = {};
+    if (!state.settings.enabled) patch.enabled = true;
+    if (state.settings.displayMode === 'original') patch.displayMode = 'replace';
+    if (Object.keys(patch).length > 0) {
+      state.settings = { ...state.settings, ...patch };
+      if (isTopFrame()) {
+        state.settings = await saveSettings(patch);
+      }
+    }
+    pageActive = true;
+    pageInfo = classifyPage();
+    Renderer.applyDisplayModeClass(state.settings);
+    if (isTopFrame() && state.settings.showFloatingBall !== false) {
+      createFloatingWidget();
+    }
+    scanAndTranslate(true);
+
+    // Staggered hydration follow-ups for async React / Jupyter / SPA renders
+    clearHydrationTimers();
+    for (const delay of [900, 2400]) {
+      const id = setTimeout(() => {
+        if (pageActive) scanAndTranslate(false);
+      }, delay);
+      hydrationTimers.push(id);
+    }
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1362,57 +1580,41 @@
         totalDetected: agg.totalDetected,
         totalTranslated: agg.totalTranslated,
         isBusy: agg.isBusy,
-        lastErrorMsg: agg.lastErrorMsg
+        lastErrorMsg: agg.lastErrorMsg,
+        pageType: pageInfo.pageType,
+        host: pageInfo.host
       });
       return false;
     }
 
     if (message?.type === 'KCT_DIAG') {
-      const roots = getCandidateRoots();
+      const roots = findContentRoots(state.settings?.scope || 'course', pageInfo);
       const allPs = Array.from(document.querySelectorAll('p, h1, h2, h3, li')).slice(0, 8);
       const samples = allPs.map((el) => ({
         tag: el.tagName,
         text: (el.innerText || '').slice(0, 50),
-        state: elementState.get(el) || null,
+        state: state.elementState.get(el) || null,
         skipAncestor: Boolean(el.closest(SKIP_ANCESTOR_SELECTOR)),
         navExclude: Boolean(el.closest(NAV_EXCLUDE_SELECTOR)),
         visible: isElementVisible(el),
         inRoots: roots.some((r) => r.contains(el))
       }));
-      const cmSamples = Array.from(document.querySelectorAll('.cm-editor')).map((ed, idx) => {
-        const lines = Array.from(ed.querySelectorAll('.cm-line')).filter((l) => l.textContent.includes('#'));
-        return {
-          idx,
-          visible: isElementVisible(ed),
-          edClass: ed.className,
-          edFontSizeVar: ed.style.getPropertyValue('--kct-code-font-size'),
-          lines: lines.slice(0, 3).map((line) => {
-            const span = line.querySelector('span[data-kct-comment-trans], span');
-            return {
-              lineClass: line.className,
-              lineHtml: line.innerHTML.slice(0, 180),
-              spanState: span ? (commentState.get(span) || null) : null,
-              transAttr: span?.getAttribute('data-kct-comment-trans') || null,
-              spanFontSize: span ? getComputedStyle(span).fontSize : null,
-              afterContent: span ? getComputedStyle(span, '::after').content : null
-            };
-          })
-        };
-      });
       sendResponse({
         ok: true,
-        href: location.href.slice(0, 100),
+        href: location.href.slice(0, 120),
         isTop: isTopFrame(),
+        pageActive,
+        pageInfo,
         htmlClass: document.documentElement.className,
         roots: roots.map((r) => `${r.tagName}#${r.id}.${String(r.className || '').slice(0, 40)}`),
         totalPs: document.querySelectorAll('p').length,
         cmEditors: document.querySelectorAll('.cm-editor').length,
         transComments: document.querySelectorAll('[data-kct-comment-trans]').length,
-        totalTranslated,
-        totalDetected,
-        lastErrorMsg,
+        lazyObservedCount: observedJobs.size,
+        totalTranslated: state.totalTranslated,
+        totalDetected: state.totalDetected,
+        lastErrorMsg: state.lastErrorMsg,
         subframes: Array.from(subframeStats.entries()),
-        cmSamples,
         samples
       });
       return false;
@@ -1428,95 +1630,115 @@
       return false;
     }
 
-    (async () => {
-      if (message?.type === 'KCT_COMMAND') {
+    if (message?.type === 'KCT_COMMAND') {
+      (async () => {
+        await initPromise;
         switch (message.action) {
           case 'TRANSLATE_NOW':
-            settings = await getSettings();
-            if (!settings.enabled) {
-              settings = { ...settings, enabled: true };
-              if (isTopFrame()) {
-                settings = await saveSettings({ enabled: true });
-              }
-            }
-            scanAndTranslate(true);
+            await activateAndTranslate();
             break;
+
           case 'RETRANSLATE':
-            clearAllInjectedTranslations();
-            if (isTopFrame()) subframeStats.clear();
-            settings = await getSettings();
-            if (!settings.enabled) {
-              settings = { ...settings, enabled: true };
-              if (isTopFrame()) {
-                settings = await saveSettings({ enabled: true });
+            resetAndClearPage(false);
+            await activateAndTranslate();
+            break;
+
+          case 'CLEAR_PAGE':
+            resetAndClearPage(true);
+            break;
+
+          case 'TOGGLE_OR_TRANSLATE': {
+            if (!isTopFrame()) break;
+            const agg = getAggregatedStats();
+            if (agg.totalTranslated > 0) {
+              const nextMode = state.settings.displayMode === 'original' ? 'replace' : 'original';
+              state.settings = await saveSettings({ displayMode: nextMode });
+              Renderer.applyDisplayModeClass(state.settings);
+              updateWidgetUI();
+            } else {
+              // Broadcast TRANSLATE_NOW once to all frames (including top frame + Notebook iframes)
+              try {
+                await chrome.runtime.sendMessage({
+                  type: 'BROADCAST_TO_TAB',
+                  payload: { type: 'KCT_COMMAND', action: 'TRANSLATE_NOW' }
+                });
+              } catch (_) {
+                await activateAndTranslate();
               }
             }
-            scanAndTranslate(true);
             break;
-          case 'CLEAR_PAGE':
-            clearAllInjectedTranslations();
-            if (isTopFrame()) subframeStats.clear();
+          }
+
+          case 'TRANSLATE_SELECTION': {
+            const text = String(message.selectionText || window.getSelection()?.toString() || '').trim();
+            if (!text) break;
+            const localSelection = window.getSelection()?.toString().trim() || '';
+            // If selection lives inside a focused iframe, let that subframe open the popover
+            if (!isTopFrame() && !localSelection) break;
+            if (isTopFrame() && !localSelection && document.activeElement?.tagName === 'IFRAME') break;
+            const coords = getSelectionAnchorCoords();
+            showSelectionPopover(coords.x, coords.y, text);
             break;
+          }
         }
         sendResponse({ ok: true });
-      }
-    })();
-    return true;
+      })();
+      return true;
+    }
+
+    return false;
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local' || !changes[SETTINGS_KEY]) return;
-    const prev = settings;
-    settings = changes[SETTINGS_KEY].newValue;
-    applyDisplayModeClass(settings.displayMode);
+    const nextSettings = changes[SETTINGS_KEY].newValue;
+    if (!nextSettings) return;
+    const prev = state.settings;
+    state.settings = nextSettings;
+    Renderer.applyDisplayModeClass(state.settings);
 
     if (isTopFrame()) {
-      if (settings.showFloatingBall === false && widgetEl) {
-        widgetEl.remove();
-        widgetEl = null;
-      } else if (settings.showFloatingBall !== false && !widgetEl) {
+      if (state.settings.showFloatingBall === false && widgetHostEl) {
+        removeFloatingWidget();
+      } else if (pageActive && state.settings.showFloatingBall !== false && !widgetHostEl) {
         createFloatingWidget();
       }
     }
 
-    if (prev && prev.enabled && !settings.enabled) {
-      clearAllInjectedTranslations();
-      if (isTopFrame()) subframeStats.clear();
-    } else if (prev && settings.enabled && (
-      prev.scope !== settings.scope ||
-      prev.targetLang !== settings.targetLang ||
-      prev.customTargetLang !== settings.customTargetLang ||
-      prev.translateCodeComments !== settings.translateCodeComments ||
-      prev.customGlossary !== settings.customGlossary ||
-      prev.model !== settings.model ||
-      prev.protocol !== settings.protocol ||
-      !prev.enabled
-    )) {
-      clearAllInjectedTranslations();
-      if (isTopFrame()) subframeStats.clear();
-      scanAndTranslate(true);
-    } else if (prev && settings.enabled && !prev.autoTranslate && settings.autoTranslate) {
-      scanAndTranslate(false);
+    if (pageActive) {
+      if (prev && prev.enabled && !state.settings.enabled) {
+        resetAndClearPage(false);
+      } else if (
+        prev &&
+        state.settings.enabled &&
+        (
+          prev.scope !== state.settings.scope ||
+          prev.targetLang !== state.settings.targetLang ||
+          prev.customTargetLang !== state.settings.customTargetLang ||
+          prev.translateCodeComments !== state.settings.translateCodeComments ||
+          prev.customGlossary !== state.settings.customGlossary ||
+          prev.model !== state.settings.model ||
+          prev.protocol !== state.settings.protocol ||
+          prev.lazyViewport !== state.settings.lazyViewport ||
+          !prev.enabled
+        )
+      ) {
+        resetAndClearPage(false);
+        scanAndTranslate(true);
+      }
     }
+
     updateWidgetUI();
   });
 
   async function init() {
-    settings = await getSettings();
-    applyDisplayModeClass(settings.displayMode);
-    if (isTopFrame()) {
-      createFloatingWidget();
-    }
+    state.settings = await getSettings();
+    pageInfo = classifyPage();
+    Renderer.applyDisplayModeClass(state.settings);
     setupSelectionListener();
     setupObservers();
-    if (settings.enabled && settings.autoTranslate) {
-      // Initial scan + follow-up scans for async React/Jupyter hydration
-      setTimeout(() => scanAndTranslate(false), 220);
-      setTimeout(() => scanAndTranslate(false), 1000);
-      setTimeout(() => scanAndTranslate(false), 2400);
-      setTimeout(() => scanAndTranslate(false), 4500);
-    }
+    // Stay silent until activated by KCT_COMMAND (TRANSLATE_NOW / RETRANSLATE / TOGGLE_OR_TRANSLATE)
   }
 
-  init();
+  const initPromise = init();
 })();

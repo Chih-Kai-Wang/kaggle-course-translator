@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Kaggle 課程智慧翻譯助手",
-  "version": "1.2.4",
-  "description": "專為 Kaggle Learn 課程與 Notebook 實作打造的多語言 AI 翻譯擴充功能：完整保留原版排版美感、翻譯 Python 程式碼註解、支援一鍵切換原文與譯文，並可自選目標語言。",
+  "name": "原版美感 AI 網頁翻譯助手",
+  "version": "2.0.0",
+  "description": "適用於所有網站的原版排版 AI 翻譯擴充功能（內建 Kaggle / Jupyter Notebook 深度強化）：預設靜默點擊即譯、SSE 串流逐段上屏、本地版面決策樹與母語級字體配對。",
   "minimum_chrome_version": "119",
   "icons": {
     "16": "icons/icon-16.png",
@@ -11,7 +11,7 @@
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Kaggle 課程智慧翻譯助手",
+    "default_title": "原版美感 AI 網頁翻譯助手",
     "default_icon": {
       "16": "icons/icon-16.png",
       "48": "icons/icon-48.png",
@@ -24,45 +24,22 @@
   },
   "permissions": [
     "storage",
-    "tabs"
+    "tabs",
+    "scripting",
+    "contextMenus",
+    "activeTab"
   ],
   "host_permissions": [
-    "https://www.kaggle.com/*",
-    "https://*.kaggle.com/*",
-    "https://*.kaggle.net/*",
-    "https://*.kaggleusercontent.com/*",
-    "https://api.deepseek.com/*",
-    "https://api.openai.com/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://dashscope.aliyuncs.com/*",
-    "https://api.siliconflow.cn/*",
-    "https://api.moonshot.cn/*",
-    "https://open.bigmodel.cn/*",
-    "https://openrouter.ai/*"
-  ],
-  "optional_host_permissions": [
     "https://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "http://*/*"
   ],
-  "content_scripts": [
-    {
-      "matches": [
-        "https://www.kaggle.com/*",
-        "https://*.kaggle.com/*",
-        "https://*.kaggle.net/*",
-        "https://*.kaggleusercontent.com/*"
-      ],
-      "all_frames": true,
-      "match_origin_as_fallback": true,
-      "js": [
-        "shared/config.js",
-        "content/content.js"
-      ],
-      "css": [
-        "content/content.css"
-      ],
-      "run_at": "document_idle"
+  "commands": {
+    "toggle-translate-page": {
+      "suggested_key": {
+        "default": "Alt+T",
+        "mac": "Alt+T"
+      },
+      "description": "立即翻譯 / 切換目前頁面"
     }
-  ]
+  }
 }

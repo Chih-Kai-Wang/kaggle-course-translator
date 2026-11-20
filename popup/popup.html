@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kaggle 課程翻譯助手</title>
+  <title>AI 原版美感翻譯</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <header class="header">
     <div class="brand">
-      <img src="../icons/icon-48.png" alt="Logo" width="24" height="24">
-      <div>
-        <h1>Kaggle 課程翻譯</h1>
+      <img src="../icons/icon-48.png" alt="Logo" width="26" height="26">
+      <div class="brand-text">
+        <h1>AI 原版美感翻譯</h1>
         <p id="model-badge" class="sub">載入中...</p>
       </div>
     </div>
@@ -21,10 +21,29 @@
     </label>
   </header>
 
+  <div id="site-bar" class="site-bar">
+    <div class="site-info">
+      <span id="site-dot" class="site-dot" aria-hidden="true"></span>
+      <span id="site-host" class="site-host" title="">讀取網址中...</span>
+    </div>
+    <label id="site-auto-label" class="site-auto-toggle" title="將此網站加入自動翻譯白名單">
+      <input type="checkbox" id="toggle-site-auto">
+      <span>總是自動翻譯此網站</span>
+    </label>
+  </div>
+
   <div id="api-alert" class="alert hidden">
     <span>尚未填寫大模型 API Key，無法發起翻譯。</span>
     <button id="btn-go-config" class="link-btn" type="button">立即設定</button>
   </div>
+
+  <section class="actions">
+    <button id="btn-translate-now" class="btn primary" type="button">立即翻譯此頁面 (Alt+T)</button>
+    <div class="action-row">
+      <button id="btn-retranslate" class="btn secondary" type="button">強制重譯</button>
+      <button id="btn-clear-page" class="btn secondary" type="button">還原原文</button>
+    </div>
+  </section>
 
   <section class="card">
     <div class="row-label">目標語言</div>
@@ -39,46 +58,38 @@
     </div>
 
     <div class="row-label">翻譯範圍</div>
-    <div class="segmented" id="scope-group">
-      <button type="button" data-scope="course">課程與實作 Notebook</button>
+    <div class="segmented scope-segmented" id="scope-group">
+      <button type="button" data-scope="course">智慧主文（避開導覽雜訊）</button>
       <button type="button" data-scope="all">整頁可讀文字</button>
     </div>
 
     <div class="toggles">
       <label class="check-row">
         <input type="checkbox" id="toggle-code-comments">
-        <span>翻譯程式碼中的 <code>#</code> 註解</span>
+        <span>翻譯程式碼中的 <code>#</code> / <code>//</code> 註解</span>
       </label>
       <label class="check-row">
-        <input type="checkbox" id="toggle-auto">
-        <span>開啟 Kaggle 頁面時自動翻譯</span>
+        <input type="checkbox" id="toggle-lazy-viewport">
+        <span>視口優先懶翻譯（捲到哪翻到哪）</span>
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="toggle-stream">
+        <span>串流逐段即時上屏（首字更快）</span>
       </label>
       <label class="check-row">
         <input type="checkbox" id="toggle-selection">
-        <span>劃詞翻譯（選取錯誤訊息或提示即可翻譯）</span>
-      </label>
-      <label class="check-row">
-        <input type="checkbox" id="toggle-output-btn">
-        <span>Notebook 輸出旁顯示「譯」按鈕 (Hint/報錯)</span>
+        <span>劃詞翻譯</span>
       </label>
       <label class="check-row">
         <input type="checkbox" id="toggle-ball">
-        <span>顯示頁面右下角懸浮切換列</span>
+        <span>顯示懸浮控制列（啟動翻譯後）</span>
       </label>
-    </div>
-  </section>
-
-  <section class="actions">
-    <button id="btn-translate-now" class="btn primary" type="button">立即翻譯目前頁面（含內嵌 Notebook）</button>
-    <div class="action-row">
-      <button id="btn-retranslate" class="btn secondary" type="button">強制重譯</button>
-      <button id="btn-clear-page" class="btn secondary" type="button">還原頁面</button>
     </div>
   </section>
 
   <footer class="footer">
-    <span id="status-text" class="status">就緒</span>
-    <button id="btn-open-options" class="link-btn" type="button">模型與 API 設定 ↗</button>
+    <span id="status-text" class="status" title="">待命（按上方按鈕或 Alt+T 開始翻譯）</span>
+    <button id="btn-open-options" class="link-btn" type="button">進階與 API 設定 ↗</button>
   </footer>
 
   <script src="../shared/config.js"></script>

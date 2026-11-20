@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kaggle 課程智慧翻譯助手 — 設定</title>
+  <title>AI 原版美感翻譯 — 進階與 API 設定</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
     <header class="page-header">
       <img src="../icons/icon-128.png" alt="Logo" width="44" height="44">
       <div>
-        <h1>Kaggle 課程智慧翻譯助手設定</h1>
-        <p>設定翻譯目標語言、大模型 API、術語表與本機快取；API Key 僅儲存於您本機瀏覽器的 <code>chrome.storage.local</code> 中。</p>
+        <h1>AI 原版美感翻譯 — 設定</h1>
+        <p>支援全網按需翻譯與 Kaggle / Jupyter Notebook 深度適配。API Key 僅儲存於本機 <code>chrome.storage.local</code>，譯文快取存放於本機 IndexedDB。</p>
       </div>
     </header>
 
@@ -39,16 +39,70 @@
         <input id="custom-lang-input" type="text" placeholder="例如：Traditional Chinese (Hong Kong), Thai, Indonesian">
       </div>
 
-      <div class="field">
+      <div class="check-stack">
         <label class="inline-check">
           <input id="translate-code-comments" type="checkbox">
-          <span>自動翻譯課程範例與 Notebook 程式碼中的 Python <code>#</code> 註解</span>
+          <span>自動翻譯程式碼區塊與 Notebook 編輯器中的 <code>#</code> / <code>//</code> 註解</span>
+        </label>
+        <label class="inline-check">
+          <input id="show-output-btn" type="checkbox">
+          <span>Kaggle / Jupyter Notebook 輸出旁顯示「譯」按鈕（Hint / 報錯快速翻譯）</span>
         </label>
       </div>
     </section>
 
     <section class="panel">
-      <h2>2. 大模型 API 設定</h2>
+      <h2>2. 原版美感排版與字體</h2>
+
+      <div class="field">
+        <label for="typography-match">譯文字體與排版配對策略</label>
+        <select id="typography-match">
+          <option value="native">原版自動配對（襯線配明體、無襯線配黑體，保留原站英數字體 · 推薦）</option>
+          <option value="system">統一系統清晰黑體</option>
+          <option value="preserve">完全沿用原網站字體設定</option>
+        </select>
+        <p class="hint">「原版自動配對」會偵測各段落原有字族（Serif / Sans-serif）並智慧補上最適中文字體，同時維持原文的行高、字距與視覺階層。</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>3. 翻譯速度與思考強度</h2>
+
+      <div class="field">
+        <label for="thinking-effort">模型思考強度（Thinking Effort）</label>
+        <select id="thinking-effort">
+          <option value="fastest">極速 · 最低思考強度（推薦：翻譯最快、最省額度）</option>
+          <option value="balanced">平衡 · 低思考強度（適合技術論文與長難句）</option>
+          <option value="deep">深度 · 中等思考強度（適合文學或高度語境內容）</option>
+        </select>
+        <p class="hint">針對支援推論控制的模型（如 Gemini 2.5 / 3.x 與 OpenAI o / GPT-5 系列）自動調整思考預算，平衡首字速度與翻譯品質。</p>
+      </div>
+
+      <div class="check-stack field">
+        <label class="inline-check">
+          <input id="lazy-viewport" type="checkbox">
+          <span>視口優先懶翻譯（捲動到哪翻到哪，省 Token 且首屏最快）</span>
+        </label>
+        <label class="inline-check">
+          <input id="stream-translation" type="checkbox">
+          <span>SSE 串流逐段上屏（收到一行譯文立即顯示）</span>
+        </label>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="batch-size">每批最大段落數 (預設 20)</label>
+          <input id="batch-size" type="number" min="1" max="40" step="1">
+        </div>
+        <div class="field">
+          <label for="temperature-input">溫度 Temperature (建議 0.1 - 0.3)</label>
+          <input id="temperature-input" type="number" min="0" max="1" step="0.1">
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>4. 大模型 API 設定</h2>
 
       <div class="field">
         <label for="provider-select">服務商預設</label>
@@ -94,18 +148,29 @@
     </section>
 
     <section class="panel">
-      <h2>3. 機器學習術語表與翻譯參數</h2>
+      <h2>5. 自動翻譯網站白名單（預設靜默）</h2>
+      <p class="hint panel-intro">v2.0 預設在所有網頁保持靜默待命，不干擾一般瀏覽；您隨時可按 <code>Alt+T</code> 或點擊擴充圖示啟動翻譯，或將常用網站加入下方自動翻譯白名單。</p>
 
-      <div class="grid-2">
-        <div class="field">
-          <label for="batch-size">每批最大段落數 (預設 24)</label>
-          <input id="batch-size" type="number" min="1" max="40" step="1">
-        </div>
-        <div class="field">
-          <label for="temperature-input">溫度 Temperature (建議 0.1 - 0.3)</label>
-          <input id="temperature-input" type="number" min="0" max="1" step="0.1">
-        </div>
+      <div class="field">
+        <label class="inline-check">
+          <input id="global-auto-translate" type="checkbox">
+          <span>預設對所有網站自動翻譯（不建議；關閉則僅對下方白名單網站自動翻譯）</span>
+        </label>
       </div>
+
+      <div class="field">
+        <label for="whitelist-host-input">自動翻譯網站清單</label>
+        <div class="input-with-btn">
+          <input id="whitelist-host-input" type="text" placeholder="新增網域，例如 www.kaggle.com 或 docs.python.org">
+          <button id="btn-add-host" type="button" class="btn secondary">新增網域</button>
+        </div>
+        <p id="whitelist-feedback" class="hint"></p>
+        <div id="whitelist-list" class="host-chips" aria-label="已加入自動翻譯白名單的網站"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>6. 領域術語表</h2>
 
       <div class="field">
         <div class="label-row">
@@ -122,10 +187,10 @@
     </section>
 
     <section class="panel">
-      <h2>4. 本機翻譯快取</h2>
-      <p class="hint">已翻譯過的課程段落與程式碼註解會依「模型＋目標語言」自動快取於本機，下次開啟無須重複呼叫 API。</p>
+      <h2>7. 本機 IndexedDB 翻譯快取</h2>
+      <p class="hint">已翻譯過的網頁段落與程式碼註解會依「模型＋目標語言」持久化儲存於瀏覽器本機 IndexedDB（高容量 LRU 快取），重訪頁面秒速呈現且零 API 消耗。</p>
       <div class="cache-bar">
-        <span id="cache-stats">正在統計快取...</span>
+        <span id="cache-stats">正在讀取 IndexedDB 快取統計...</span>
         <button id="btn-clear-cache" type="button" class="btn danger-outline">清空全部快取</button>
       </div>
     </section>

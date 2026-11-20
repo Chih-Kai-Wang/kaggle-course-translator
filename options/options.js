@@ -4,8 +4,95 @@ const {
   DEFAULT_GLOSSARY,
   getSettings,
   saveSettings,
-  resolveEndpoint
+  resolveEndpoint,
+  resolveStreamEndpoint
 } = globalThis.KCTConfig;
+
+let whitelistHosts = [];
+
+function normalizeHostInput(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  let host = trimmed;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
+    try {
+      host = new URL(host).hostname;
+    } catch (_) {
+      return '';
+    }
+  } else {
+    host = host.split('/')[0].split('?')[0].split('#')[0].split(':')[0];
+  }
+  host = host.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  if (!host) return '';
+  if (host !== 'localhost' && (!host.includes('.') || !/^[a-z0-9.-]+$/i.test(host))) {
+    return '';
+  }
+  return host;
+}
+
+function renderWhitelist() {
+  const container = document.getElementById('whitelist-list');
+  if (!container) return;
+  container.textContent = '';
+
+  if (!whitelistHosts.length) {
+    const empty = document.createElement('span');
+    empty.className = 'host-empty';
+    empty.textContent = '目前尚未加入任何自動翻譯網站（可在任一網頁點擊擴充圖示快速加入）';
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const host of whitelistHosts) {
+    const chip = document.createElement('span');
+    chip.className = 'host-chip';
+
+    const text = document.createElement('span');
+    text.textContent = host;
+    chip.appendChild(text);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'host-chip-remove';
+    removeBtn.textContent = '×';
+    removeBtn.setAttribute('aria-label', `移除 ${host}`);
+    removeBtn.title = `移除 ${host}`;
+    removeBtn.addEventListener('click', async () => {
+      whitelistHosts = whitelistHosts.filter((h) => h !== host);
+      renderWhitelist();
+      await saveSettings({ autoTranslateHosts: [...whitelistHosts] });
+      const fb = document.getElementById('whitelist-feedback');
+      if (fb) fb.textContent = `已移除 ${host}`;
+    });
+
+    chip.appendChild(removeBtn);
+    container.appendChild(chip);
+  }
+}
+
+async function handleAddHost() {
+  const input = document.getElementById('whitelist-host-input');
+  const fb = document.getElementById('whitelist-feedback');
+  const normalized = normalizeHostInput(input.value);
+
+  if (!normalized) {
+    fb.textContent = '請輸入有效網域名稱，例如 www.kaggle.com 或 docs.python.org';
+    return;
+  }
+
+  if (whitelistHosts.includes(normalized)) {
+    fb.textContent = `${normalized} 已在白名單中`;
+    input.value = '';
+    return;
+  }
+
+  whitelistHosts = [...whitelistHosts, normalized];
+  input.value = '';
+  renderWhitelist();
+  await saveSettings({ autoTranslateHosts: [...whitelistHosts] });
+  fb.textContent = `已加入白名單：${normalized}`;
+}
 
 function readFormValues() {
   return {
@@ -13,12 +100,19 @@ function readFormValues() {
     customTargetLang: document.getElementById('custom-lang-input').value.trim(),
     displayMode: document.getElementById('mode-select').value,
     translateCodeComments: document.getElementById('translate-code-comments').checked,
+    showOutputTranslateBtn: document.getElementById('show-output-btn').checked,
+    typographyMatch: document.getElementById('typography-match').value,
+    thinkingEffort: document.getElementById('thinking-effort').value,
+    lazyViewport: document.getElementById('lazy-viewport').checked,
+    streamTranslation: document.getElementById('stream-translation').checked,
+    autoTranslate: document.getElementById('global-auto-translate').checked,
+    autoTranslateHosts: [...whitelistHosts],
     providerId: document.getElementById('provider-select').value,
     protocol: document.getElementById('protocol-select').value,
     baseUrl: document.getElementById('baseurl-input').value.trim(),
     apiKey: document.getElementById('apikey-input').value.trim(),
     model: document.getElementById('model-input').value.trim(),
-    batchSize: Math.min(40, Math.max(1, Number(document.getElementById('batch-size').value) || 24)),
+    batchSize: Math.min(40, Math.max(1, Number(document.getElementById('batch-size').value) || 20)),
     temperature: (() => {
       const raw = document.getElementById('temperature-input').value.trim();
       const t = raw === '' ? NaN : Number(raw);
@@ -30,7 +124,9 @@ function readFormValues() {
 
 function updateEndpointPreview() {
   const form = readFormValues();
-  const resolved = resolveEndpoint(form);
+  const resolved = (form.streamTranslation && typeof resolveStreamEndpoint === 'function')
+    ? resolveStreamEndpoint(form)
+    : resolveEndpoint(form);
   document.getElementById('endpoint-preview').textContent = resolved || '（未填寫）';
 }
 
@@ -87,14 +183,26 @@ async function ensureHostPermissionIfNeeded(baseUrl) {
   }
 }
 
+function formatCacheSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 * 1024) {
+    return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+  }
+  return `${(n / 1024).toFixed(1)} KB`;
+}
+
 async function refreshCacheStats() {
   const statsEl = document.getElementById('cache-stats');
-  const res = await chrome.runtime.sendMessage({ type: 'GET_CACHE_STATS' });
-  if (res?.ok) {
-    const kb = (res.bytes / 1024).toFixed(1);
-    statsEl.textContent = `目前已快取 ${res.entries} 筆段落／註解譯文（約 ${kb} KB）`;
-  } else {
-    statsEl.textContent = '無法讀取快取狀態';
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_CACHE_STATS' });
+    if (res?.ok) {
+      const sizeStr = formatCacheSize(res.bytes);
+      statsEl.textContent = `IndexedDB 已快取 ${res.entries} 筆段落／註解譯文（約 ${sizeStr}）`;
+    } else {
+      statsEl.textContent = '無法讀取 IndexedDB 快取狀態';
+    }
+  } catch (_) {
+    statsEl.textContent = '無法讀取 IndexedDB 快取狀態';
   }
 }
 
@@ -120,6 +228,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('custom-lang-input').value = settings.customTargetLang || '';
   document.getElementById('mode-select').value = settings.displayMode || 'replace';
   document.getElementById('translate-code-comments').checked = settings.translateCodeComments !== false;
+  document.getElementById('show-output-btn').checked = settings.showOutputTranslateBtn !== false;
+  document.getElementById('typography-match').value = settings.typographyMatch || 'native';
+  document.getElementById('thinking-effort').value = settings.thinkingEffort || 'fastest';
+  document.getElementById('lazy-viewport').checked = settings.lazyViewport !== false;
+  document.getElementById('stream-translation').checked = settings.streamTranslation !== false;
+  document.getElementById('global-auto-translate').checked = Boolean(settings.autoTranslate);
+  whitelistHosts = Array.isArray(settings.autoTranslateHosts)
+    ? [...new Set(settings.autoTranslateHosts.map((h) => normalizeHostInput(h)).filter(Boolean))]
+    : [];
+  renderWhitelist();
   updateCustomLangVisibility();
 
   providerSelect.value = settings.providerId || 'deepseek';
@@ -127,7 +245,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('baseurl-input').value = settings.baseUrl || '';
   document.getElementById('apikey-input').value = settings.apiKey || '';
   document.getElementById('model-input').value = settings.model || '';
-  document.getElementById('batch-size').value = settings.batchSize ?? 24;
+  document.getElementById('batch-size').value = settings.batchSize ?? 20;
   document.getElementById('temperature-input').value = settings.temperature ?? 0.2;
   document.getElementById('glossary-input').value = settings.customGlossary ?? DEFAULT_GLOSSARY;
 
@@ -149,12 +267,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('protocol-select').addEventListener('change', updateEndpointPreview);
   document.getElementById('baseurl-input').addEventListener('input', updateEndpointPreview);
   document.getElementById('model-input').addEventListener('input', updateEndpointPreview);
+  document.getElementById('stream-translation').addEventListener('change', updateEndpointPreview);
 
   document.getElementById('btn-toggle-key').addEventListener('click', (e) => {
     const input = document.getElementById('apikey-input');
     const isPwd = input.type === 'password';
     input.type = isPwd ? 'text' : 'password';
     e.target.textContent = isPwd ? '隱藏' : '顯示';
+  });
+
+  document.getElementById('btn-add-host').addEventListener('click', handleAddHost);
+  document.getElementById('whitelist-host-input').addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      await handleAddHost();
+    }
   });
 
   document.getElementById('btn-reset-glossary').addEventListener('click', () => {
@@ -190,22 +317,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     box.textContent = '正在測試連線...';
 
     await ensureHostPermissionIfNeeded(form.baseUrl);
-    const res = await chrome.runtime.sendMessage({
-      type: 'TEST_CONNECTION',
-      settings: form
-    });
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'TEST_CONNECTION',
+        settings: form
+      });
 
-    if (res?.ok) {
-      box.className = 'test-box ok';
-      box.textContent = `連線成功 (${res.latencyMs} ms) · 範例譯文：${res.reply}`;
-    } else {
+      if (res?.ok) {
+        box.className = 'test-box ok';
+        box.textContent = `連線成功 (${res.latencyMs} ms) · 範例譯文：${res.reply}`;
+      } else {
+        box.className = 'test-box err';
+        box.textContent = `連線失敗：${res?.error || '未知錯誤'}`;
+      }
+    } catch (err) {
       box.className = 'test-box err';
-      box.textContent = `連線失敗：${res?.error || '未知錯誤'}`;
+      box.textContent = `連線失敗：${err?.message || '無法連線至背景服務'}`;
     }
   });
 
   document.getElementById('btn-clear-cache').addEventListener('click', async () => {
-    await chrome.runtime.sendMessage({ type: 'CLEAR_CACHE' });
+    try {
+      await chrome.runtime.sendMessage({ type: 'CLEAR_CACHE' });
+    } catch (_) {}
     await refreshCacheStats();
   });
 });
