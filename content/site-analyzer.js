@@ -988,6 +988,56 @@
     }
   }
 
+  // A semantic block is only translatable as ONE unit when all of its text flows in a single
+  // inline formatting context. Rows built from flex/grid/block cells (e.g. forum list items with
+  // title, author, vote count and comment count in separate boxes) are layout containers: merging
+  // their cells into one sentence glues unrelated values together and breaks the layout, so they
+  // are left to Pass 2, which translates each text cell on its own.
+  const COMPOSITE_IGNORE_SELECTOR = 'script, style, noscript, template, svg, math, button, [role="button"], .notranslate, [translate="no"], [aria-hidden="true"], [data-kct-ui], .material-icons, .material-symbols-outlined, .material-symbols-rounded, .google-symbols';
+  const COMPOSITE_TEXT_RE = /[\p{L}\p{N}]/u;
+  const COMPOSITE_MAX_TEXT_NODES = 400;
+
+  function isCompositeLayoutBlock(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const view = el.ownerDocument?.defaultView || window;
+    const displayCache = new Map();
+    const displayOf = (node) => {
+      if (!displayCache.has(node)) {
+        let d = 'inline';
+        try { d = view.getComputedStyle(node).display || 'inline'; } catch (_) { /* ignore */ }
+        displayCache.set(node, d);
+      }
+      return displayCache.get(node);
+    };
+    const isLi = el.tagName === 'LI';
+    const boxes = new Set();
+    const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let seen = 0;
+    let node;
+    while ((node = walker.nextNode())) {
+      if (++seen > COMPOSITE_MAX_TEXT_NODES) break;
+      if (!COMPOSITE_TEXT_RE.test(node.nodeValue || '')) continue;
+      const parent = node.parentElement;
+      if (!parent) continue;
+      let box = el;
+      let skip = false;
+      for (let cur = parent; cur && cur !== el; cur = cur.parentElement) {
+        if (cur.matches(COMPOSITE_IGNORE_SELECTOR)) { skip = true; break; }
+        if (isLi && (cur.tagName === 'UL' || cur.tagName === 'OL')) { skip = true; break; }
+        const d = displayOf(cur);
+        if (d === 'none') { skip = true; break; }
+        if (box !== el) continue; // nearest box already found; keep scanning only for ignored ancestors
+        const parentDisplay = cur.parentElement ? displayOf(cur.parentElement) : '';
+        const blockified = /(^|\s)(flex|grid|inline-flex|inline-grid)$/.test(parentDisplay);
+        if (blockified || !d.startsWith('inline')) box = cur;
+      }
+      if (skip) continue;
+      boxes.add(box);
+      if (boxes.size >= 2) return true;
+    }
+    return false;
+  }
+
   function shouldSkipBlock(el, scope, elementState) {
     if (!el || !el.isConnected) return true;
     if (el.getAttribute('data-kct-pdf-merged') === 'absorbed') return true;
@@ -1007,6 +1057,8 @@
     if (childBlock && childBlock !== el) {
       return true;
     }
+
+    if (isCompositeLayoutBlock(el)) return true;
 
     return false;
   }
@@ -1094,6 +1146,7 @@
       if (el.querySelector(CHILD_BLOCK_SELECTOR)) return false;
       if (el.querySelector(LEAF_FORBIDDEN_DESCENDANT_SELECTOR)) return false;
       if (el.querySelector('[data-kct-ui="trans"]')) return false;
+      if (isCompositeLayoutBlock(el)) return false;
       if (el.closest(SKIP_ANCESTOR_SELECTOR)) return false;
       if (scope !== 'all' && (isInsideExcludedChrome(el) || el.closest(LEAF_UI_CONTROL_SELECTOR))) {
         return false;
@@ -1184,6 +1237,7 @@
   }
 
   globalThis.KCTSiteAnalyzer = {
+    isCompositeLayoutBlock,
     BLOCK_SELECTOR,
     SKIP_ANCESTOR_SELECTOR,
     NAV_EXCLUDE_SELECTOR,

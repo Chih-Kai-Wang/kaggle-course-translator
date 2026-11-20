@@ -289,6 +289,12 @@
           if (origNode) {
             const clone = origNode.cloneNode(false);
             stripDuplicateIds(clone, false);
+            // A paired tag is rebuilt as an inline run inside translated prose; never let a
+            // block/flex/grid original turn the translated text into separate layout boxes.
+            try {
+              const d = origNode.isConnected ? getComputedStyle(origNode).display : 'inline';
+              if (d && !d.startsWith('inline') && d !== 'contents') clone.style.display = 'inline';
+            } catch (_) { /* ignore */ }
             currentParent.appendChild(clone);
             stack.push({ key: openKey, node: clone });
           }

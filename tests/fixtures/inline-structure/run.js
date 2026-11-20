@@ -12,6 +12,12 @@ async function runInlineFixture() {
       .join('');
     return mode === 'keep' ? translated : R.stripAllTokens(translated);
   };
+  // Layout rows (flex/grid cells) must never be merged into one translation unit.
+  for (const el of blocks) {
+    const t = el.textContent;
+    const merged = /Looking for teammates/.test(t) && /32 comments/.test(t);
+    results.push({ mode: 'layout', host: el.tagName, text: t.trim().slice(0, 70), fallback: false, linkOk: !merged, hostIsLink: false, boldKept: null });
+  }
   for (const mode of ['keep', 'drop']) {
     for (const el of blocks) {
       if (el.hasAttribute('data-kct-has-trans')) continue;

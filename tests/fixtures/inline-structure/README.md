@@ -5,6 +5,8 @@ Checks that translations never silently drop links or emphasis:
 - `keep` mode: a fake translator keeps every `[[C#]]/[[M#]]/[[L#]]` token and paired `[[A#]]…[[/A#]]`, `[[S#]]…[[/S#]]` tag → links and bold must survive in the translation.
 - `drop` mode: the fake translator loses every token → the block must either keep its link through `resolveInlineHost` or render with `data-kct-structure-fallback="1"` (original stays visible and clickable).
 
+- `layout` rows: a forum-style list item whose title, author, vote count and comment count sit in separate flex/block cells must never become one translation unit (`isCompositeLayoutBlock`); each cell is translated on its own.
+
 Run (from the repository root):
 
 ```bash
