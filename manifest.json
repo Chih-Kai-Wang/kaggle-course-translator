@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "原版美感 AI 網頁翻譯助手",
-  "version": "2.0.0",
-  "description": "適用於所有網站的原版排版 AI 翻譯擴充功能（內建 Kaggle / Jupyter Notebook 深度強化）：預設靜默點擊即譯、SSE 串流逐段上屏、本地版面決策樹與母語級字體配對。",
+  "name": "NativeRead — 原版美感 AI 網頁與 PDF 翻譯",
+  "version": "2.1.0",
+  "description": "適用於所有網站與 PDF 文件的原版排版 AI 翻譯擴充功能：預設靜默按需啟動、SSE 串流逐段上屏、通用 DOM 遍歷與母語級字體配對，支援程式碼註解與 PDF 原位翻譯。",
   "minimum_chrome_version": "119",
   "icons": {
     "16": "icons/icon-16.png",
@@ -11,7 +11,7 @@
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "原版美感 AI 網頁翻譯助手",
+    "default_title": "NativeRead — 原版美感 AI 翻譯",
     "default_icon": {
       "16": "icons/icon-16.png",
       "48": "icons/icon-48.png",

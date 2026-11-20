@@ -1,42 +1,42 @@
-# 原版美感 AI 網頁翻譯助手（v2.0.0）
+# NativeRead — 原版美感 AI 網頁與 PDF 翻譯（v2.1.0）
 
-> 讓外文網頁讀起來像母語原站一樣自然 —— **預設靜默按需啟動、SSE 串流逐段上屏、本地零延遲版面與字體配對引擎、Shadow DOM 隔離 UI**，並完整保留 **Kaggle / JupyterLab / CodeMirror 6** 深度強化能力。
+> 讓外文網頁與 PDF 白皮書讀起來像母語原版一樣自然 —— **預設靜默按需啟動、統一通用 DOM 遍歷（支援現代 SPA `div`/`span`、Shadow DOM、跨域 `<iframe>` 與程式碼編輯器）、SSE 串流逐段上屏、母語級字體基因配對，並內建本機 PDF.js 原位翻譯閱讀器**。
 
 適用於所有 Chromium Manifest V3 瀏覽器（Google Chrome、Microsoft Edge、Brave、Arc、**Ego Lite** 等），零第三方伺服器中轉，直接使用你自己的 **Google Gemini / DeepSeek / OpenAI / OpenRouter / 本機 Ollama** API Key。
 
 ---
 
-## 為什麼做這個擴充功能？
+## 核心特色
 
-市面上的網頁翻譯外掛常有四個痛點：**背景偷偷常駐吃資源**、**粗暴塞入色塊框線破壞原站排版**、**把襯線長文一律強制改成死板黑體**，或是 **遇到 Jupyter Notebook / CodeMirror 編輯器就破壞程式碼與公式**。
-
-本專案自 Kaggle 課程專用翻譯工具（`v1.x`）演進至 **`v2.0.0` 全網站通用版**，專注解決這四件事：
-
-| 核心設計 | 實際做法 | 帶來的體驗 |
+| 核心能力 | 實際做法 | 閱讀體驗 |
 | --- | --- | --- |
-| **預設靜默・按需注入** | 移除靜態 `content_scripts`，未啟動的網站（包含 Kaggle）完全不注入任何腳本 | 日常瀏覽 0 負擔、0 懸浮球干擾、0 意外 API 消耗 |
-| **本地零延遲決策樹** | `< 10 ms` 本地識別網頁類型（Notebook / 技術文件 / 長文 / Web App）、Readability 主文評分、開放式 Shadow DOM 遍歷與語系過濾 | 不靠雲端 LLM 猜排版，精準避開導覽列、公式、程式碼與已是目標語言的文字 |
-| **母語級原版字體配對** | 逐區塊探測原文計算樣式（Serif / Sans / Mono），保留原站西文字體在前，後方補配對應的母語明體／黑體／等寬字體與溫和行高 | Wikipedia / Medium 襯線文自動配明體，MDN / GitHub 保留 `Inter`＋清晰黑體，不破版 |
-| **SSE 串流＋視口優先** | Gemini `:streamGenerateContent?alt=sse` / OpenAI `stream: true` 搭配逐行 NDJSON ＋ `IntersectionObserver`（上下 600px 預載） | 首段譯文最快 **`0.65s`** 上屏，捲到哪翻到哪，省下 50–80% 無效 Token |
-| **思考強度分級控制** | 支援 `極速（最低思考）`／`平衡（Low）`／`深度（Medium）`，自動對應各模型最低思考檔位並過濾 `thought` 片段 | 維持高品質翻譯同時大幅壓低首字延遲與思考 Token 費用 |
-| **IndexedDB 高容量快取** | 本機 20,000 筆 LRU 持久化快取（依模型、語言、思考強度與術語表分區） | 重訪已讀頁面秒出譯文、不重複扣款 |
+| **預設靜默・按需注入** | 零靜態常駐 `content_scripts`，未啟動的網站 100% 不注入任何腳本 | 日常瀏覽 0 負擔、0 懸浮球干擾、0 意外 API 消耗 |
+| **統一通用 DOM 遍歷** | 不依賴硬編碼站點清單：以 DOM 元件能力驅動，結合語意區塊、現代 SPA `div`/`span`/`a` 葉子文字掃描、開放式 Shadow DOM 與跨域 `<iframe>` | Wikipedia、MDN、GitHub、X/Twitter、Reddit、Notion、Kaggle 課程與各式 Web App 皆走同一條乾淨管線 |
+| **母語級原版字體配對** | 逐區塊探測原文計算樣式（Serif / Sans / Mono），保留原站西文字體在前，後方補配對應的母語明體／黑體／等寬字體與溫和行高保護 | 襯線文章自然配明體、現代網站保留原英數字體＋清晰黑體，絕不亂加框線破版 |
+| **內建原版 PDF 翻譯閱讀器** | 內建本機 Apache-2.0 `PDF.js`（零外部 CDN），偵測 PDF 分頁按 `Alt+T` 或拖曳本機 `.pdf` 開啟；支援**原位覆蓋／雙欄對照／原版**三模式 | 雙欄論文與 Kaggle 白皮書自動切欄合併段落、取樣原紙張／色塊底色覆蓋，**圖表、架構圖與公式原封不動保留** |
+| **SSE 串流＋視口懶載入** | Gemini `:streamGenerateContent?alt=sse` / OpenAI `stream: true` 逐行 NDJSON ＋ `IntersectionObserver` 捲動按需翻譯 | 首段最快 `< 1s` 上屏，長文與數十頁 PDF 捲到哪翻到哪，省下 50–80% Token |
+| **思考強度分級控制** | 支援 `極速（最低思考）`／`平衡（Low）`／`深度（Medium）`，自動對應各模型最低思考檔位並過濾 `thought` 片段 | 維持高品質翻譯同時壓低首字延遲與思考 Token 費用 |
+| **IndexedDB 本機快取** | 20,000 筆高容量本機 LRU 快取（網頁與 PDF 共享快取引擎） | 重訪已讀頁面與重開 PDF 毫秒命中、不重複扣款 |
 
 ---
 
-## 系統架構
+## 統一架構圖
 
 ```mermaid
 flowchart TD
-    Trigger["觸發方式：Alt+T / 彈窗按鈕 / 右鍵選單 / 站點白名單"] --> SW["Service Worker (background/service-worker.js)"]
-    SW -->|"chrome.scripting 按需動態注入"| Content["Content Orchestrator (content/content.js)"]
-    Content --> Analyzer["本地版面與字體決策樹 (content/site-analyzer.js)"]
-    Analyzer -->|"Notebook / 靜態程式碼註解"| Adapter["Notebook Adapter (content/adapters/notebook-adapter.js)"]
-    Analyzer -->|"視口優先佇列 (IntersectionObserver)"| Port["長連線 Port: kct-stream"]
+    Trigger["觸發入口：Alt+T / 彈窗按鈕 / 右鍵選單 / 站點白名單"] --> SW["Service Worker (background/service-worker.js)"]
+    SW -->|"一般網頁（按需動態注入）"| Content["統一內容協調器 (content/content.js)"]
+    SW -->|"PDF 文件（URL 或本機拖曳）"| PDF["NativeRead PDF 閱讀器 (viewer/pdf-viewer.js + vendor/pdfjs)"]
+    Content --> Analyzer["統一 DOM 與字體決策引擎 (content/site-analyzer.js)"]
+    Analyzer -->|"文字區塊 (語意 + div/span SPA + Shadow DOM)"| Queue["視口優先懶載入佇列 (IntersectionObserver)"]
+    Analyzer -->|"程式碼註解與執行輸出 (<pre> / CodeMirror 6)"| CodeOverlay["通用程式碼註解層 (content/code-overlay.js)"]
+    CodeOverlay --> Queue
+    Queue --> Port["長連線 Port: kct-stream"]
+    PDF -->|"逐頁幾何切欄與段落萃取"| Port
     Port --> Cache{"IndexedDB 快取 (shared/cache-db.js)"}
-    Cache -->|"命中"| Renderer["原版排版無縫渲染器 (content/renderer.js)"]
-    Cache -->|"未命中"| Stream["SSE 串流＋跨頁框自適應限流器 (429 冷卻保護)"]
-    Stream -->|"每收到 1 行 NDJSON 立即推送"| Renderer
-    Renderer -->|"rAF 分幀寫入 + Shadow DOM 懸浮控制列"| Page["原版美感網頁"]
+    Cache -->|"命中"| Render["原版排版渲染器 (網頁 rAF / PDF 原位覆蓋＆雙欄)"]
+    Cache -->|"未命中"| Stream["SSE 串流＋跨頁框 429 自適應限流器"]
+    Stream -->|"每行 NDJSON 即時推送"| Render
 ```
 
 ---
@@ -45,83 +45,81 @@ flowchart TD
 
 ### 1. 全網站按需翻譯與單站白名單
 - **三種即時啟動方式**（免重新整理頁面）：
-  - 快捷鍵：**`Alt+T`**（macOS 亦為 `Option+T`；已譯頁面再按可快速在「純譯文 ↔ 原文」間切換）。
-  - 工具列彈出面板：點擊 **「立即翻譯此頁面」**，支援強制重譯與一鍵還原。
-  - 頁面右鍵選單：**「翻譯此頁面」** 或反白文字後選 **「AI 翻譯選取文字」**。
-- **單站自動翻譯白名單**：可在彈窗頂部或右下角懸浮列點擊 **`☆ / ★`**，只讓常逛的網站（例如 `www.kaggle.com`、`docs.python.org`）自動翻譯，其餘網站維持靜默。
+  - 快捷鍵：**`Alt+T`**（macOS 亦為 `Option+T`；已譯網頁再按可快速在「純譯文 ↔ 原文」間切換；在 PDF 分頁按則直接開啟 PDF 原版翻譯閱讀器）。
+  - 工具列彈窗：點擊 **「立即翻譯此頁面」**（或 PDF 分頁上的 **「翻譯此 PDF（原版排版閱讀器）」**），並支援強制重譯、一鍵還原與底部快速入口「PDF 閱讀器」。
+  - 頁面右鍵選單：**「翻譯此頁面（NativeRead）」** 或選取文字後點 **「AI 翻譯選取文字」**。
+- **單站自動翻譯白名單**：可在彈窗頂部或右下角 Shadow DOM 懸浮列點擊 **`☆ / ★`**，只讓常逛的網域（例如 `www.kaggle.com`、`docs.python.org`）自動啟動翻譯。
 
-### 2. 三種顯示模式與多語系支援
-- **純譯文（預設）**：直接融入原站版面結構，無任何多餘外框與色塊。
-- **僅原文**：一鍵零延遲切回原文對照。
-- **簡潔雙語**：以極細左側輔助線呈現原文＋譯文，不擁擠、不干擾視線。
-- **支援語言**：繁體中文（台灣慣用語，預設）、簡體中文、日本語、한국어、Español、Français、Deutsch、Tiếng Việt、Português，並支援任意**自訂目標語言**。
+### 2. 原版 PDF 翻譯閱讀器（支援 Kaggle 白皮書、arXiv 論文與本機 PDF）
+- **三模式一鍵切換**（快捷鍵 `1 / 2 / 3`）：
+  1. **原位譯文（預設）**：保留原 PDF 畫布上的插圖、圖表與公式，自動取樣段落周邊底色與對比色，將母語明體／黑體譯文自動縮放貼合在原段落位置；點擊任一段落可彈出原文對照與一鍵複製。
+  2. **雙欄對照**：左側完整保留原 PDF 畫布，右側同步排版譯文卡片。
+  3. **原版**：一鍵隱藏覆蓋層檢視純原始 PDF。
+- **雙欄學術論文切欄保護**：幾何段落分析會偵測多欄間距與縮排，正確保持左右雙欄獨立閱讀順序。
+- **支援線上與本機檔案**：透過擴充權限直接抓取跨網域 PDF，也可隨時將電腦上的 `.pdf` 直接拖曳進閱讀器視窗。
 
-### 3. 程式碼註解與 Kaggle / Jupyter Notebook 深度支援
-- **通用程式碼註解翻譯**：支援靜態 `<pre>`（Pygments、Prism、Highlight.js、GitHub `.pl-c` 等 `#` / `//` 註解），保留語法高亮與行內公式（LaTeX / KaTeX / MathJax）。
-- **CodeMirror 6 非侵入式疊加層**：針對 Kaggle Exercise / JupyterLab v4 互動式程式碼編輯器，採獨立唯讀疊加層顯示註解譯文；點擊編輯或切回原文時自動隱藏，**絕不改動底層程式碼，不干擾執行與 `check()` 驗證**。
-- **Output 快捷翻譯與劃詞翻譯**：Code Cell 輸出旁提供「**譯**」按鈕，可一鍵翻譯 `hint()`、`solution()` 與 Python Traceback 並附帶簡短排錯說明；任意網頁選取文字即可彈出隔離式 Shadow DOM 劃詞翻譯卡片。
+### 3. 通用程式碼註解與互動編輯器支援
+- 任何網站上的靜態 `<pre>`（Pygments、Prism、Highlight.js、GitHub `.pl-c` 等 `#` / `//` 註解）皆支援非破壞性註解翻譯，保留行內程式碼與數學公式（KaTeX / MathJax）。
+- 針對 CodeMirror 6（如 JupyterLab / Kaggle Exercise）採用分離式唯讀疊加層顯示譯文註解；點擊編輯或切回原文自動隱藏，不改動底層程式碼或干擾執行與驗證。
+- 偵測到程式執行輸出（如 Notebook Hint / Traceback）時提供「**譯**」按鈕一鍵翻譯並簡述可能原因。
 
-### 4. 多服務商與思考強度支援
-- **Google Gemini 原生介面（推薦）**：支援 `gemini-3.5-flash-lite`（預設高速高性價比）、`gemini-3.6-flash`、`gemini-3.8-flash`、`gemini-4-hydrogen`、`gemini-2.5-flash` 等模型；依設定自動配置 `thinkingLevel`（`MINIMAL` / `LOW` / `MEDIUM`）或 `thinkingBudget: 0`。
-- **OpenAI 相容介面**：內建 DeepSeek（`deepseek-chat`）、OpenAI、通義千問 Qwen、SiliconFlow、Moonshot Kimi、智譜 GLM、OpenRouter，以及任何自訂中轉站或本機 **Ollama**（`http://localhost:11434/v1`）。
-- **跨頁框自適應限流器**：當遇到免費額度 `HTTP 429` 時自動降為序列排隊、讀取 `Retry-After` / `retryDelay` 平滑退避重試，避免多頁框同時併發撞線。
+### 4. 多服務商與思考強度控制
+- **Google Gemini 原生介面（推薦）**：支援 `gemini-3.5-flash-lite`、`gemini-3.6-flash`、`gemini-3.8-flash`、`gemini-4-hydrogen`、`gemini-2.5-flash` 等，自動配置最低必要思考強度（`MINIMAL` / `LOW` / `thinkingBudget: 0`）。
+- **OpenAI 相容端點**：內建 DeepSeek、OpenAI、通義千問 Qwen、SiliconFlow、Moonshot Kimi、智譜 GLM、OpenRouter，以及本機 **Ollama**（`http://localhost:11434/v1`）。
 
 ---
 
 ## 安裝與快速上手
 
-### 步驟 1：載入未封裝擴充功能
-1. 下載或 Clone 本倉庫：
+### 1. 載入未封裝擴充功能
+1. Clone 本倉庫：
    ```bash
-   git clone https://github.com/Chih-Kai-Wang/kaggle-course-translator.git
+   git clone https://github.com/Chih-Kai-Wang/native-read.git
    ```
-2. 在瀏覽器開啟擴充功能管理頁：
-   - Chrome / Brave / Ego Lite：`chrome://extensions/`
-   - Edge：`edge://extensions/`
+2. 在瀏覽器開啟 `chrome://extensions/`（Edge 為 `edge://extensions/`）。
 3. 開啟右上角 **開發人員模式（Developer mode）**。
-4. 點擊 **載入未封裝項目（Load unpacked）**，選擇 `kaggle-course-translator` 資料夾。
+4. 點擊 **載入未封裝項目（Load unpacked）**，選擇 `native-read` 資料夾。
 
-### 步驟 2：填入 API Key 並測試連線
-1. 點擊工具列上的擴充功能圖示 → **模型與 API 設定 ↗**。
-2. 選擇服務商（例如 **Google Gemini** 或 **DeepSeek**），填入你的 API Key 與模型名稱。
-3. 點擊 **測試連線** 確認正常回傳後，按 **儲存設定**。
-4. （可選）於設定頁微調：
-   - **原版美感字體配對**：`原版自動配對`（預設）／`統一系統黑體`／`完全沿用原站字體`。
-   - **思考強度**：`極速 · 最低思考`（預設）／`平衡 · Low`／`深度 · Medium`。
-   - **加速選項**：`視口優先懶翻譯`、`SSE 串流逐段上屏`、`每批最大段落數`。
-   - **自動翻譯白名單** 與 **領域術語表**（自動於 Notebook 與技術文件站套用，一般新聞／部落格不會被 ML 術語干擾）。
+### 2. 設定 API Key 與偏好
+1. 點擊工具列上的 **NativeRead** 圖示 → **模型與 API 設定 ↗**。
+2. 選擇服務商（例如 **Google Gemini** 或 **DeepSeek**），填入 API Key 並點擊 **測試連線**，確認成功後 **儲存設定**。
+3. 依個人喜好調整目標語言（預設繁體中文・台灣）、原版字體配對、思考強度與自動翻譯白名單。
 
 ---
 
-## 隱私與安全保證
+## 隱私與安全
 
-- **零第三方中轉**：所有請求皆由本機 Service Worker 直接發送至你設定的模型 API 端點，API Key 僅置於 HTTP Header（`x-goog-api-key` / `Authorization`），不出現於 URL 或日誌。
-- **完全本機儲存**：設定與 API Key 存於 `chrome.storage.local`，譯文快取存於本機 IndexedDB，設定頁可隨時一鍵清除。
-- **嚴格遵循 MV3 CSP 與零 XSS 設計**：無 `eval()`、無 `new Function()`、無內嵌 `<script>`，所有譯文與頁面 DOM 均以 `createTextNode` / `textContent` 安全寫入，絕不使用 `innerHTML` 拼接外部譯文；懸浮工具列與劃詞彈窗完全隔離於 **Shadow DOM**。
+- **零第三方中轉伺服器**：請求皆由瀏覽器背景 Service Worker 直接送往您設定的模型端點，API Key 僅置於 HTTP Header，永不出現在 URL 或日誌。
+- **完全本機儲存**：設定存於 `chrome.storage.local`，譯文快取存於本機 IndexedDB，隨時可一鍵清除。
+- **嚴格 MV3 CSP 與零 XSS**：停用 PDF.js `eval` 探測（`isEvalSupported: false`）、無內嵌腳本、所有譯文與 UI 均採 `createTextNode` / `textContent` 安全寫入，Service Worker 關鍵控制訊息強制驗證擴充來源（`isExtensionSender`），懸浮列與劃詞彈窗完全隔離於 **Shadow DOM**。
 
 ---
 
 ## 專案結構
 
 ```text
-kaggle-course-translator/
-├── manifest.json                         # Manifest V3 清單、Alt+T 快捷鍵與按需動態注入權限
+native-read/
+├── manifest.json                 # Manifest V3 清單、Alt+T 快捷鍵與按需動態注入權限
 ├── shared/
-│   ├── config.js                         # Schema v5 設定、模型預設、思考強度解析、多語字體堆疊與白名單工具
-│   └── cache-db.js                       # IndexedDB 本機高容量 LRU 快取層（20,000 筆＋舊版自動遷移）
+│   ├── config.js                 # Schema v5 設定、模型與思考強度解析、多語字體堆疊、PDF 判定與白名單工具
+│   └── cache-db.js               # IndexedDB 本機 20,000 筆 LRU 快取層
 ├── background/
-│   └── service-worker.js                 # 按需注入器、右鍵選單、快捷鍵、SSE/NDJSON 串流引擎與 429 自適應限流器
+│   └── service-worker.js         # 按需注入器、PDF 閱讀器啟動、右鍵選單、SSE/NDJSON 串流與 429 自適應限流器
 ├── content/
-│   ├── site-analyzer.js                  # 本地決策樹（站點分類、Readability 主文評分、Shadow DOM 遍歷、語系與字體探測）
-│   ├── renderer.js                       # 原版排版安全渲染器（字體族配對、智慧行高保護、rAF 分幀寫入與完整還原）
-│   ├── adapters/
-│   │   └── notebook-adapter.js           # 程式碼註解（靜態 pre / CodeMirror 6 疊加層）與 Jupyter Output 翻譯按鈕
-│   ├── content.js                        # 視口優先懶載入協調器、kct-stream 串流客戶端與 Shadow DOM 懸浮／劃詞 UI
-│   └── content.css                       # 頁面層原版字體映射（Serif / Sans / Mono）、行高保護與模式切換樣式
-├── popup/                                # 全網通用快速彈窗（單站白名單開關、模式／範圍切換與即時進度）
-├── options/                              # 進階設定頁（服務商、思考強度、排版風格、白名單管理、術語表與快取）
-├── icons/                                # 擴充功能圖示（16 / 48 / 128 px）
-├── LICENSE                               # MIT License
+│   ├── site-analyzer.js          # 統一 DOM 決策引擎（語意區塊 + div/span SPA 葉子掃描 + Shadow DOM + 字體探測）
+│   ├── code-overlay.js           # 通用程式碼註解層（靜態 pre / CodeMirror 6 疊加層 / Output 快捷翻譯）
+│   ├── renderer.js               # 原版排版安全渲染器（字體基因配對、智慧行高保護、rAF 分幀寫入與還原）
+│   ├── content.js                # 視口優先懶載入協調器、kct-stream 串流客戶端與 Shadow DOM 懸浮／劃詞 UI
+│   └── content.css               # 頁面層 Serif / Sans / Mono 字體映射、行高保護與模式切換樣式
+├── viewer/
+│   ├── pdf-viewer.html           # NativeRead 本機 PDF 原版翻譯閱讀器頁面
+│   ├── pdf-viewer.css            # 玻璃工具列、原位覆蓋、雙欄對照與深淺色主題樣式
+│   └── pdf-viewer.js             # PDF.js 渲染、雙欄幾何段落萃取、周邊底色取樣、自動字級適配與 SSE 串流
+├── vendor/pdfjs/                 # Apache-2.0 官方 pdfjs-dist 本機模組（pdf.min.mjs / pdf.worker.min.mjs）
+├── popup/                        # 全網與 PDF 通用控制面板（單站白名單與閱讀器入口）
+├── options/                      # 進階設定頁（思考強度、排版風格、白名單、API 與 IndexedDB 快取）
+├── icons/                        # 擴充功能圖示（16 / 48 / 128 px）
+├── LICENSE                       # MIT License
 └── README.md
 ```
 
@@ -129,12 +127,16 @@ kaggle-course-translator/
 
 ## 更新日誌
 
-- **`v2.0.0`**：全面升級為全網站原版美感 AI 翻譯擴充功能；改採預設靜默＋按需動態注入、SSE 串流逐段上屏、視口優先 `IntersectionObserver` 懶載入、本地版面決策樹與 Serif/Sans/Mono 字體基因配對、Shadow DOM 隔離 UI、三段思考強度控制、IndexedDB 20,000 筆快取，以及單站自動翻譯白名單。
-- **`v1.2.x`**：原生整合 Google Gemini 3.x / 4-Hydrogen API、加入跨頁框自適應 429 冷卻限流器、優化大批次翻譯與手動觸發體驗。
-- **`v1.1.x`**：支援多語言目標切換、繁體中文（台灣）原版無框排版、CodeMirror 6 非侵入式 Python 註解疊加層。
+- **`v2.1.0`（NativeRead 正式正名）**：
+  - 正式更名為 **NativeRead（`native-read`）**。
+  - 移除硬編碼站點清單與 Notebook 特殊架構分流，升級為統一元件能力驅動架構（`code-overlay.js`），新增通用 `div`/`span`/`a` 現代 SPA 葉子文字安全遍歷。
+  - 內建本機 **PDF.js 原版翻譯閱讀器**，支援 Kaggle 白皮書、雙欄學術論文與本機拖曳 PDF 的原位覆蓋／雙欄對照／原版切換與依頁懶載入串流翻譯。
+  - 強化安全與效能（Service Worker 來源驗證、PDF.js 停用 eval 探測、單頁單次畫布取樣與字體 CSS 注入過濾）。
+- **`v2.0.0`**：全網站預設靜默按需動態注入、SSE 串流逐段上屏、視口優先懶載入、原版字體基因配對、三段思考強度控制、Shadow DOM 隔離 UI 與 IndexedDB 快取。
+- **`v1.x`**：Kaggle Learn / JupyterLab / CodeMirror 6 專用翻譯、原生 Gemini 3.x 支援與 429 自適應限流。
 
 ---
 
 ## 授權條款
 
-本專案採用 [MIT License](LICENSE) 開源釋出，歡迎提出 Issue 或 Pull Request！
+本專案採用 [MIT License](LICENSE) 開源釋出；`vendor/pdfjs/` 內含之 PDF.js 遵循 Apache-2.0 License（見 [vendor/pdfjs/LICENSE](vendor/pdfjs/LICENSE)）。

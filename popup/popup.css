@@ -390,6 +390,18 @@ input:checked + .slider::before {
   font-size: 12px;
 }
 
+.footer-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.footer-sep {
+  color: var(--border);
+  user-select: none;
+}
+
 .status {
   color: var(--muted);
   flex: 1;
@@ -410,6 +422,15 @@ input:checked + .slider::before {
   padding: 0;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.link-btn-muted {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.link-btn-muted:hover {
+  color: var(--accent);
 }
 
 .link-btn:hover {

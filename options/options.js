@@ -197,7 +197,7 @@ async function refreshCacheStats() {
     const res = await chrome.runtime.sendMessage({ type: 'GET_CACHE_STATS' });
     if (res?.ok) {
       const sizeStr = formatCacheSize(res.bytes);
-      statsEl.textContent = `IndexedDB 已快取 ${res.entries} 筆段落／註解譯文（約 ${sizeStr}）`;
+      statsEl.textContent = `IndexedDB 已快取 ${res.entries} 筆段落／註解／PDF 譯文（約 ${sizeStr}）`;
     } else {
       statsEl.textContent = '無法讀取 IndexedDB 快取狀態';
     }

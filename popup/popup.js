@@ -4,16 +4,20 @@ const {
   saveSettings,
   isHostWhitelisted,
   toggleHostWhitelist,
-  isInjectableUrl
+  isInjectableUrl,
+  isPdfUrl
 } = globalThis.KCTConfig;
 
 const IDLE_STATUS_TEXT = '待命（按上方按鈕或 Alt+T 開始翻譯）';
+const PDF_READY_STATUS_TEXT = '偵測到 PDF 文件（點擊上方開啟閱讀器）';
+const PDF_OPENED_STATUS_TEXT = '已開啟 PDF 原版翻譯閱讀器';
 const UNSUPPORTED_STATUS_TEXT = '此系統頁面不支援翻譯';
 
 let currentSettings = null;
 let activeTab = null;
 let activeHost = '';
 let activeTabInjectable = false;
+let activeTabIsPdf = false;
 let lastKnownTranslated = 0;
 
 async function getActiveTab() {
@@ -44,12 +48,44 @@ function setActionButtonsDisabled(disabled) {
   }
 }
 
+function updateActionButtonsForTab() {
+  const primaryBtn = document.getElementById('btn-translate-now');
+  const retranslateBtn = document.getElementById('btn-retranslate');
+  const clearBtn = document.getElementById('btn-clear-page');
+
+  if (activeTabIsPdf) {
+    if (primaryBtn) {
+      primaryBtn.disabled = false;
+      primaryBtn.textContent = '翻譯此 PDF（原版排版閱讀器）';
+    }
+    if (retranslateBtn) retranslateBtn.disabled = true;
+    if (clearBtn) clearBtn.disabled = true;
+    return;
+  }
+
+  if (primaryBtn) {
+    primaryBtn.textContent = '立即翻譯此頁面 (Alt+T)';
+  }
+  setActionButtonsDisabled(!activeTabInjectable);
+}
+
 function renderSiteBar(settings) {
   const siteBar = document.getElementById('site-bar');
   const hostEl = document.getElementById('site-host');
   const dotEl = document.getElementById('site-dot');
   const autoCheck = document.getElementById('toggle-site-auto');
   const autoLabel = document.getElementById('site-auto-label');
+
+  if (activeTabIsPdf) {
+    siteBar.classList.add('disabled');
+    hostEl.textContent = activeHost ? `${activeHost} · PDF` : '本機 PDF 文件';
+    hostEl.title = activeTab?.url || '';
+    dotEl.classList.add('active');
+    autoCheck.checked = false;
+    autoCheck.disabled = true;
+    autoLabel.classList.remove('is-checked');
+    return;
+  }
 
   if (!activeTabInjectable || !activeHost) {
     siteBar.classList.add('disabled');
@@ -87,7 +123,9 @@ function renderUI(settings) {
   customInput.value = settings.customTargetLang || '';
   customInput.classList.toggle('hidden', langSel.value !== 'custom');
 
-  const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(settings.baseUrl || '');
+  const isLocal = typeof globalThis.KCTConfig?.isLocalEndpoint === 'function'
+    ? globalThis.KCTConfig.isLocalEndpoint(settings.baseUrl)
+    : /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(settings.baseUrl || '');
   const hasKey = Boolean(settings.apiKey?.trim()) || isLocal;
   document.getElementById('api-alert').classList.toggle('hidden', hasKey);
   document.getElementById('model-badge').textContent = `${settings.model || '未選擇模型'}`;
@@ -139,11 +177,37 @@ async function queryActiveTabStatus() {
   }
 }
 
+async function openPdfViewerFromPopup(pdfUrl = '') {
+  try {
+    const payload = { type: 'OPEN_PDF_VIEWER' };
+    if (pdfUrl) payload.url = pdfUrl;
+    if (typeof activeTab?.id === 'number') payload.tabId = activeTab.id;
+    const res = await chrome.runtime.sendMessage(payload);
+    if (res?.ok) {
+      setStatusText(PDF_OPENED_STATUS_TEXT);
+      window.close();
+    } else {
+      setStatusText(res?.error || '無法開啟 PDF 閱讀器');
+    }
+  } catch (err) {
+    setStatusText(err?.message || '無法開啟 PDF 閱讀器');
+  }
+}
+
 async function sendCommandToActiveTab(action) {
   const tab = await getActiveTab();
   activeTab = tab;
+  activeTabIsPdf = Boolean(tab && isPdfUrl(tab.url));
   activeTabInjectable = Boolean(tab && isInjectableUrl(tab.url));
   activeHost = activeTabInjectable ? extractHostname(tab.url) : '';
+  updateActionButtonsForTab();
+
+  if (activeTabIsPdf) {
+    if (action !== 'CLEAR_PAGE') {
+      await openPdfViewerFromPopup(tab.url);
+    }
+    return;
+  }
 
   if (!tab || !activeTabInjectable) {
     setActionButtonsDisabled(true);
@@ -171,6 +235,12 @@ async function sendCommandToActiveTab(action) {
 
     if (!res?.ok) {
       setStatusText(res?.error || '無法執行翻譯指令');
+      return;
+    }
+
+    if (res.openedPdfViewer) {
+      setStatusText(PDF_OPENED_STATUS_TEXT);
+      window.close();
       return;
     }
 
@@ -224,18 +294,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   activeTab = await getActiveTab();
+  activeTabIsPdf = Boolean(activeTab && isPdfUrl(activeTab.url));
   activeTabInjectable = Boolean(activeTab && isInjectableUrl(activeTab.url));
   activeHost = activeTabInjectable ? extractHostname(activeTab.url) : '';
 
   let settings = await getSettings();
   currentSettings = settings;
   renderUI(settings);
+  updateActionButtonsForTab();
 
-  if (!activeTabInjectable) {
-    setActionButtonsDisabled(true);
+  if (activeTabIsPdf) {
+    setStatusText(PDF_READY_STATUS_TEXT);
+  } else if (!activeTabInjectable) {
     setStatusText(UNSUPPORTED_STATUS_TEXT);
   } else {
-    setActionButtonsDisabled(false);
     await queryActiveTabStatus();
   }
 
@@ -313,6 +385,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   document.getElementById('btn-translate-now').addEventListener('click', async () => {
+    if (activeTabIsPdf && activeTab?.url) {
+      await openPdfViewerFromPopup(activeTab.url);
+      return;
+    }
     await sendCommandToActiveTab('TRANSLATE_NOW');
   });
 
@@ -322,6 +398,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.getElementById('btn-clear-page').addEventListener('click', async () => {
     await sendCommandToActiveTab('CLEAR_PAGE');
+  });
+
+  document.getElementById('btn-open-pdf').addEventListener('click', async () => {
+    await openPdfViewerFromPopup('');
   });
 
   const openOptions = async () => {

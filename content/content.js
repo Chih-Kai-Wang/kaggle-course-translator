@@ -13,22 +13,20 @@
   } = globalThis.KCTConfig;
 
   const SiteAnalyzer = globalThis.KCTSiteAnalyzer;
-  const NotebookAdapter = globalThis.KCTNotebookAdapter;
+  const CodeOverlay = globalThis.KCTCodeOverlay;
   const Renderer = globalThis.KCTRenderer;
 
   const {
-    BLOCK_SELECTOR,
     SKIP_ANCESTOR_SELECTOR,
     NAV_EXCLUDE_SELECTOR,
     isTopFrame,
     isElementVisible,
     classifyPage,
     findContentRoots,
-    queryAllDeep,
     shouldTranslateText,
     probeTypography,
     extractBlockContent,
-    shouldSkipBlock
+    collectUniversalCandidateElements
   } = SiteAnalyzer;
 
   const MAX_CONCURRENT_BATCHES = 3;
@@ -179,43 +177,36 @@
     const settings = state.settings;
     if (!settings || (!settings.enabled && !force)) return [];
 
-    const roots = findContentRoots(settings.scope, pageInfo);
+    const roots = findContentRoots(settings.scope);
     const targetLangId = settings.targetLang || 'zh-TW';
     const useLazy = settings.lazyViewport !== false;
     const vh = window.innerHeight || 800;
 
     const immediate = [];
-    const seen = new Set();
+    const candidates = collectUniversalCandidateElements(roots, settings.scope, state.elementState);
 
-    for (const root of roots) {
-      const candidates = queryAllDeep(root, BLOCK_SELECTOR);
-      for (const el of candidates) {
-        if (seen.has(el)) continue;
-        seen.add(el);
-        if (shouldSkipBlock(el, settings.scope, state.elementState)) continue;
+    for (const el of candidates) {
+      const { text, placeholders, nestedListEl } = extractBlockContent(el);
+      if (!shouldTranslateText(text, targetLangId)) continue;
 
-        const { text, placeholders, nestedListEl } = extractBlockContent(el);
-        if (!shouldTranslateText(text, targetLangId)) continue;
+      const typo = probeTypography(el);
+      const key = hashText(text);
+      const job = { kind: 'block', el, key, text, placeholders, nestedListEl, typo };
 
-        const typo = probeTypography(el);
-        const key = hashText(text);
-        const job = { kind: 'block', el, key, text, placeholders, nestedListEl, typo };
-
-        if (useLazy) {
-          const rect = el.getBoundingClientRect();
-          const nearViewport = rect.bottom >= -200 && rect.top <= vh + 600;
-          if (nearViewport) {
-            state.elementState.set(el, 'queued');
-            immediate.push(job);
-          } else {
-            state.elementState.set(el, 'observed');
-            observedJobs.set(el, job);
-            ensureLazyObserver().observe(el);
-          }
-        } else {
+      if (useLazy) {
+        const rect = el.getBoundingClientRect();
+        const nearViewport = rect.bottom >= -200 && rect.top <= vh + 600;
+        if (nearViewport) {
           state.elementState.set(el, 'queued');
           immediate.push(job);
+        } else {
+          state.elementState.set(el, 'observed');
+          observedJobs.set(el, job);
+          ensureLazyObserver().observe(el);
         }
+      } else {
+        state.elementState.set(el, 'queued');
+        immediate.push(job);
       }
     }
 
@@ -243,7 +234,7 @@
     requestAnimationFrame(() => {
       cmSyncScheduled = false;
       if (pageActive) {
-        NotebookAdapter.syncCmOverlays(state);
+        CodeOverlay.syncCmOverlays(state);
       }
     });
   }
@@ -271,7 +262,7 @@
       const jobs = streamRenderBuffer.splice(0, streamRenderBuffer.length);
       renderChain = renderChain
         .then(async () => {
-          await Renderer.renderJobsWithRAF(jobs, state.settings, NotebookAdapter, state);
+          await Renderer.renderJobsWithRAF(jobs, state.settings, CodeOverlay, state);
           updateWidgetUI();
         })
         .catch(() => {})
@@ -470,7 +461,7 @@
     if (jobs.length > 0 && batchEpoch === state.translationEpoch) {
       renderChain = renderChain
         .then(async () => {
-          await Renderer.renderJobsWithRAF(jobs, state.settings, NotebookAdapter, state);
+          await Renderer.renderJobsWithRAF(jobs, state.settings, CodeOverlay, state);
           updateWidgetUI();
         })
         .catch(() => {});
@@ -621,11 +612,11 @@
 
   function scanAndTranslate(force = false) {
     if (!state.settings || !pageActive) return;
-    NotebookAdapter.injectOutputTranslateButtons(state.settings, getPageContext());
+    CodeOverlay.injectOutputTranslateButtons(state.settings, getPageContext());
     if (!state.settings.enabled && !force) return;
 
     const newBlocks = collectCandidateBlocks(force);
-    const newComments = NotebookAdapter.collectCodeComments(force, state.settings, state);
+    const newComments = CodeOverlay.collectCodeComments(force, state.settings, state);
     const newItems = [...newBlocks, ...newComments];
 
     if (newItems.length > 0) {
@@ -664,7 +655,7 @@
     clearHydrationTimers();
     cancelAllActiveStreams();
     resetLazyObserver();
-    Renderer.clearAllInjectedTranslations(state, NotebookAdapter);
+    Renderer.clearAllInjectedTranslations(state, CodeOverlay);
     if (isTopFrame()) {
       subframeStats.clear();
     }
@@ -853,6 +844,18 @@
       display: none;
     }
 
+    .kct-brand-compact {
+      display: none;
+    }
+
+    .kct-pill.kct-collapsed .kct-brand-full {
+      display: none;
+    }
+
+    .kct-pill.kct-collapsed .kct-brand-compact {
+      display: inline;
+    }
+
     .kct-seg {
       display: inline-flex;
       background: var(--kct-pill-bg);
@@ -962,13 +965,17 @@
     const brand = document.createElement('button');
     brand.type = 'button';
     brand.className = 'kct-brand';
-    brand.title = '點擊展開或收起翻譯控制列';
+    brand.title = 'NativeRead — 點擊展開或收起翻譯控制列';
 
     const dot = document.createElement('span');
     dot.className = 'kct-dot';
-    const brandText = document.createElement('span');
-    brandText.textContent = '譯';
-    brand.append(dot, brandText);
+    const brandFull = document.createElement('span');
+    brandFull.className = 'kct-brand-full';
+    brandFull.textContent = 'NativeRead';
+    const brandCompact = document.createElement('span');
+    brandCompact.className = 'kct-brand-compact';
+    brandCompact.textContent = 'NR';
+    brand.append(dot, brandFull, brandCompact);
 
     brand.addEventListener('click', () => {
       widgetCollapsed = !widgetCollapsed;
@@ -1348,7 +1355,7 @@
     const head = document.createElement('div');
     head.className = 'kct-pop-head';
     const title = document.createElement('span');
-    title.textContent = 'AI 劃詞翻譯';
+    title.textContent = 'NativeRead 劃詞翻譯';
 
     const actions = document.createElement('div');
     actions.className = 'kct-pop-actions';
@@ -1522,8 +1529,8 @@
         if (state.pendingItems.length > 0) {
           sortViewportFirst(state.pendingItems);
         }
-        // Only trigger DOM rescan on scroll for notebook/virtualized editors or when lazyViewport is off
-        if (pageInfo.pageType === 'notebook' || state.settings?.lazyViewport === false) {
+        // Only trigger DOM rescan on scroll for pages with virtualized code editors or when lazyViewport is off
+        if (pageInfo.hasCodeWidgets || state.settings?.lazyViewport === false) {
           scheduleScan(280);
         }
       }, 280);
@@ -1532,7 +1539,7 @@
     document.addEventListener('focusout', () => {
       if (!pageActive) return;
       scheduleCmSync();
-      if (pageInfo.pageType === 'notebook') {
+      if (pageInfo.hasCodeWidgets) {
         scheduleScan(220);
       }
     });
@@ -1588,7 +1595,7 @@
     }
 
     if (message?.type === 'KCT_DIAG') {
-      const roots = findContentRoots(state.settings?.scope || 'course', pageInfo);
+      const roots = findContentRoots(state.settings?.scope || 'course');
       const allPs = Array.from(document.querySelectorAll('p, h1, h2, h3, li')).slice(0, 8);
       const samples = allPs.map((el) => ({
         tag: el.tagName,

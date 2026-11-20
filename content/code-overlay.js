@@ -1,5 +1,5 @@
 (() => {
-  if (globalThis.KCTNotebookAdapter) return;
+  if (globalThis.KCTCodeOverlay) return;
 
   const { hashText } = globalThis.KCTConfig;
   const { isElementVisible, shouldTranslateText } = globalThis.KCTSiteAnalyzer;
@@ -439,13 +439,17 @@
     state.commentCacheByBody.clear();
   }
 
-  globalThis.KCTNotebookAdapter = {
+  const codeOverlayApi = {
     STATIC_COMMENT_SELECTOR,
     parseTranslatableComment,
     collectCodeComments,
     renderCommentTranslation,
     syncCmOverlays,
     injectOutputTranslateButtons,
-    clearNotebookOverlays
+    clearNotebookOverlays,
+    clearCodeOverlays: clearNotebookOverlays
   };
+
+  globalThis.KCTCodeOverlay = codeOverlayApi;
+  globalThis.KCTNotebookAdapter = codeOverlayApi;
 })();

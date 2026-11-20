@@ -10,7 +10,8 @@ const {
   sanitizeApiKey,
   hashText,
   isHostWhitelisted,
-  isInjectableUrl
+  isInjectableUrl,
+  isPdfUrl
 } = globalThis.KCTConfig;
 
 const CacheDB = globalThis.KCTCacheDB;
@@ -19,7 +20,7 @@ const CONTENT_CSS_FILES = ['content/content.css'];
 const CONTENT_JS_FILES = [
   'shared/config.js',
   'content/site-analyzer.js',
-  'content/adapters/notebook-adapter.js',
+  'content/code-overlay.js',
   'content/renderer.js',
   'content/content.js'
 ];
@@ -1154,27 +1155,65 @@ async function handleTestConnection(settingsOverride) {
 }
 
 // ============================================================
-// Dynamic On-Demand Injection (Zero Overhead Until Activated)
+// Dynamic On-Demand Injection & Seamless PDF Reader Launcher
 // ============================================================
+
+function isExtensionSender(sender) {
+  if (!sender) return false;
+  const extOrigin = chrome.runtime.getURL('');
+  if (sender.url && sender.url.startsWith(extOrigin)) return true;
+  return !sender.tab && sender.id === chrome.runtime.id;
+}
+
+async function openPdfViewer(pdfUrl, sourceTab = null) {
+  const baseUrl = chrome.runtime.getURL('viewer/pdf-viewer.html');
+  let cleanUrl = typeof pdfUrl === 'string' ? pdfUrl.trim() : '';
+  if (cleanUrl) {
+    try {
+      const parsed = new URL(cleanUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'file:') {
+        cleanUrl = '';
+      }
+    } catch (_) {
+      cleanUrl = '';
+    }
+  }
+  const targetUrl = cleanUrl ? `${baseUrl}?src=${encodeURIComponent(cleanUrl)}` : baseUrl;
+  const createProps = { url: targetUrl, active: true };
+  if (sourceTab && typeof sourceTab.index === 'number') {
+    createProps.index = sourceTab.index + 1;
+  }
+  if (sourceTab && typeof sourceTab.windowId === 'number') {
+    createProps.windowId = sourceTab.windowId;
+  }
+  await chrome.tabs.create(createProps);
+}
 
 async function ensureInjected(tabId) {
   if (typeof tabId !== 'number') {
     throw new Error('無效的分頁 ID');
   }
 
-  // Probe which frames still lack KCT initialization to avoid duplicate insertCSS on repeat triggers
+  // Probe frames for initialization status and extensionless PDF content-type detection
   let uninjectedFrameIds = null;
   try {
     const probeResults = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      func: () => Boolean(globalThis.__KCT_INITIALIZED__)
+      func: () => ({
+        initialized: Boolean(globalThis.__KCT_INITIALIZED__),
+        isPdf: document.contentType === 'application/pdf'
+      })
     });
     if (Array.isArray(probeResults) && probeResults.length > 0) {
+      const topFrameProbe = probeResults.find((r) => r.frameId === 0);
+      if (topFrameProbe?.result?.isPdf) {
+        return { isPdf: true };
+      }
       uninjectedFrameIds = probeResults
-        .filter((r) => !r.result && typeof r.frameId === 'number')
+        .filter((r) => !r.result?.initialized && typeof r.frameId === 'number')
         .map((r) => r.frameId);
       if (uninjectedFrameIds.length === 0) {
-        return; // All accessible frames are already injected
+        return { isPdf: false }; // All accessible frames are already injected
       }
     }
   } catch (_) {
@@ -1212,15 +1251,24 @@ async function ensureInjected(tabId) {
       files: CONTENT_JS_FILES
     });
   }
+
+  return { isPdf: false };
 }
 
 async function injectAndCommandTab(tabId, action, payload = null) {
   const tab = await chrome.tabs.get(tabId);
+  if (isPdfUrl(tab?.url)) {
+    if (action === 'CLEAR_PAGE') {
+      return { ok: true };
+    }
+    await openPdfViewer(tab.url, tab);
+    return { ok: true, openedPdfViewer: true };
+  }
   if (!isInjectableUrl(tab?.url)) {
     return {
       ok: false,
       errorCode: 'UNSUPPORTED_URL',
-      error: '此頁面不支援翻譯（僅支援一般 http/https 網頁）'
+      error: '此頁面不支援翻譯（僅支援一般 http/https 網頁或 PDF 文件）'
     };
   }
   // Never inject scripts onto an untouched tab just to run CLEAR_PAGE
@@ -1235,7 +1283,11 @@ async function injectAndCommandTab(tabId, action, payload = null) {
     }
     return { ok: true };
   }
-  await ensureInjected(tabId);
+  const inj = await ensureInjected(tabId);
+  if (inj?.isPdf) {
+    await openPdfViewer(tab.url, tab);
+    return { ok: true, openedPdfViewer: true };
+  }
   try {
     const resp = await chrome.tabs.sendMessage(tabId, {
       type: 'KCT_COMMAND',
@@ -1263,7 +1315,7 @@ function setupContextMenus() {
       chrome.contextMenus.create(
         {
           id: 'kct-translate-page',
-          title: '翻譯此頁面（原版美感 AI 翻譯）',
+          title: '翻譯此頁面（NativeRead）',
           contexts: ['page', 'frame']
         },
         () => {
@@ -1273,7 +1325,7 @@ function setupContextMenus() {
       chrome.contextMenus.create(
         {
           id: 'kct-translate-selection',
-          title: 'AI 翻譯選取文字：「%s」',
+          title: 'NativeRead 翻譯選取文字：「%s」',
           contexts: ['selection']
         },
         () => {
@@ -1297,16 +1349,30 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (!tab?.id || !isInjectableUrl(tab.url)) return;
+  if (!tab?.id) return;
   try {
     if (info.menuItemId === 'kct-translate-page') {
-      await ensureInjected(tab.id);
+      if (isPdfUrl(tab.url)) {
+        await openPdfViewer(tab.url, tab);
+        return;
+      }
+      if (!isInjectableUrl(tab.url)) return;
+      const inj = await ensureInjected(tab.id);
+      if (inj?.isPdf) {
+        await openPdfViewer(tab.url, tab);
+        return;
+      }
       await chrome.tabs.sendMessage(tab.id, {
         type: 'KCT_COMMAND',
         action: 'TRANSLATE_NOW'
       });
     } else if (info.menuItemId === 'kct-translate-selection') {
-      await ensureInjected(tab.id);
+      if (!isInjectableUrl(tab.url)) return;
+      const inj = await ensureInjected(tab.id);
+      if (inj?.isPdf) {
+        await openPdfViewer(tab.url, tab);
+        return;
+      }
       const sendOpts = typeof info.frameId === 'number' ? { frameId: info.frameId } : undefined;
       await chrome.tabs.sendMessage(
         tab.id,
@@ -1327,8 +1393,17 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (command !== 'toggle-translate-page') return;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !isInjectableUrl(tab.url)) return;
-    await ensureInjected(tab.id);
+    if (!tab?.id) return;
+    if (isPdfUrl(tab.url)) {
+      await openPdfViewer(tab.url, tab);
+      return;
+    }
+    if (!isInjectableUrl(tab.url)) return;
+    const inj = await ensureInjected(tab.id);
+    if (inj?.isPdf) {
+      await openPdfViewer(tab.url, tab);
+      return;
+    }
     await chrome.tabs.sendMessage(tab.id, {
       type: 'KCT_COMMAND',
       action: 'TOGGLE_OR_TRANSLATE'
@@ -1339,7 +1414,7 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'complete' || !isInjectableUrl(tab?.url)) return;
+  if (changeInfo.status !== 'complete' || !isInjectableUrl(tab?.url) || isPdfUrl(tab?.url)) return;
   try {
     const settings = await getSettings();
     if (!settings.enabled) return;
@@ -1350,7 +1425,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       return;
     }
     if (settings.autoTranslate || isHostWhitelisted(host, settings)) {
-      await ensureInjected(tabId);
+      const inj = await ensureInjected(tabId);
+      if (inj?.isPdf) return;
       await chrome.tabs.sendMessage(tabId, {
         type: 'KCT_COMMAND',
         action: 'TRANSLATE_NOW',
@@ -1589,6 +1665,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       switch (message?.type) {
         case 'ENSURE_AND_COMMAND': {
+          if (!isExtensionSender(sender)) {
+            sendResponse({ ok: false, error: '拒絕未授權來源呼叫' });
+            break;
+          }
           const tabId = typeof message.tabId === 'number' ? message.tabId : sender?.tab?.id;
           if (typeof tabId !== 'number') {
             sendResponse({ ok: false, error: '找不到目標分頁' });
@@ -1633,6 +1713,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
         case 'TEST_CONNECTION': {
+          if (!isExtensionSender(sender)) {
+            sendResponse({ ok: false, error: '拒絕未授權來源呼叫' });
+            break;
+          }
           const res = await handleTestConnection(message.settings);
           sendResponse(res);
           break;
@@ -1642,12 +1726,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: true });
           break;
         }
+        case 'OPEN_PDF_VIEWER': {
+          if (!isExtensionSender(sender)) {
+            sendResponse({ ok: false, error: '拒絕未授權來源呼叫' });
+            break;
+          }
+          let sourceTab = sender?.tab || null;
+          if (!sourceTab && typeof message.tabId === 'number') {
+            try {
+              sourceTab = await chrome.tabs.get(message.tabId);
+            } catch (_) {}
+          }
+          const pdfUrl = typeof message.url === 'string' && message.url.trim() ? message.url.trim() : '';
+          await openPdfViewer(pdfUrl, sourceTab);
+          sendResponse({ ok: true });
+          break;
+        }
         case 'GET_CACHE_STATS': {
           const { entries, bytes } = await CacheDB.stats();
           sendResponse({ ok: true, entries, bytes });
           break;
         }
         case 'GET_SW_DEBUG': {
+          if (!isExtensionSender(sender)) {
+            sendResponse({ ok: false, error: '拒絕未授權來源呼叫' });
+            break;
+          }
           sendResponse({
             ok: true,
             now: Date.now(),
@@ -1657,12 +1761,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
         case 'CLEAR_CACHE': {
+          if (!isExtensionSender(sender)) {
+            sendResponse({ ok: false, error: '拒絕未授權來源呼叫' });
+            break;
+          }
           await CacheDB.clear();
           sendResponse({ ok: true });
           break;
         }
         case 'BROADCAST_TO_TAB': {
-          const tabId = message.tabId || sender?.tab?.id;
+          const tabId = isExtensionSender(sender)
+            ? (message.tabId || sender?.tab?.id)
+            : sender?.tab?.id;
           if (tabId) {
             try {
               await chrome.tabs.sendMessage(tabId, message.payload);

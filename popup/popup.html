@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI 原版美感翻譯</title>
+  <title>NativeRead — 原版美感 AI 翻譯</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
     <div class="brand">
       <img src="../icons/icon-48.png" alt="Logo" width="26" height="26">
       <div class="brand-text">
-        <h1>AI 原版美感翻譯</h1>
+        <h1>NativeRead</h1>
         <p id="model-badge" class="sub">載入中...</p>
       </div>
     </div>
@@ -89,7 +89,11 @@
 
   <footer class="footer">
     <span id="status-text" class="status" title="">待命（按上方按鈕或 Alt+T 開始翻譯）</span>
-    <button id="btn-open-options" class="link-btn" type="button">進階與 API 設定 ↗</button>
+    <div class="footer-links">
+      <button id="btn-open-pdf" class="link-btn link-btn-muted" type="button" title="開啟本機或線上 PDF 原版翻譯閱讀器">PDF 閱讀器</button>
+      <span class="footer-sep" aria-hidden="true">·</span>
+      <button id="btn-open-options" class="link-btn" type="button">設定 ↗</button>
+    </div>
   </footer>
 
   <script src="../shared/config.js"></script>

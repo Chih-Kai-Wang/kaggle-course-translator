@@ -77,6 +77,7 @@
   ].join(', ');
 
   const SEMANTIC_ROOT_SELECTOR = [
+    LESSON_CELL_SELECTOR,
     'article',
     'main',
     '[role="main"]',
@@ -100,57 +101,15 @@
 
   const PROSE_TAGS = new Set(['P', 'LI', 'BLOCKQUOTE', 'DD', 'FIGCAPTION']);
 
-  const DOCS_HOSTS = [
-    'github.com',
-    'developer.mozilla.org',
-    'readthedocs.io',
-    'readthedocs.org',
-    'docs.python.org',
-    'pytorch.org',
-    'tensorflow.org',
-    'scikit-learn.org',
-    'pandas.pydata.org',
-    'numpy.org',
-    'huggingface.co',
-    'stackoverflow.com',
-    'stackexchange.com',
-    'arxiv.org',
-    'ar5iv.org',
-    'ar5iv.labs.arxiv.org',
-    'react.dev',
-    'typescriptlang.org',
-    'kubernetes.io',
-    'rust-lang.org',
-    'nodejs.org',
-    'developer.chrome.com',
-    'web.dev',
-    'cloud.google.com',
-    'learn.microsoft.com',
-    'ai.google.dev',
-    'platform.openai.com'
-  ];
+  const LEAF_CANDIDATE_TAGS = new Set(['DIV', 'SPAN', 'A', 'LABEL']);
 
-  const ARTICLE_HOSTS = [
-    'medium.com',
-    'substack.com',
-    'wikipedia.org',
-    'dev.to',
-    'hashnode.dev',
-    'towardsdatascience.com',
-    'nytimes.com',
-    'bbc.com',
-    'bbc.co.uk',
-    'theguardian.com',
-    'reuters.com',
-    'techcrunch.com',
-    'theverge.com',
-    'arstechnica.com',
-    'wired.com',
-    'bloomberg.com',
-    'economist.com',
-    'nature.com',
-    'science.org'
-  ];
+  const CHILD_BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, ul, ol, blockquote, table, td, th, section, article, main, nav, aside, header, footer, form, div, pre, hr, iframe, figure, figcaption, details, summary, dl, dt, dd, fieldset, dialog';
+
+  const LEAF_FORBIDDEN_DESCENDANT_SELECTOR = 'button, input, select, textarea, img, picture, video, audio, canvas, svg, [role="button"], [role="checkbox"], [role="radio"], [role="switch"], [contenteditable="true"], .material-icons, .material-icons-outlined, .material-symbols-outlined, .material-symbols-rounded, .google-symbols';
+
+  const LEAF_UI_CONTROL_SELECTOR = 'button, [role="button"], [role="menu"], [role="menuitem"], [role="tab"], time, [datetime]';
+
+  const PURE_METADATA_REGEX = /^(?:@\w+|\d[\d,.]*\s*(?:k|m|b|views?|likes?|replies?|comments?|points?|hours?|mins?|minutes?|days?|weeks?|months?|years?|ago|entries|teams|votes?)?)$/i;
 
   const TECH_TITLE_REGEX = /\b(machine learning|deep learning|neural network|llm|transformer|python|pytorch|tensorflow|pandas|scikit|sklearn|kaggle|dataset|algorithm|gradient|xgboost|lightgbm|regression|classification|reinforcement learning|data science|jupyter|notebook|api|sdk|typescript|javascript|kubernetes|docker)\b/i;
 
@@ -160,13 +119,6 @@
     } catch (_) {
       return false;
     }
-  }
-
-  function hostMatchesList(host, list) {
-    for (const domain of list) {
-      if (host === domain || host.endsWith(`.${domain}`)) return true;
-    }
-    return false;
   }
 
   function isElementVisible(el) {
@@ -208,56 +160,19 @@
 
   function classifyPage() {
     const host = String(location.hostname || '').toLowerCase();
-    const path = String(location.pathname || '');
     const title = extractMicroTitle();
-
-    const isKaggleHost =
-      host === 'kaggle.com' ||
-      host.endsWith('.kaggle.com') ||
-      host.endsWith('.kaggle.net') ||
-      host.endsWith('.kaggleusercontent.com');
-
-    const hasJupyterDom = Boolean(
-      document.querySelector('.jp-Notebook, .jp-Cell, .jp-RenderedHTMLCommon, .rendered_html, #notebook-container')
+    const hasCodeWidgets = Boolean(
+      document.querySelector('pre, .cm-editor, .CodeMirror, .monaco-editor, .jp-Cell')
     );
-
-    let pageType = 'webapp';
-
-    if (
-      host === 'colab.research.google.com' ||
-      hasJupyterDom ||
-      (isKaggleHost && (/\/(learn|code)\//i.test(path) || !isTopFrame() || Boolean(document.querySelector('.markdown-converter__text--rendered')))) ||
-      ((host === 'github.com' || host === 'nbviewer.org') && /\.ipynb(?:$|\/)/i.test(path))
-    ) {
-      pageType = 'notebook';
-    } else if (
-      hostMatchesList(host, DOCS_HOSTS) ||
-      /^docs?\./i.test(host) ||
-      Boolean(document.querySelector('.markdown-body, .rst-content, .wy-nav-content, .md-content, .vp-doc, .theme-doc-markdown, .sphinxsidebar, article.ltx_document'))
-    ) {
-      pageType = 'docs';
-    } else if (
-      hostMatchesList(host, ARTICLE_HOSTS) ||
-      Boolean(document.querySelector('article, #mw-content-text, .post-content, .article-content, .entry-content, .prose, [itemprop="articleBody"]'))
-    ) {
-      pageType = 'article';
-    }
-
     const useTechGlossary = Boolean(
-      pageType === 'notebook' ||
-      pageType === 'docs' ||
-      isKaggleHost ||
-      host.includes('huggingface') ||
-      host.includes('pytorch') ||
-      host.includes('tensorflow') ||
-      host.includes('arxiv') ||
-      host.includes('ar5iv') ||
-      host.includes('towardsdatascience') ||
+      hasCodeWidgets ||
+      document.querySelector('.katex, .MathJax, mjx-container, .markdown-body') ||
       TECH_TITLE_REGEX.test(title)
     );
 
     return {
-      pageType,
+      pageType: 'universal',
+      hasCodeWidgets,
       title,
       host,
       useTechGlossary
@@ -290,6 +205,24 @@
       }
     }
 
+    // Modern SPA fallback: when semantic containers use div/span instead of <p>
+    if (textLen < 30) {
+      let sampled = 0;
+      const leaves = el.querySelectorAll('div, span');
+      for (const node of leaves) {
+        if (sampled >= 80) break;
+        if (node.querySelector('div, p, li, nav, footer, aside, header')) continue;
+        if (node.closest('[data-kct-ui], nav, footer, aside, [role="navigation"], [role="banner"], [role="complementary"], pre, code, script, style, button')) {
+          continue;
+        }
+        const txt = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt.length < 12 || PURE_METADATA_REGEX.test(txt)) continue;
+        textLen += txt.length;
+        sampled += 1;
+        if (node.closest('a')) linkLen += txt.length;
+      }
+    }
+
     if (textLen < 30) {
       return { score: textLen * 0.1, textLen, linkRatio: 1 };
     }
@@ -311,55 +244,34 @@
     return { score, textLen, linkRatio };
   }
 
-  function findContentRoots(scope, pageInfo) {
+  function findContentRoots(scope) {
     if (scope === 'all') {
       return [document.body].filter(Boolean);
     }
 
-    const info = pageInfo || classifyPage();
-
-    if (info.pageType === 'notebook') {
-      // Kaggle Notebook Editor host page (/code/.../edit): cells live inside JupyterLab iframe;
-      // keep host IDE sidebar chrome uncluttered in course mode.
-      if (isTopFrame() && /\/code\/[^/]+\/[^/]+\/edit(?:\/|$)/i.test(location.pathname)) {
-        return [];
-      }
-
-      // Kaggle Notebook viewer (/code/...): prefer rendered notebook cells + top h1
-      if (isTopFrame() && /^\/code\//i.test(location.pathname)) {
-        const cells = Array.from(document.querySelectorAll(LESSON_CELL_SELECTOR)).filter(
-          (node) => !node.closest('[data-testid="notebook-editor-render-tid"]')
-        );
-        if (cells.length > 0) {
-          const dedupedCells = dedupeTopmost(cells);
-          const h1 = document.querySelector('main h1');
-          if (h1 && !dedupedCells.some((c) => c.contains(h1))) {
-            return [h1, ...dedupedCells];
-          }
-          return dedupedCells;
-        }
-      }
-
-      const found = Array.from(document.querySelectorAll(COURSE_CONTAINER_SELECTOR)).filter(
-        (node) => !node.closest('[data-testid="notebook-editor-render-tid"]')
-      );
-      const deduped = dedupeTopmost(found);
-      if (deduped.length > 0) return deduped;
-
-      const siteContent = document.getElementById('site-content');
-      if (siteContent && !siteContent.querySelector('[data-testid="notebook-editor-render-tid"]')) {
-        return [siteContent];
-      }
-
-      if (!isTopFrame() && document.body) {
-        return [document.body];
-      }
+    // Generic interactive IDE shell skip: cells live inside the editor's embedded iframe
+    if (isTopFrame() && document.querySelector('[data-testid="notebook-editor-render-tid"]')) {
       return [];
     }
 
-    // Smart main-content detection for docs, article, and webapp
+    // Dedicated embedded rendered-cell containers (e.g. Jupyter / Notebook outputs)
+    const cells = Array.from(document.querySelectorAll(LESSON_CELL_SELECTOR)).filter(
+      (node) => isElementVisible(node) && !node.closest('[data-testid="notebook-editor-render-tid"]')
+    );
+    if (cells.length > 0) {
+      const dedupedCells = dedupeTopmost(cells);
+      const h1 = document.querySelector('main h1');
+      if (h1 && isElementVisible(h1) && !dedupedCells.some((c) => c.contains(h1))) {
+        return [h1, ...dedupedCells];
+      }
+      return dedupedCells;
+    }
+
+    // Universal main-content detection via semantic containers + Readability scoring
     const semanticNodes = Array.from(document.querySelectorAll(SEMANTIC_ROOT_SELECTOR)).filter(
-      (node) => isElementVisible(node) && !node.closest('[data-kct-ui], nav, footer, aside, [role="navigation"], [role="complementary"]')
+      (node) =>
+        isElementVisible(node) &&
+        !node.closest('[data-kct-ui], [data-testid="notebook-editor-render-tid"], nav, footer, aside, [role="navigation"], [role="complementary"]')
     );
 
     if (semanticNodes.length > 0) {
@@ -645,6 +557,166 @@
     return false;
   }
 
+  function hasClaimedAncestor(el, claimedSet) {
+    let cur = el.parentElement;
+    if (!cur && el.getRootNode) {
+      const root = el.getRootNode();
+      if (root instanceof ShadowRoot) cur = root.host;
+    }
+    while (cur) {
+      if (claimedSet.has(cur)) return true;
+      if (cur.parentElement) {
+        cur = cur.parentElement;
+      } else if (cur.getRootNode) {
+        const root = cur.getRootNode();
+        cur = root instanceof ShadowRoot ? root.host : null;
+      } else {
+        cur = null;
+      }
+    }
+    return false;
+  }
+
+  function isMeaningfulLeafText(text) {
+    const clean = String(text || '')
+      .replace(/\[\[\s*[CM]\d+\s*\]\]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!clean) return false;
+    if (PURE_METADATA_REGEX.test(clean)) return false;
+
+    if (clean.length >= 12) return true;
+    const asciiWords = clean.match(/[a-zA-Z]{2,}/g) || [];
+    if (asciiWords.length >= 3) return true;
+    const cjkLetters = clean.match(/[\p{Script=Han}\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/gu) || [];
+    if (cjkLetters.length >= 4) return true;
+
+    return false;
+  }
+
+  function collectUniversalCandidateElements(roots, scope, elementState) {
+    if (!Array.isArray(roots) || roots.length === 0) return [];
+
+    const claimedSet = new Set();
+    const pass1 = [];
+    const pass2 = [];
+
+    // Pass 1: Semantic prose & structure blocks
+    for (const root of roots) {
+      if (!root) continue;
+      const semanticCandidates = queryAllDeep(root, BLOCK_SELECTOR);
+      for (const el of semanticCandidates) {
+        if (claimedSet.has(el)) continue;
+        if (shouldSkipBlock(el, scope, elementState)) continue;
+        claimedSet.add(el);
+        pass1.push(el);
+      }
+    }
+
+    // Pass 2: Universal div / span / a / label leaf text blocks for modern SPAs (ordered cheapest-first)
+    const tryClaimLeaf = (el) => {
+      if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+      if (!LEAF_CANDIDATE_TAGS.has(el.tagName)) return false;
+      if (el.shadowRoot) return false; // Never wrap a Shadow DOM host or its slotted projection breaks
+      if (claimedSet.has(el) || hasClaimedAncestor(el, claimedSet)) return false;
+      if (elementState && elementState.has(el)) return false;
+      if (el.hasAttribute('data-kct-has-trans')) return false;
+
+      const rawText = String(el.textContent || '').trim();
+      if (rawText.length < 4) return false;
+
+      if (el.querySelector(CHILD_BLOCK_SELECTOR)) return false;
+      if (el.querySelector(LEAF_FORBIDDEN_DESCENDANT_SELECTOR)) return false;
+      if (el.querySelector('[data-kct-ui="trans"]')) return false;
+      if (el.closest(SKIP_ANCESTOR_SELECTOR)) return false;
+      if (scope !== 'all' && (isInsideExcludedChrome(el) || el.closest(LEAF_UI_CONTROL_SELECTOR))) {
+        return false;
+      }
+
+      // If a <div> or <span> only wraps <a> link(s) with no own substantial text outside links,
+      // defer to the <a> element(s) so hyperlinks remain clickable in replace mode
+      if ((el.tagName === 'DIV' || el.tagName === 'SPAN') && el.querySelector('a[href]')) {
+        let ownTextLen = 0;
+        for (const cn of el.childNodes) {
+          if (cn.nodeType === Node.TEXT_NODE) {
+            ownTextLen += cn.nodeValue.trim().length;
+          }
+        }
+        if (ownTextLen < 4) return false;
+      }
+
+      if (!isElementVisible(el)) return false;
+
+      const { text } = extractBlockContent(el);
+      if (!isMeaningfulLeafText(text)) return false;
+
+      claimedSet.add(el);
+      pass2.push(el);
+      return true;
+    };
+
+    const walkLeafCandidates = (rootNode, depth = 0) => {
+      if (!rootNode || depth > 5) return;
+
+      if (rootNode.nodeType === Node.ELEMENT_NODE) {
+        if (
+          claimedSet.has(rootNode) ||
+          (elementState && elementState.has(rootNode)) ||
+          rootNode.matches('[data-kct-ui], [data-kct-has-trans]') ||
+          rootNode.matches(SKIP_ANCESTOR_SELECTOR)
+        ) {
+          return;
+        }
+        if (tryClaimLeaf(rootNode)) {
+          return;
+        }
+      }
+
+      const walker = document.createTreeWalker(rootNode, NodeFilter.SHOW_ELEMENT, {
+        acceptNode(node) {
+          if (claimedSet.has(node)) return NodeFilter.FILTER_REJECT;
+          if (elementState && elementState.has(node)) return NodeFilter.FILTER_REJECT;
+          if (node.matches && (
+            node.matches('[data-kct-ui], [data-kct-has-trans]') ||
+            node.matches(SKIP_ANCESTOR_SELECTOR)
+          )) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (scope !== 'all' && node.matches && node.matches(NAV_EXCLUDE_SELECTOR)) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+
+      let current;
+      while ((current = walker.nextNode())) {
+        if (current.shadowRoot && depth < 5) {
+          walkLeafCandidates(current.shadowRoot, depth + 1);
+        }
+        tryClaimLeaf(current);
+      }
+    };
+
+    for (const root of roots) {
+      if (!root) continue;
+      walkLeafCandidates(root, 0);
+    }
+
+    if (pass2.length === 0) return pass1;
+    if (pass1.length === 0) return pass2;
+
+    const combined = [...pass1, ...pass2];
+    combined.sort((a, b) => {
+      if (a === b) return 0;
+      const pos = a.compareDocumentPosition(b);
+      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+    return combined;
+  }
+
   globalThis.KCTSiteAnalyzer = {
     BLOCK_SELECTOR,
     SKIP_ANCESTOR_SELECTOR,
@@ -660,6 +732,7 @@
     shouldTranslateText,
     probeTypography,
     extractBlockContent,
-    shouldSkipBlock
+    shouldSkipBlock,
+    collectUniversalCandidateElements
   };
 })();

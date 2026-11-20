@@ -404,6 +404,43 @@
     return true;
   }
 
+  function isLocalEndpoint(baseUrl) {
+    return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(String(baseUrl || '').trim());
+  }
+
+  const EXTENSIONLESS_PDF_HOSTS = new Set([
+    'arxiv.org',
+    'export.arxiv.org',
+    'openreview.net',
+    'aclanthology.org',
+    'proceedings.mlr.press'
+  ]);
+
+  function isPdfUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (_) {
+      return false;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'file:') {
+      return false;
+    }
+    const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname || '';
+    // Never hijack HTML viewer pages wrapping a .pdf filename (e.g. GitHub /blob/..., Wikipedia File:...)
+    if (/\/blob\//i.test(pathname) || /\/wiki\/File:/i.test(pathname) || /\.html?$/i.test(pathname)) {
+      return false;
+    }
+    if (/\.pdf$/i.test(pathname)) return true;
+    if (EXTENSIONLESS_PDF_HOSTS.has(host) && /^\/pdf\/[^/]+/i.test(pathname)) return true;
+    for (const [k, v] of parsed.searchParams.entries()) {
+      if (k.toLowerCase() === 'format' && v.toLowerCase() === 'pdf') return true;
+    }
+    return false;
+  }
+
   async function getSettings() {
     if (!chrome?.runtime?.id) {
       return { ...DEFAULT_SETTINGS, autoTranslateHosts: [] };
@@ -519,6 +556,8 @@
     isHostWhitelisted,
     toggleHostWhitelist,
     isInjectableUrl,
+    isPdfUrl,
+    isLocalEndpoint,
     sanitizeApiKey,
     getSettings,
     saveSettings,

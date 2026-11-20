@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI 原版美感翻譯 — 進階與 API 設定</title>
+  <title>NativeRead — 進階與 API 設定</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
     <header class="page-header">
       <img src="../icons/icon-128.png" alt="Logo" width="44" height="44">
       <div>
-        <h1>AI 原版美感翻譯 — 設定</h1>
-        <p>支援全網按需翻譯與 Kaggle / Jupyter Notebook 深度適配。API Key 僅儲存於本機 <code>chrome.storage.local</code>，譯文快取存放於本機 IndexedDB。</p>
+        <h1>NativeRead — 進階與 API 設定</h1>
+        <p>支援全網按需翻譯、程式碼註解與 PDF 原位翻譯。API Key 僅儲存於本機 <code>chrome.storage.local</code>，譯文快取存放於本機 IndexedDB。</p>
       </div>
     </header>
 
@@ -42,11 +42,11 @@
       <div class="check-stack">
         <label class="inline-check">
           <input id="translate-code-comments" type="checkbox">
-          <span>自動翻譯程式碼區塊與 Notebook 編輯器中的 <code>#</code> / <code>//</code> 註解</span>
+          <span>自動翻譯程式碼區塊與互動式編輯器中的 <code>#</code> / <code>//</code> 註解</span>
         </label>
         <label class="inline-check">
           <input id="show-output-btn" type="checkbox">
-          <span>Kaggle / Jupyter Notebook 輸出旁顯示「譯」按鈕（Hint / 報錯快速翻譯）</span>
+          <span>互動式程式碼輸出旁顯示「譯」按鈕（Hint / 報錯快速翻譯）</span>
         </label>
       </div>
     </section>
@@ -149,7 +149,7 @@
 
     <section class="panel">
       <h2>5. 自動翻譯網站白名單（預設靜默）</h2>
-      <p class="hint panel-intro">v2.0 預設在所有網頁保持靜默待命，不干擾一般瀏覽；您隨時可按 <code>Alt+T</code> 或點擊擴充圖示啟動翻譯，或將常用網站加入下方自動翻譯白名單。</p>
+      <p class="hint panel-intro">NativeRead 預設在所有網頁保持靜默待命，不干擾一般瀏覽；您隨時可按 <code>Alt+T</code> 或點擊擴充圖示啟動翻譯，或將常用網站加入下方自動翻譯白名單。</p>
 
       <div class="field">
         <label class="inline-check">
