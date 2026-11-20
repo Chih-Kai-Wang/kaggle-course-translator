@@ -78,6 +78,16 @@ html.kct-mode-replace .kct-trans-wrap {
   display: contents;
 }
 
+/* Bilingual mode shows the original too: hide media/box copies so they are not shown twice. */
+html.kct-mode-bilingual .kct-trans-wrap [data-kct-atomic="box"] {
+  display: none !important;
+}
+
+/* Flex/grid hosts: each translated text run is ONE item (.kct-flex-run), atomic clones stay items. */
+.kct-flex-run {
+  min-width: 0;
+}
+
 html.kct-mode-replace [data-kct-has-trans="1"] {
   line-break: strict;
   font-kerning: normal;

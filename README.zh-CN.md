@@ -2,7 +2,7 @@
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
-**NativeRead (v2.5.1)** 是一款基于 Manifest V3 的浏览器扩展程序与移动端 PWA，可在保留原始页面排版与布局的前提下，翻译网页、PDF、代码注释及嵌入式信息图。它默认保持静默，仅在需要时使用你自己的 LLM API 密钥按需运行，并逐段流式输出译文，不打断阅读节奏。
+**NativeRead (v2.6.0)** 是一款基于 Manifest V3 的浏览器扩展程序与移动端 PWA，可在保留原始页面排版与布局的前提下，翻译网页、PDF、代码注释及嵌入式信息图。它默认保持静默，仅在需要时使用你自己的 LLM API 密钥按需运行，并逐段流式输出译文，不打断阅读节奏。
 
 ---
 
@@ -130,7 +130,7 @@ flowchart TD
 
     subgraph L1["Layer 1：翻译内容识别 (content/site-analyzer.js)"]
         C1["findContentRoots + scoreReadabilityContainer"]
-        C1 --> C2["collectUniversalCandidateElements + queryAllDeep (Shadow DOM)"]
+        C1 --> C2["collectUniversalCandidateElements + collectTranslationUnits (classifyLayoutRole, queryAllDeep)"]
         C2 --> C3["shouldSkipBlock / isMeaningfulLeafText / shouldTranslateText"]
         C3 -->|"跳过"| SKIP["UI 界面 / 代码 / 目标语言 (0 Tokens)"]
         C3 -->|"保留"| C4["resolveInlineHost + extractBlockContent ([[C#]] [[M#]] [[L#]] 与 [[A#]] [[S#]] 标签)"]
@@ -164,11 +164,13 @@ flowchart TD
 ```
 
 - **正文区域识别 (`findContentRoots`, `scoreReadabilityContainer`)**：优先识别嵌入式 Jupyter/notebook 单元格（`LESSON_CELL_SELECTOR`）、Google Drive PDF 浏览页（`.ndfHFb-c4YZDc-cYSp0e-DARUcf`）以及语义容器（`article`、`main`、`[role="main"]`、`.markdown-body`、`.prose`、`#mw-content-text`）。容器按 `textLen + pCount * 40` 计分，当 `linkRatio > 0.55` 时扣分，文章/文档容器获得 `1.25x` 加成；若更紧凑的内层容器保留了 `>= 65%` 的文本，则进一步细化到内层容器。顶层 `#firstHeading` / `h1` 标题会被保留。
-- **两遍式 DOM 扫描 (`collectUniversalCandidateElements`)**：
-  - *第一遍*：收集语义块（`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`），跳过嵌套容器，仅认领叶子级正文块。
-  - *第二遍*：针对现代 SPA 遍历 `DIV`、`SPAN`、`A`、`LABEL` 和 `BUTTON` 叶子候选节点，排除 Shadow DOM 宿主、包含块级子元素或交互控件的元素（`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`）、纯元数据计数器（`PURE_METADATA_REGEX`）以及仅包裹 `<a href>` 链接的 `div`/`span` 包装节点。两遍结果按 DOM 文档顺序（`compareDocumentPosition`）合并。
+- **基于布局模型的分段 (`collectUniversalCandidateElements`, `collectTranslationUnits`, `classifyLayoutRole`)**：分段不再根据标签名猜测翻译单元；`collectTranslationUnits`（由 `collectUniversalCandidateElements` 调用）遵循 CSS 格式化模型，将单个块级容器（一个行内格式化上下文）内的常规流（in-flow）行内内容视为一个翻译单元。
+  - *布局角色分类 (`classifyLayoutRole`)*：根据 `getComputedStyle`（每次扫描对每个元素缓存一次）将元素分类为 `BOX`（块级或 flex/grid 项）、`INLINE`（inline、inline-block 等）、`CONTENTS`（`display: contents`，透明）或 `OUT`（未渲染、`visibility: hidden`、视觉隐藏的屏幕阅读器文本、绝对/固定定位或浮动盒、表单控件、图标字体）。隐藏内容（`display: none`、视觉隐藏）不会发送翻译，而包含真实正文的浮动盒和定位盒会作为各自独立的容器进行遍历。
+  - *单元格隔离、混合片段与原子行内内容*：文本位于并排单元格中的容器（例如论坛列表行：标题 | 作者 | 投票数 | 评论数）绝不会被合并为同一句话——每个单元格都会成为独立的单元。同时包含文本和块级子元素的容器会被拆分为多个片段（run）：单个行内元素构成的片段会成为一个单元，而紧邻块级元素的裸文本则保留不译，以避免包裹页面自身的文本节点（在 `getLastSegmentationStats` 中计为 `mixedSkipped`）。原子行内内容（`code`、公式、引用）绝不会拆分段落，即使独立成行的公式使用了 `display: block`。
+  - *旧版参考*：此前的两遍式扫描仅作为 `collectUniversalCandidateElementsLegacy` 保留用于对比。
 - **Shadow DOM 遍历 (`queryAllDeep`, `ensureShadowModeStyle`)**：遍历深度最多 5 层的开放 `shadowRoot` 树，跳过代码编辑器与 UI 节点（`SHADOW_SKIP_SELECTOR`），并注入 `:host-context(html.kct-mode-*)` 规则，使替换 / 原文 / 双语切换在 Shadow DOM 内部同样生效。
 - **行内结构与保护占位符 (`extractBlockContent`, `buildTranslatedFragment`, `resolveInlineHost`, `validateTranslatedTokens`)**：生成原子占位符 `[[C#]]`（行内代码 `code, kbd, var`）、`[[M#]]`（数学公式与引用 `.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`）与 `[[L#]]`（无需翻译的 `<a href>` 链接，如标识符、URL 或引用标记），以及成对标签 `[[A#]]…[[/A#]]`（可翻译的可点击链接）和 `[[S#]]…[[/S#]]`（行内强调：bold/strong/italic/em/u/mark/s/small/sub/sup）；`buildTranslatedFragment` 将原子占位符以深克隆（`cloneNode(true)`）、成对标签以浅克隆（`cloneNode(false)`，保留 `href`/`class` 并剥离 `id`）还原到 `DocumentFragment` 中。当块的文本位于单一内联链（如 `li > a > b`）中时，`resolveInlineHost` 会向下定位到该节点，使译文直接渲染在原始链接或强调元素内，而无需依赖模型。渲染前，`validateTranslatedTokens` 会验证每个占位符是否仅出现一次且成对标签嵌套平衡；否则该块将以 `data-kct-structure-fallback="1"` 渲染，在译文旁保留可点击的原文，避免静默丢失链接。
+- **样式保留与 flex/grid 宿主 (`[[S#]]`, `.kct-trans-wrap`, `resolveInlineHost`, `data-kct-flex-host`)**：任何与父元素外观不同的行内元素（字号、字重、字体样式或字体族、颜色、装饰线、行内标题或仅限屏幕阅读器的标签）都会作为成对的 `[[S#]]` 标签保留。提取时会记录每个保留元素在原始位置的排版样式，如果网站 CSS（例如 `.titleline > a` 等子代选择器）在 `.kct-trans-wrap` 内部不再匹配，则会将其重新应用到克隆节点上。此外，`resolveInlineHost` 绝不会向下进入 flex/grid 容器，且 flex/grid 宿主会将整段译文保留在同一个布局单元格内（`data-kct-flex-host`）。 任何可见内容都不会被丢弃或合并：已渲染但不可翻译的行内内容（图标、图标字体、`aria-hidden` 视觉元素、图片、CSS 绘制的元素）以及块级或脱离文档流的后代元素会以不可分割的 `[[C#]]` 令牌形式保留在原位（双语模式会隐藏重复的媒体副本），实时控件与媒体（输入框、按钮、`video`、`canvas`、`iframe`、已分配的 `slot`）绝不会成为翻译单元的一部分，隐藏文本（`display: none`、`visibility: hidden`、仅限屏幕阅读器的标签）绝不会被发送，且一个单元绝不会包含另一个单元。
 - **语言过滤 (`shouldTranslateText`)**：过滤掉 URL、邮箱、文件路径、Jupyter `In[]`/`Out[]` 提示符、单 token 的 ASCII 代码标识符，以及基于 Unicode 脚本比例判断已为目标语言的文本（对于 `zh-TW`/`zh-CN`，当汉字比例 `>= 0.55` 且拉丁词数 `< 6` 时跳过，但仍会翻译假名比例 `>= 0.12` 的日语文本）。
 - **字体基因配对 (`probeTypography`, `detectRenderedSerif`, `sanitizeFontFamily`, `content/content.css`)**：根据计算后的 `fontFamily` 将每个块归类为 `serif`、`sans` 或 `mono`——当站点字体无法通过名称识别时（例如声明了 `sans-serif` 回退的 `CMS` Computer Modern 网页字体），`detectRenderedSerif` 会在画布上绘制 `"I"` 以检测衬线（按字体族缓存），从而让衬线站点匹配衬线 CJK 字体——随后剥离通用 CSS 兜底字体族（`serif`、`sans-serif`、`monospace`、`system-ui` 等），在 `--kct-orig-font` 中保留最多 5 个站点原生拉丁字体，并追加对应的目标语言字体栈（`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`）。对于未截断且 `lineHeight / fontSize < 1.62` 的密集正文块，选择性地将行高提升至 `line-height: 1.72`（`data-kct-lh-lift="1"`）。
 
@@ -260,6 +262,8 @@ for f in shared/*.js background/*.js content/*.js popup/*.js options/*.js viewer
 `docs/nativeread.user.js`、`docs/nativeread.meta.js`、`docs/version.json`、`docs/nativeread-android-extension.zip`、`docs/vendor/pdfjs/`、`docs/icons/` 以及 `docs/.nojekyll` 均由 `scripts/build-mobile.js` 生成——请编辑 `shared/`、`content/`、`viewer/` 和 `docs/app.js` 下的源码模块，然后重新运行构建脚本。
 
 **发布流程（维护者）**：更新 `manifest.json` 中的 `"version"` → 运行 `node scripts/build-mobile.js` → 提交并推送，以便 GitHub Pages 提供更新后的 PWA、用户脚本、元数据、`version.json` 和 Android ZIP。
+
+**回归语料库 (`tests/corpus/`)**：`capture.sh` 通过 ego-browser 对真实页面进行快照（从 `document.styleSheets` 序列化 DOM 和 CSS，将每个单词打乱为等长的伪词，并替换链接/图片；快照已加入 git 忽略），而 `run.sh [git-rev]` 则使用 1:1 伪翻译器渲染每个快照以及手写的 `fixtures/edge-cases.html`，并按页面报告与分段器无关的不变量：合并的单元格、译文内的非行内盒、丢失的链接、变化的排版（`styleLost`）、回退（fallback）、未满足的 `data-expect` 预期、水平溢出、单元数量和覆盖率。它能够复现 v2.5.0 的 Kaggle 错误，并在 v2.6.0 下于 8 个站点（Kaggle、Wikipedia、colah、MDN、Hacker News、Stack Overflow、GitHub、arXiv）上全部通过。
 
 ---
 

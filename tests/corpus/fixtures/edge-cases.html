@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>corpus edge cases</title>
+<style>
+  body { font-family: Georgia, serif; max-width: 860px; margin: 24px auto; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .row { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #ccc; padding: 6px 0; }
+  .row .main { display: flex; flex-direction: column; flex: 1; }
+  .row .votes { display: flex; flex-direction: column; align-items: center; width: 80px; }
+  .icon { font-family: monospace; }
+  .card { display: block; color: inherit; text-decoration: none; border: 1px solid #ddd; padding: 8px; margin: 6px 0; }
+  .fig { float: right; width: 200px; margin-left: 12px; font-size: 13px; }
+  .formula { display: block; text-align: center; }
+</style></head>
+<body><main><article>
+<h1 data-expect="translated">Edge cases for the layout segmenter</h1>
+
+<!-- 1. Forum row: separate cells must stay separate units -->
+<ul style="list-style:none;padding:0">
+  <li class="row" data-expect-separate="1">
+    <a class="main" href="https://example.com/t/1" style="color:inherit;text-decoration:none">
+      <div data-expect="translated">Looking for teammates to play with me</div>
+      <span><a href="https://example.com/u/1">Hira Norm</a> · <span data-expect="translated">Last comment five hours ago by another member</span></span>
+    </a>
+    <div class="votes"><span>5</span><span>32 comments</span></div>
+  </li>
+</ul>
+
+<!-- 2. Visually hidden label must not split a reference -->
+<ol>
+  <li data-expect="translated" data-expect-unit="self"><span><a href="#a"><span class="sr-only" style="display:block">Jump up to:</span> a</a></span> <span>Vaswani and colleagues wrote <a href="https://example.com/paper">Attention is all you need</a>, a paper about sequence transduction models.</span></li>
+</ol>
+
+<!-- 3. Text directly beside a box child -->
+<blockquote><span data-expect="translated">Simplicity is a great virtue but it requires hard work to achieve it.</span><footer>Edsger Dijkstra, in a lecture</footer></blockquote>
+<!-- footer/aside/nav are page chrome in course scope (same as legacy): kept in place, untranslated -->
+<blockquote>Bare text beside a footer box must still be translated somehow.<footer data-expect-kept="1">Somebody quoting a famous computer scientist</footer></blockquote>
+
+<!-- 4. Displayed formula inside a paragraph stays one paragraph -->
+<p data-expect="translated" data-expect-unit="self">The softmax function normalizes a vector of scores into probabilities <span class="mwe-math-element formula">σ(z) = e^z / Σ e^z</span> and is applied to every attention row.</p>
+
+<!-- 5. Flex list item with icon + text -->
+<ul style="list-style:none;padding:0">
+  <li style="display:flex;gap:8px"><span class="icon notranslate" aria-hidden="true">★</span><span data-expect="translated">Gradient checkpointing trades compute for memory during training.</span></li>
+</ul>
+
+<!-- 6. Block-level card link with title and summary -->
+<a class="card" href="https://example.com/post">
+  <h3 data-expect="translated">Understanding residual connections</h3>
+  <p data-expect="translated">Residual connections let gradients flow through very deep networks without vanishing.</p>
+</a>
+
+<!-- 7. Floated caption with prose -->
+<div><div class="fig"><span data-corpus-media="img" style="display:block;width:200px;height:120px;background:#ccc"></span><p data-expect="translated">Figure one shows the encoder and decoder stacks side by side.</p></div>
+<p data-expect="translated" data-expect-unit="self">The encoder maps an input sequence to continuous representations, and the decoder generates the output one symbol at a time while attending to them.</p></div>
+
+<!-- 8. Table cell with text and a block child -->
+<table border="1"><tr><td><div data-expect="translated">Model parameters and training cost</div><div>65M</div></td><td data-expect="translated">Base configuration trained for twelve hours</td></tr></table>
+
+<!-- 9. Paragraph with an inline button and a floated note (box and out-of-flow content stay in place) -->
+<p>Click the button <button type="button">Run</button> to start training, and watch the loss curve fall steadily.<span style="float:right;width:160px;font-size:12px">A floated side note with its own prose.</span></p>
+
+<!-- 10. List item with an absolutely positioned badge -->
+<ul><li style="position:relative" data-expect="translated" data-expect-unit="self">Mixed precision halves memory use on modern accelerators.<span style="position:absolute;right:0;top:0;font-size:11px">new badge</span></li></ul>
+
+<!-- 11. Inline heading inside a smaller container (heading size must survive) -->
+<div style="font-size:14px" data-expect="translated"><h2 style="display:inline;font-size:28px">Attention heads</h2> <a href="#edit">edit section</a></div>
+
+<!-- 12. Child-selector typography (.title > a) must survive the translation wrapper -->
+<style>.titlebox > a { font-size: 22px; font-weight: 700; } .titlebox { font-size: 12px; }</style>
+<span class="titlebox" data-expect="translated"><a href="https://example.com/x">Scaling laws for neural language models</a> <span class="site">(example.com)</span></span>
+</article></main></body></html>

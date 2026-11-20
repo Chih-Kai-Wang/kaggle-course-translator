@@ -9,3 +9,6 @@ Thumbs.db
 node_modules/
 
 !docs/nativeread-android-extension.zip
+tests/corpus/pages/
+tests/corpus/results/
+tests/corpus/.rev/

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NativeRead — 原版美感 AI 網頁翻譯 (Mobile & Desktop)
 // @namespace    https://chih-kai-wang.github.io/native-read/
-// @version      2.5.1
+// @version      2.6.0
 // @description  保留原網站 Serif / Sans 排版氣質的 AI 串流網頁與程式碼註解翻譯器（支援 iOS Safari Stay / Userscripts 與 Android Tampermonkey / 狐猴 / Kiwi）
 // @author       Chih-Kai Wang
 // @homepageURL  https://github.com/Chih-Kai-Wang/native-read
@@ -1827,8 +1827,90 @@
     'B', 'STRONG', 'I', 'EM', 'U', 'MARK', 'S', 'SMALL', 'SUB', 'SUP'
   ]);
 
+  const STYLE_PRESERVE_PROPS = ['fontSize', 'fontWeight', 'fontStyle', 'fontFamily', 'color', 'textDecorationLine', 'textTransform', 'verticalAlign', 'backgroundColor'];
+
+  function needsInlineStylePreserve(node, cs) {
+    if (/^H[1-6]$/.test(node.tagName)) return true;
+    if (isVisuallyHiddenStyle(cs)) return true;
+    const parent = node.parentElement;
+    if (!parent) return false;
+    let ps = null;
+    try { ps = getComputedStyle(parent); } catch (_) { return false; }
+    for (const prop of STYLE_PRESERVE_PROPS) {
+      if (prop === 'backgroundColor') {
+        if (cs.backgroundColor !== ps.backgroundColor && !/rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor)) return true;
+        continue;
+      }
+      if (cs[prop] !== ps[prop]) return true;
+    }
+    return false;
+  }
+
+  // Typography each kept element had in its ORIGINAL position. The renderer re-applies it when the
+  // clone lands in a different DOM position where the site's selectors (e.g. `.title > a`) miss.
+  const SNAPSHOT_PROPS = ['fontSize', 'fontWeight', 'fontStyle', 'color', 'textDecorationLine', 'letterSpacing', 'textTransform'];
+
+  // snap[prop] = the element's value; snap.__parent[prop] = its original parent's value (to know
+  // which properties were the element's OWN styling); snap.__display = its original display.
+  function snapshotTypography(node) {
+    try {
+      const cs = getComputedStyle(node);
+      const snap = { __display: cs.display, __parent: null };
+      for (const prop of SNAPSHOT_PROPS) snap[prop] = cs[prop];
+      if (node.parentElement) {
+        const ps = getComputedStyle(node.parentElement);
+        snap.__parent = {};
+        for (const prop of SNAPSHOT_PROPS) snap.__parent[prop] = ps[prop];
+      }
+      return snap;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  const KEEP_ATOMIC_SELECTOR = 'svg, canvas, textarea, input, select, button, [role="button"], img, picture, video, audio, iframe, object, embed, progress, meter, slot, .anchor-link, .jp-InternalAnchorLink, .material-icons, .material-icons-outlined, .material-symbols-outlined, .material-symbols-rounded, .google-symbols, [aria-hidden="true"], [translate="no"], .notranslate';
+
+  // Rendered = generates visible output. display:contents has no box of its own, so look at children.
+  function isRenderedNode(node, cs) {
+    let style = cs;
+    if (!style) {
+      try { style = getComputedStyle(node); } catch (_) { return false; }
+    }
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (style.display === 'contents') {
+      for (const child of node.children) {
+        if (isRenderedNode(child, null)) return true;
+      }
+      return /\S/.test(node.textContent || '');
+    }
+    return node.getClientRects().length > 0;
+  }
+
+  const PHRASING_TAGS = new Set(['A', 'ABBR', 'B', 'BDI', 'BDO', 'CITE', 'CODE', 'DATA', 'DFN', 'EM', 'I', 'KBD', 'LABEL', 'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TIME', 'U', 'VAR']);
+
+  // Units are extracted once while segmenting; the caller (content.js) reuses that result instead
+  // of walking and styling every descendant a second time. Cleared at the start of every scan.
+  let segmentationExtractCache = new WeakMap();
+
   function extractBlockContent(el) {
+    const cached = segmentationExtractCache.get(el);
+    if (cached) {
+      segmentationExtractCache.delete(el);
+      return cached;
+    }
+    return extractBlockContentUncached(el);
+  }
+
+  function extractBlockContentUncached(el) {
     const placeholders = new Map();
+    const styleSnapshots = new Map();
+    placeholders.styleSnapshots = styleSnapshots;
+    const remember = (node) => {
+      if (!styleSnapshots.has(node)) {
+        const snap = snapshotTypography(node);
+        if (snap) styleSnapshots.set(node, snap);
+      }
+    };
     let codeIdx = 0;
     let mathIdx = 0;
     let linkIdx = 0;
@@ -1844,6 +1926,30 @@
       return buf.join('');
     }
 
+    function keepAtomic(node, out, kind) {
+      const token = kind === 'M' ? `[[M${mathIdx++}]]` : kind === 'L' ? `[[L${linkIdx++}]]` : `[[C${codeIdx++}]]`;
+      placeholders.set(token, node);
+      remember(node);
+      out.push(token);
+    }
+
+    function pairedTag(node, insideLiRoot, out, kind) {
+      const inner = walkChildren(node, insideLiRoot);
+      if (!inner.replace(PLACEHOLDER_STRIP_RE, '').trim() && !/\[\[/.test(inner)) {
+        // Nothing translatable inside, but it may still be visible (CSS ::before/::after content,
+        // a background image, a coloured chip): keep it in place rather than dropping it.
+        if (isRenderedNode(node, null)) keepAtomic(node, out, kind === 'A' ? 'L' : 'C');
+        else if (inner) out.push(inner);
+        return;
+      }
+      const id = kind === 'A' ? anchorIdx++ : styleIdx++;
+      const open = `[[${kind}${id}]]`;
+      const close = `[[/${kind}${id}]]`;
+      placeholders.set(open, node);
+      remember(node);
+      out.push(open, inner, close);
+    }
+
     function walk(node, insideLiRoot, out) {
       if (!node) return;
       if (node.nodeType === Node.TEXT_NODE) {
@@ -1851,24 +1957,12 @@
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
-
       if (node.matches('[data-kct-ui]')) return;
+      if (node.matches('script, style, noscript, template')) return;
 
       // For <li>, stop before nested <ul>/<ol> so we only translate the parent bullet's own text
       if (insideLiRoot && (node.tagName === 'UL' || node.tagName === 'OL')) {
         if (!nestedListEl) nestedListEl = node;
-        return;
-      }
-
-      if (node.matches(INLINE_PROTECT_SELECTOR)) {
-        const isMath = node.matches('.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference');
-        const token = isMath ? `[[M${mathIdx++}]]` : `[[C${codeIdx++}]]`;
-        placeholders.set(token, node);
-        out.push(token);
-        return;
-      }
-
-      if (node.matches('script, style, noscript, svg, canvas, textarea, input, select, .anchor-link, .jp-InternalAnchorLink, .material-icons, .material-symbols-outlined, .material-symbols-rounded, .google-symbols, [aria-hidden="true"]')) {
         return;
       }
 
@@ -1877,39 +1971,83 @@
         return;
       }
 
-      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
-        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!aText) return;
-        if (!shouldTranslateText(aText)) {
-          const token = `[[L${linkIdx++}]]`;
-          placeholders.set(token, node);
-          out.push(token);
-          return;
-        }
-        const inner = walkChildren(node, insideLiRoot);
-        if (!inner.trim()) {
-          if (inner) out.push(inner);
-          return;
-        }
-        const id = anchorIdx++;
-        const open = `[[A${id}]]`;
-        const close = `[[/A${id}]]`;
-        placeholders.set(open, node);
-        out.push(open, inner, close);
+      let cs = null;
+      if (node !== el) {
+        try { cs = getComputedStyle(node); } catch (_) { cs = null; }
+        // What the reader cannot see is not part of the translation: display:none, hidden, and
+        // visually-hidden screen-reader text (checked BEFORE links/emphasis, so a hidden link or
+        // label never resurfaces inside the translation where parent-scoped CSS no longer hides it).
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse')) return;
+        if (cs && isVisuallyHiddenStyle(cs)) return;
+      }
+
+      if (node.matches(INLINE_PROTECT_SELECTOR)) {
+        const isMath = node.matches('.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference');
+        keepAtomic(node, out, isMath ? 'M' : 'C');
         return;
       }
 
-      if (PAIRED_STYLE_TAGS.has(node.tagName) && node !== el) {
-        const inner = walkChildren(node, insideLiRoot);
-        if (!inner.trim()) {
-          if (inner) out.push(inner);
+      // Rendered but not translatable (icons, aria-hidden visuals, controls, media, translate="no"):
+      // keep it in place as an atomic token. Dropping it would make it vanish, because the original
+      // moves into the hidden .kct-orig-wrap.
+      const iconFont = node !== el && cs && ICON_FONT_FIRST_RE.test(String(cs.fontFamily || '').split(',')[0]);
+      if (node !== el && (iconFont || node.matches(KEEP_ATOMIC_SELECTOR))) {
+        if (isRenderedNode(node, cs)) keepAtomic(node, out, 'C');
+        return;
+      }
+
+      if (node !== el && cs) {
+        // A block-level or out-of-flow descendant is not part of this unit's inline flow (the
+        // segmenter treats it as its own box or as excluded chrome). Keep it exactly as it is, in
+        // place, as an atomic token: never merge its text into this sentence, never drop it.
+        const d = cs.display || 'inline';
+        let inFlowInline = d.startsWith('inline') || d === 'contents' || d.startsWith('ruby');
+        if (!inFlowInline && PHRASING_TAGS.has(node.tagName) && node.parentElement) {
+          // A phrasing element (<b>, <span>, <a>…) only computes as block because a flex/grid parent
+          // blockified it; in the translation it is part of the sentence (the renderer groups runs).
+          try {
+            if (/flex|grid/.test(getComputedStyle(node.parentElement).display || '')) inFlowInline = true;
+          } catch (_) { /* ignore */ }
+        }
+        const outOfFlow = cs.position === 'absolute' || cs.position === 'fixed' || (cs.float && cs.float !== 'none');
+        // A floated drop cap (<span style="float:left">T</span>he …) is part of the word, not a box.
+        const dropCap = outOfFlow && cs.position !== 'absolute' && cs.position !== 'fixed' &&
+          node.children.length === 0 && String(node.textContent || '').trim().length <= 2;
+        if (dropCap) {
+          // Keep the letter in its word for the translation (the drop-cap styling is not carried over).
+          for (const child of node.childNodes) walk(child, insideLiRoot, out);
           return;
         }
-        const id = styleIdx++;
-        const open = `[[S${id}]]`;
-        const close = `[[/S${id}]]`;
-        placeholders.set(open, node);
-        out.push(open, inner, close);
+        if (!inFlowInline || outOfFlow) {
+          keepAtomic(node, out, 'C');
+          return;
+        }
+      }
+
+      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
+        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!aText) {
+          // Icon-only / image-only link: keep it (clickable) in place.
+          if (isRenderedNode(node, cs)) keepAtomic(node, out, 'L');
+          return;
+        }
+        if (!shouldTranslateText(aText)) {
+          keepAtomic(node, out, 'L');
+          return;
+        }
+        pairedTag(node, insideLiRoot, out, 'A');
+        return;
+      }
+
+      if (node !== el && PAIRED_STYLE_TAGS.has(node.tagName)) {
+        pairedTag(node, insideLiRoot, out, 'S');
+        return;
+      }
+
+      // Any inline element that LOOKS different from its parent (an inline <h2>, a styled span, a
+      // font change...) is kept as a paired tag, so the translation is rebuilt inside a clone of it.
+      if (node !== el && cs && needsInlineStylePreserve(node, cs)) {
+        pairedTag(node, insideLiRoot, out, 'S');
         return;
       }
 
@@ -1975,6 +2113,10 @@
       if (!INLINE_DESCENT_TAGS.has(onlyChildEl.tagName)) break;
       if (onlyChildEl.matches(INLINE_PROTECT_SELECTOR)) break;
       if (onlyChildEl.matches(FORM_CONTROL_SELECTOR)) break;
+      // Never descend into a flex/grid container: its children are separate layout cells.
+      let childDisplay = '';
+      try { childDisplay = getComputedStyle(onlyChildEl).display || ''; } catch (_) { /* ignore */ }
+      if (/flex|grid/.test(childDisplay)) break;
 
       cur = onlyChildEl;
     }
@@ -2308,8 +2450,6 @@
       return true;
     }
 
-    if (isCompositeLayoutBlock(el)) return true;
-
     return false;
   }
 
@@ -2350,7 +2490,962 @@
     return false;
   }
 
-  function collectUniversalCandidateElements(roots, scope, elementState) {
+  // =========================================================
+  // Layout-Model Segmenter (CSS Formatting Contexts)
+  // =========================================================
+
+  const SEMANTIC_BLOCK_TAGS = new Set([
+    'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'P', 'LI', 'BLOCKQUOTE', 'TD', 'TH',
+    'FIGCAPTION', 'SUMMARY', 'DT', 'DD'
+  ]);
+
+  const HARD_OUT_TAGS = new Set([
+    'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE',
+    'SVG', 'CANVAS', 'VIDEO', 'AUDIO', 'IFRAME', 'OBJECT', 'EMBED',
+    'PRE', 'SAMP',
+    'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGROUP', 'OUTPUT', 'METER', 'PROGRESS'
+  ]);
+
+  const NAV_OUT_TAGS = new Set(['NAV', 'FOOTER', 'ASIDE']); // buttons are live controls (barriers), not chrome
+
+  const HARD_OUT_ATTR_SELECTOR = [
+    '[data-kct-ui]',
+    '[hidden]',
+    '.sr-only',
+    '[aria-hidden="true"]',
+    '[translate="no"]',
+    '.notranslate',
+    '[contenteditable="true"]',
+    '[role="button"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="switch"]'
+  ].join(', ');
+
+  const VISIBLE_CONTROL_OUT_SELECTOR = 'button, input, textarea, select, option, optgroup, output, meter, progress, [role="button"], [role="checkbox"], [role="radio"], [role="switch"]';
+  const BLOCKING_MEDIA_TAGS = new Set(['IMG', 'PICTURE', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG']);
+  // Media whose state or content cannot survive cloneNode (playback, drawing, embedded documents).
+  const LIVE_MEDIA_TAGS = new Set(['VIDEO', 'AUDIO', 'CANVAS', 'IFRAME', 'OBJECT', 'EMBED']);
+  // Interactive controls: a clone would have no listeners/state, so they are never inside a unit.
+  const LIVE_CONTROL_SELECTOR = 'button, input, select, textarea, [role="button"], [role="checkbox"], [role="radio"], [role="switch"], [contenteditable="true"]';
+  const ICON_FONT_FIRST_RE = /(?:material\s*(?:icons|symbols)|google\s*symbols|font\s*awesome|fontawesome|icomoon|ionicons|octicons|codicon|bootstrap-icons|glyphicon)/i;
+  const FLEX_OR_GRID_RE = /(?:^|\s)(?:inline-)?(?:flex|grid)(?:\s|$)/;
+  const CLIP_RECT_RE = /^rect\(\s*([^,)\s]+)[,\s]+([^,)\s]+)[,\s]+([^,)\s]+)[,\s]+([^,)\s]+)\s*\)$/i;
+  const LETTER_RE = /\p{L}/u;
+  const PLACEHOLDER_STRIP_RE = /\[\[\s*\/?[CMLAS]\d+\s*\]\]/g;
+  const MAX_SUBSTANTIVE_SCAN_NODES = 400;
+
+  let lastSegmentationStats = {
+    units: 0,
+    mixedSkipped: 0,
+    outSkipped: 0,
+    ms: 0
+  };
+
+  function getLastSegmentationStats() {
+    return { ...lastSegmentationStats };
+  }
+
+  function isVisuallyHiddenStyle(style) {
+    const clip = style.clip;
+    if (clip && clip !== 'auto') {
+      const m = clip.match(CLIP_RECT_RE);
+      if (m) {
+        const top = parseFloat(m[1]);
+        const right = parseFloat(m[2]);
+        const bottom = parseFloat(m[3]);
+        const left = parseFloat(m[4]);
+        if (
+          Number.isFinite(top) && Number.isFinite(right) &&
+          Number.isFinite(bottom) && Number.isFinite(left) &&
+          ((right - left) <= 1 || (bottom - top) <= 1)
+        ) {
+          return true;
+        }
+      }
+    }
+
+    const clipPath = style.clipPath;
+    if (clipPath && clipPath !== 'none') {
+      const insetMatch = clipPath.match(/^inset\(\s*([^)]+)\)/i);
+      if (insetMatch) {
+        const rawVals = insetMatch[1].split(/\s+round\s+/i)[0].trim().split(/\s+/);
+        const pct = (s) => (s && s.endsWith('%') ? parseFloat(s) : null);
+        const p0 = pct(rawVals[0]);
+        const p1 = rawVals.length > 1 ? pct(rawVals[1]) : p0;
+        const p2 = rawVals.length > 2 ? pct(rawVals[2]) : p0;
+        const p3 = rawVals.length > 3 ? pct(rawVals[3]) : p1;
+        if (
+          (p0 !== null && p2 !== null && (p0 + p2) >= 100) ||
+          (p1 !== null && p3 !== null && (p1 + p3) >= 100) ||
+          (p0 !== null && p0 >= 100) ||
+          (p1 !== null && p1 >= 100) ||
+          (p2 !== null && p2 >= 100) ||
+          (p3 !== null && p3 >= 100)
+        ) {
+          return true;
+        }
+      }
+    }
+
+    const ov = style.overflow;
+    const ovHidden = (
+      ov === 'hidden' ||
+      ov === 'clip' ||
+      ((style.overflowX === 'hidden' || style.overflowX === 'clip') &&
+        (style.overflowY === 'hidden' || style.overflowY === 'clip'))
+    );
+    if (ovHidden) {
+      const wStr = style.width;
+      const hStr = style.height;
+      if (wStr && hStr && wStr.endsWith('px') && hStr.endsWith('px')) {
+        if (parseFloat(wStr) <= 1 && parseFloat(hStr) <= 1) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  function isExcludedChromeElement(el) {
+    // Controls are not chrome to skip silently: they must act as barriers so no unit swallows them.
+    if (el.matches(LIVE_CONTROL_SELECTOR)) return false;
+    if (NAV_OUT_TAGS.has(el.tagName)) return true;
+    if (el.matches(NAV_EXCLUDE_SELECTOR)) return true;
+    if (el.tagName === 'HEADER') {
+      const insideContent = Boolean(el.closest('article, main, [role="main"]'));
+      const isSiteBanner = el.getAttribute('role') === 'banner' || Boolean(el.querySelector('nav'));
+      if (!insideContent || isSiteBanner) return true;
+    }
+    return false;
+  }
+
+  function getLayoutInfo(el, cache) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) {
+      return { role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'non-element' };
+    }
+    if (cache && cache.has(el)) {
+      return cache.get(el);
+    }
+
+    const store = (info) => {
+      if (cache) cache.set(el, info);
+      return info;
+    };
+
+    // PDF absorbed / overlay chrome
+    if (
+      el.getAttribute('data-kct-pdf-merged') === 'absorbed' ||
+      (el.classList && el.classList.contains('ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-tJHJj'))
+    ) {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'pdf' });
+    }
+
+    // Fast O(1) tag and attribute checks before getComputedStyle
+    const tag = el.tagName;
+    if (HARD_OUT_TAGS.has(tag)) {
+      const isControl = (
+        tag === 'BUTTON' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        tag === 'OPTION' || tag === 'OPTGROUP' || tag === 'OUTPUT' || tag === 'METER' || tag === 'PROGRESS'
+      );
+      const isMedia = BLOCKING_MEDIA_TAGS.has(tag);
+      return store({
+        role: 'OUT',
+        walkableOut: false,
+        atomicInline: false,
+        display: 'none',
+        style: null,
+        hardReason: isControl ? 'control' : (isMedia ? 'media' : 'tag')
+      });
+    }
+
+    if (el.matches(HARD_OUT_ATTR_SELECTOR)) {
+      const isControl = el.matches('[role="button"], [role="checkbox"], [role="radio"], [role="switch"]');
+      return store({
+        role: 'OUT',
+        walkableOut: false,
+        atomicInline: false,
+        display: 'none',
+        style: null,
+        hardReason: isControl ? 'control' : 'attr'
+      });
+    }
+
+    const view = el.ownerDocument?.defaultView || window;
+    const readStyle = () => {
+      try {
+        return view.getComputedStyle(el);
+      } catch (_) {
+        return null;
+      }
+    };
+
+    // Atomic inline-protect elements (code, kbd, var, math, .katex, mjx-container, .mwe-math-element, sup.reference)
+    // remain atomic INLINE leaves regardless of their inner/outer display (e.g. display: block math).
+    if (el.matches(INLINE_PROTECT_SELECTOR)) {
+      if (tag === 'CODE' && el.parentElement && el.parentElement.tagName === 'PRE') {
+        return store({ role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'skip' });
+      }
+      const style = readStyle();
+      const display = style?.display || 'inline';
+      if (
+        !style ||
+        display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.visibility === 'collapse' ||
+        isVisuallyHiddenStyle(style)
+      ) {
+        return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'hidden' });
+      }
+      return store({ role: 'INLINE', walkableOut: false, atomicInline: true, display, style, hardReason: null });
+    }
+
+    if (el.matches(SKIP_ANCESTOR_SELECTOR)) {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'skip' });
+    }
+
+    const style = readStyle();
+    if (!style) {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'hidden' });
+    }
+
+    const display = style.display || 'inline';
+    if (display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'hidden' });
+    }
+
+    if (isVisuallyHiddenStyle(style)) {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'visually-hidden' });
+    }
+
+    if (style.fontFamily) {
+      const firstFamily = style.fontFamily.split(',')[0];
+      if (firstFamily && ICON_FONT_FIRST_RE.test(firstFamily)) {
+        return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'icon-font' });
+      }
+    }
+
+    if (display === 'contents') {
+      return store({ role: 'CONTENTS', walkableOut: false, atomicInline: false, display, style, hardReason: null });
+    }
+
+    const pos = style.position;
+    const flt = style.float || style.cssFloat || 'none';
+    if (pos === 'absolute' || pos === 'fixed' || (flt && flt !== 'none')) {
+      // Off-screen absolute/fixed screen-reader elements (left/top <= -5000px) are never walkable prose
+      if (pos === 'absolute' || pos === 'fixed') {
+        const lStr = style.left;
+        const tStr = style.top;
+        if (
+          (lStr && lStr.endsWith('px') && parseFloat(lStr) <= -5000) ||
+          (tStr && tStr.endsWith('px') && parseFloat(tStr) <= -5000)
+        ) {
+          return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'visually-hidden' });
+        }
+      }
+      return store({ role: 'OUT', walkableOut: true, atomicInline: false, display, style, hardReason: null });
+    }
+
+    // Determine effective parent display (skipping transparent display: contents ancestors, crossing ShadowRoot host)
+    let parentDisplay = '';
+    let parentEl = el.parentElement;
+    if (!parentEl && el.getRootNode) {
+      const rootNode = el.getRootNode();
+      if (rootNode instanceof ShadowRoot && rootNode.host) {
+        parentEl = rootNode.host;
+      }
+    }
+    while (parentEl && parentEl.nodeType === Node.ELEMENT_NODE) {
+      const pInfo = getLayoutInfo(parentEl, cache);
+      if (pInfo.role !== 'CONTENTS') {
+        parentDisplay = pInfo.display || '';
+        break;
+      }
+      parentEl = parentEl.parentElement;
+    }
+
+    const blockified = FLEX_OR_GRID_RE.test(parentDisplay);
+    const isInlineDisplay = (
+      display === 'inline' ||
+      display.startsWith('inline-') ||
+      display.startsWith('inline ') ||
+      display === 'ruby' ||
+      display.startsWith('ruby-') ||
+      display === 'math'
+    );
+
+    const role = (blockified || !isInlineDisplay) ? 'BOX' : 'INLINE';
+    return store({ role, walkableOut: false, atomicInline: false, display, style, hardReason: null });
+  }
+
+  function classifyLayoutRole(el, cache) {
+    const map = cache instanceof Map ? cache : new Map();
+    return getLayoutInfo(el, map).role;
+  }
+
+  function isUiControlHost(host) {
+    if (!host || host.nodeType !== Node.ELEMENT_NODE) return false;
+    if (host.closest(LEAF_UI_CONTROL_SELECTOR)) return true;
+    if (host.querySelector('time, [datetime]')) {
+      let otherText = 0;
+      for (const cn of host.childNodes) {
+        if (cn.nodeType === Node.TEXT_NODE) {
+          otherText += cn.nodeValue.trim().length;
+        } else if (cn.nodeType === Node.ELEMENT_NODE && !cn.matches('time, [datetime], [data-kct-ui]')) {
+          otherText += (cn.textContent || '').trim().length;
+        }
+      }
+      if (otherText < 4) return true;
+    }
+    return false;
+  }
+
+  function isPdfLenientUnit(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if (el.hasAttribute('data-kct-pdf-block')) return true;
+    return Boolean(el.closest && el.closest('.textLayer'));
+  }
+
+  function hasVisibleControlStyle(el, styleCache) {
+    if (el.matches('[hidden], .sr-only, [aria-hidden="true"], [data-kct-ui]')) return false;
+    const cached = styleCache.get(el);
+    if (cached && cached.style) {
+      return cached.style.display !== 'none' && cached.style.visibility !== 'hidden';
+    }
+    try {
+      const view = el.ownerDocument?.defaultView || window;
+      const st = view.getComputedStyle(el);
+      return st.display !== 'none' && st.visibility !== 'hidden' && !isVisuallyHiddenStyle(st);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Returns true iff a BOX child contains visible non-OUT, non-protect alphanumeric text
+  // or a visible interactive control (so claiming the parent would merge cells or destroy UI).
+  function isSubstantiveBox(boxEl, styleCache, scope) {
+    let seen = 0;
+    const stack = [boxEl];
+    while (stack.length > 0 && seen < MAX_SUBSTANTIVE_SCAN_NODES) {
+      const node = stack.pop();
+      if (!node) continue;
+      seen += 1;
+
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (COMPOSITE_TEXT_RE.test(node.nodeValue || '')) {
+          return true;
+        }
+        continue;
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      // Already translated content counts as substantive, so a rescan never claims its parent.
+      if (node.hasAttribute('data-kct-has-trans')) return true;
+      // Live content that a clone cannot reproduce (playback, drawing, embedded documents, custom
+      // elements with their own shadow tree) must never be swallowed into a parent unit.
+      if (node !== boxEl && (LIVE_MEDIA_TAGS.has(node.tagName) || node.shadowRoot || node.matches(LIVE_CONTROL_SELECTOR)) && hasVisibleControlStyle(node, styleCache)) return true;
+
+      if (node !== boxEl) {
+        if (scope !== 'all' && isExcludedChromeElement(node)) continue;
+        const info = getLayoutInfo(node, styleCache);
+        if (info.atomicInline) continue;
+        if (info.role === 'OUT') {
+          if (info.hardReason === 'control' && hasVisibleControlStyle(node, styleCache)) {
+            return true;
+          }
+          continue;
+        }
+      }
+
+      if (node.tagName === 'SLOT' && node.assignedNodes && node.assignedNodes().length > 0) {
+        continue;
+      }
+
+      const children = node.childNodes;
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(children[i]);
+      }
+    }
+    // Scan budget exhausted on a large subtree: assume it matters rather than cloning it whole.
+    return stack.length > 0;
+  }
+
+  function collectTranslationUnits(roots, scope, elementState) {
+    const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const stats = { units: 0, mixedSkipped: 0, outSkipped: 0, ms: 0 };
+
+    if (!Array.isArray(roots) || roots.length === 0) {
+      lastSegmentationStats = stats;
+      return [];
+    }
+
+    preparePdfOverlayLayers(roots);
+    segmentationExtractCache = new WeakMap();
+
+    const styleCache = new Map();
+    const visited = new Set();
+    const claimedSet = new Set();
+    const results = [];
+
+    const tryClaimUnit = (candidateEl, isSemantic) => {
+      if (!candidateEl || !candidateEl.isConnected) return false;
+      if (candidateEl.shadowRoot) return false;
+      if (elementState && elementState.has(candidateEl)) return false;
+      if (candidateEl.hasAttribute('data-kct-has-trans')) return false;
+
+      const host = resolveInlineHost(candidateEl);
+      if (!host || !host.isConnected || host.shadowRoot) return false;
+      if (claimedSet.has(host)) return false;
+      if (elementState && elementState.has(host)) return false;
+      if (host.hasAttribute('data-kct-has-trans')) return false;
+      if (host.querySelector(':scope > [data-kct-ui="trans"]')) return false;
+
+      const lenient = isSemantic || isPdfLenientUnit(host);
+      if (scope !== 'all' && !lenient && isUiControlHost(host)) {
+        return false;
+      }
+
+      const extracted = extractBlockContentUncached(host);
+      const { text } = extracted;
+      if (lenient) {
+        const clean = String(text || '').replace(PLACEHOLDER_STRIP_RE, '').replace(/\s+/g, ' ').trim();
+        if (!clean || !LETTER_RE.test(clean)) return false;
+      } else {
+        if (!isMeaningfulLeafText(text)) return false;
+      }
+
+      segmentationExtractCache.set(host, extracted);
+      claimedSet.add(host);
+      if (host !== candidateEl) {
+        let cur = host.parentElement;
+        while (cur && cur !== candidateEl) {
+          claimedSet.add(cur);
+          cur = cur.parentElement;
+        }
+      }
+      results.push(host);
+      stats.units += 1;
+      return true;
+    };
+
+    const scanInlineSubtree = (rootInline, insideLiRoot) => {
+      const sub = {
+        ifcText: '',
+        nonLinkTextLen: 0,
+        links: [],
+        innerBoxes: [],
+        innerNestedLists: [],
+        innerWalkableOuts: [],
+        hasClaimedDescendant: false,
+        hasForbiddenControl: false,
+        hasLiveControl: false
+      };
+
+      const walkInline = (node, insideLink) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const val = node.nodeValue || '';
+          if (val) {
+            sub.ifcText += val;
+            if (!insideLink) {
+              sub.nonLinkTextLen += val.trim().length;
+            }
+          }
+          return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+        if (elementState && elementState.has(node)) {
+          sub.hasClaimedDescendant = true;
+        }
+        if (node.hasAttribute('data-kct-has-trans')) {
+          sub.hasClaimedDescendant = true;
+        }
+
+        if (node !== rootInline) {
+          if (scope !== 'all' && isExcludedChromeElement(node)) {
+            stats.outSkipped += 1;
+            return;
+          }
+          const info = getLayoutInfo(node, styleCache);
+          if (info.role === 'OUT') {
+            if (info.walkableOut) {
+              sub.innerWalkableOuts.push(node);
+            } else {
+              stats.outSkipped += 1;
+              const live = info.hardReason === 'control' || LIVE_MEDIA_TAGS.has(node.tagName) || node.matches(LIVE_CONTROL_SELECTOR);
+              if (
+                (live || info.hardReason === 'media') &&
+                hasVisibleControlStyle(node, styleCache)
+              ) {
+                sub.hasForbiddenControl = true;
+                if (live) sub.hasLiveControl = true;
+              }
+            }
+            return;
+          }
+          if (info.role === 'BOX') {
+            if (insideLiRoot && (node.tagName === 'UL' || node.tagName === 'OL')) {
+              sub.innerNestedLists.push(node);
+            } else {
+              sub.innerBoxes.push(node);
+            }
+            return;
+          }
+          if (info.atomicInline) {
+            return;
+          }
+          if (BLOCKING_MEDIA_TAGS.has(node.tagName)) {
+            sub.hasForbiddenControl = true;
+            return;
+          }
+          if (node.shadowRoot) {
+            sub.innerBoxes.push(node);
+            return;
+          }
+        }
+
+        if (node.tagName === 'SLOT' && node.assignedNodes && node.assignedNodes().length > 0) {
+          sub.hasForbiddenControl = true;
+          sub.hasLiveControl = true;
+          return;
+        }
+
+        let nextInsideLink = insideLink;
+        if (node.tagName === 'A' && node.hasAttribute('href') && !insideLink) {
+          sub.links.push(node);
+          nextInsideLink = true;
+        }
+
+        for (const child of node.childNodes) {
+          walkInline(child, nextInsideLink);
+        }
+      };
+
+      walkInline(rootInline, false);
+      return sub;
+    };
+
+    const walkShadowRoot = (shadowRoot, shadowDepth) => {
+      if (!shadowRoot || shadowDepth > 5) return;
+      for (const child of shadowRoot.childNodes) {
+        if (child.nodeType !== Node.ELEMENT_NODE) continue;
+        if (scope !== 'all' && isExcludedChromeElement(child)) {
+          stats.outSkipped += 1;
+          continue;
+        }
+        const info = getLayoutInfo(child, styleCache);
+        if (info.role === 'OUT' && !info.walkableOut) {
+          stats.outSkipped += 1;
+          continue;
+        }
+        visitContainer(child, shadowDepth);
+      }
+    };
+
+    const visitContainer = (el, shadowDepth) => {
+      if (!el || el.nodeType !== Node.ELEMENT_NODE || !el.isConnected) return;
+      if (visited.has(el)) return;
+      visited.add(el);
+
+      const isLi = el.tagName === 'LI';
+      const isAlreadyClaimed = (
+        claimedSet.has(el) ||
+        (elementState && elementState.has(el)) ||
+        el.hasAttribute('data-kct-has-trans') ||
+        Boolean(el.querySelector(':scope > [data-kct-ui="trans"]'))
+      );
+
+      // Shadow host: never claim the host itself; walk its shadow DOM and light DOM children
+      if (el.shadowRoot) {
+        if (shadowDepth < 5 && !el.matches(SHADOW_SKIP_SELECTOR)) {
+          walkShadowRoot(el.shadowRoot, shadowDepth + 1);
+        }
+        for (const child of el.childNodes) {
+          if (child.nodeType !== Node.ELEMENT_NODE) continue;
+          if (scope !== 'all' && isExcludedChromeElement(child)) {
+            stats.outSkipped += 1;
+            continue;
+          }
+          const cInfo = getLayoutInfo(child, styleCache);
+          if (cInfo.role === 'OUT' && !cInfo.walkableOut) {
+            stats.outSkipped += 1;
+            continue;
+          }
+          visitContainer(child, shadowDepth);
+        }
+        return;
+      }
+
+      if (isAlreadyClaimed) {
+        // Still recurse into nested UL/OL inside an already-translated LI
+        if (isLi) {
+          for (const child of el.childNodes) {
+            if (child.nodeType === Node.ELEMENT_NODE && (child.tagName === 'UL' || child.tagName === 'OL')) {
+              visitContainer(child, shadowDepth);
+            }
+          }
+        }
+        return;
+      }
+
+      const isSemantic = SEMANTIC_BLOCK_TAGS.has(el.tagName);
+
+      // Collect effective children in DOM order, transparently flattening display: contents
+      const items = [];
+      let ownIfcText = '';
+      let ownNonLinkTextLen = 0;
+      const ifcLinks = [];
+      let hasClaimedInIfc = false;
+      let hasForbiddenInIfc = false;
+      let hasLiveInIfc = false;
+
+      const collectChildList = (parentNode) => {
+        for (const child of parentNode.childNodes) {
+          if (child.nodeType === Node.TEXT_NODE) {
+            const val = child.nodeValue || '';
+            if (val.trim().length > 0) {
+              ownIfcText += val;
+              ownNonLinkTextLen += val.trim().length;
+              items.push({ kind: 'TEXT', node: child, text: val });
+            }
+            continue;
+          }
+          if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+          if (child.tagName === 'SLOT' && child.assignedNodes && child.assignedNodes().length > 0) {
+            items.push({ kind: 'BARRIER', node: child });
+            continue;
+          }
+
+          if (scope !== 'all' && isExcludedChromeElement(child)) {
+            stats.outSkipped += 1;
+            continue;
+          }
+
+          const info = getLayoutInfo(child, styleCache);
+
+          if (info.role === 'CONTENTS') {
+            if (child.shadowRoot) {
+              items.push({ kind: 'BOX', node: child });
+            } else {
+              collectChildList(child);
+            }
+            continue;
+          }
+
+          if (info.role === 'OUT') {
+            if (info.walkableOut) {
+              items.push({ kind: 'WALKABLE_OUT', node: child });
+            } else {
+              stats.outSkipped += 1;
+              const live = info.hardReason === 'control' || LIVE_MEDIA_TAGS.has(child.tagName) || child.matches(LIVE_CONTROL_SELECTOR);
+              if (
+                (live || (!isSemantic && info.hardReason === 'media')) &&
+                hasVisibleControlStyle(child, styleCache)
+              ) {
+                // Live controls/media cannot be cloned into a translation (state, listeners, ids):
+                // they split the block even inside semantic tags.
+                items.push({ kind: 'BARRIER', node: child });
+              }
+            }
+            continue;
+          }
+
+          if (info.role === 'BOX') {
+            if (isLi && (child.tagName === 'UL' || child.tagName === 'OL')) {
+              items.push({ kind: 'NESTED_LIST', node: child });
+            } else {
+              items.push({ kind: 'BOX', node: child });
+            }
+            continue;
+          }
+
+          // INLINE
+          if (info.atomicInline) {
+            items.push({ kind: 'IFC_ATOMIC', node: child });
+            continue;
+          }
+
+          if (child.tagName === 'BR' || child.tagName === 'WBR') {
+            items.push({ kind: 'IFC_BR', node: child });
+            continue;
+          }
+
+          if (BLOCKING_MEDIA_TAGS.has(child.tagName)) {
+            if (!isSemantic) {
+              items.push({ kind: 'BARRIER', node: child });
+            }
+            continue;
+          }
+
+          if (child.shadowRoot) {
+            items.push({ kind: 'BOX', node: child });
+            continue;
+          }
+
+          // inline-block / inline-flex / inline-grid / inline-table are atomic inline boxes: inside a
+          // sentence they are part of it; a row made only of them (cards, chips) is a row of cells.
+          if (/^inline-(block|flex|grid|table)/.test(info.display || '')) {
+            const aSub = scanInlineSubtree(child, isLi);
+            if (aSub.hasClaimedDescendant) hasClaimedInIfc = true;
+            if (aSub.hasForbiddenControl) hasForbiddenInIfc = true;
+            if (aSub.hasLiveControl) hasLiveInIfc = true;
+            items.push({ kind: 'IFC_EL', node: child, sub: aSub, atomicBox: true });
+            continue;
+          }
+
+          const sub = scanInlineSubtree(child, isLi);
+          if (sub.hasClaimedDescendant) hasClaimedInIfc = true;
+          if (sub.hasForbiddenControl) hasForbiddenInIfc = true;
+          if (sub.hasLiveControl) hasLiveInIfc = true;
+
+          const hasSubstantiveInnerBox = sub.innerBoxes.some((b) => isSubstantiveBox(b, styleCache, scope));
+          if (hasSubstantiveInnerBox) {
+            if (sub.ifcText) ownIfcText += sub.ifcText;
+            items.push({ kind: 'INLINE_WITH_BOX', node: child, sub });
+          } else {
+            if (sub.ifcText) ownIfcText += sub.ifcText;
+            ownNonLinkTextLen += sub.nonLinkTextLen;
+            for (const a of sub.links) ifcLinks.push(a);
+            items.push({ kind: 'IFC_EL', node: child, sub });
+          }
+        }
+      };
+
+      collectChildList(el);
+
+      // Resolve atomic inline boxes now that the surrounding text is known.
+      const sentenceAround = LETTER_RE.test(ownIfcText);
+      for (const item of items) {
+        if (!item.atomicBox) continue;
+        if (!sentenceAround && LETTER_RE.test(item.sub.ifcText)) {
+          item.kind = 'BOX';
+        } else {
+          if (item.sub.ifcText) ownIfcText += item.sub.ifcText;
+          ownNonLinkTextLen += item.sub.nonLinkTextLen;
+          for (const a of item.sub.links) ifcLinks.push(a);
+        }
+      }
+
+      const hasOwnLetters = LETTER_RE.test(ownIfcText);
+
+      // Case 1: Pure layout container (no own IFC letters) -> recurse into child containers in DOM order
+      if (!hasOwnLetters) {
+        for (const item of items) {
+          if (item.kind === 'BOX' || item.kind === 'NESTED_LIST' || item.kind === 'WALKABLE_OUT') {
+            visitContainer(item.node, shadowDepth);
+          } else if (item.kind === 'INLINE_WITH_BOX') {
+            for (const b of item.sub.innerBoxes) visitContainer(b, shadowDepth);
+            for (const nl of item.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of item.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          } else if (item.kind === 'IFC_EL') {
+            for (const nl of item.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of item.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          }
+        }
+        return;
+      }
+
+      // Case 2: Container has own IFC text. Determine whether any BOX/BARRIER splits it.
+      let hasBlockingChild = false;
+      for (const item of items) {
+        if (item.kind === 'BOX') {
+          item.substantive = isSubstantiveBox(item.node, styleCache, scope);
+          if (item.substantive) hasBlockingChild = true;
+        } else if (item.kind === 'INLINE_WITH_BOX' || item.kind === 'BARRIER') {
+          hasBlockingChild = true;
+        }
+      }
+
+      // Step 3: Single clean IFC (no text-bearing BOX children, no already-claimed inline descendants)
+      if (!hasBlockingChild && !hasClaimedInIfc) {
+        // Generic container whose inline descendant contains visible controls/media (e.g. <div><a><img><span>Title</span></a></div>):
+        // descend into inline children instead of destroying the control/media.
+        if ((!isSemantic && hasForbiddenInIfc) || hasLiveInIfc) {
+          for (const item of items) {
+            if (item.kind === 'IFC_EL' && item.sub.hasForbiddenControl) {
+              visitContainer(item.node, shadowDepth);
+            } else if (item.kind === 'IFC_EL' && LETTER_RE.test(item.sub.ifcText)) {
+              tryClaimUnit(item.node, false);
+            } else if (item.kind === 'TEXT' && LETTER_RE.test(item.text)) {
+              stats.mixedSkipped += 1;
+            } else if (item.kind === 'NESTED_LIST' || item.kind === 'WALKABLE_OUT') {
+              visitContainer(item.node, shadowDepth);
+            }
+          }
+          return;
+        }
+
+        // Link-wrapper deferral: a <div>/<span> wrapping links with <4 chars of own non-link text
+        // defers to its <a> children (keeps multi-link bars/tags independent & clickable).
+        if (
+          (el.tagName === 'DIV' || el.tagName === 'SPAN') &&
+          ifcLinks.length > 0 &&
+          ownNonLinkTextLen < 4
+        ) {
+          if (ifcLinks.length === 1 && resolveInlineHost(el) === ifcLinks[0]) {
+            tryClaimUnit(el, false);
+          } else {
+            for (const a of ifcLinks) {
+              tryClaimUnit(a, false);
+            }
+          }
+        } else {
+          tryClaimUnit(el, isSemantic);
+        }
+
+        // Step 5 & 7: Always recurse into nested UL/OL inside LI and into walkable OUT boxes (floats/absolute)
+        for (const item of items) {
+          if (item.kind === 'NESTED_LIST' || item.kind === 'WALKABLE_OUT') {
+            visitContainer(item.node, shadowDepth);
+          } else if (item.kind === 'IFC_EL') {
+            for (const nl of item.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of item.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          }
+        }
+        return;
+      }
+
+      // Step 4: Mixed content (own IFC text + substantive BOX / BARRIER children)
+      // Split effective child list into maximal IFC runs between split boundaries in DOM order.
+      const flushRun = (run) => {
+        if (run.length === 0) return;
+
+        const significant = [];
+        let runText = '';
+        let hasBareText = false;
+
+        for (const it of run) {
+          if (it.kind === 'IFC_BR') continue;
+          significant.push(it);
+          if (it.kind === 'TEXT') {
+            runText += it.text;
+            if (LETTER_RE.test(it.text)) hasBareText = true;
+          } else if (it.kind === 'IFC_EL') {
+            runText += it.sub.ifcText;
+          }
+        }
+
+        if (!LETTER_RE.test(runText)) return;
+
+        if (!hasBareText && significant.length === 1 && significant[0].kind === 'IFC_EL') {
+          const loneItem = significant[0];
+          if (loneItem.sub.hasClaimedDescendant) {
+            visitContainer(loneItem.node, shadowDepth);
+          } else if (!isSemantic && loneItem.sub.hasForbiddenControl) {
+            visitContainer(loneItem.node, shadowDepth);
+          } else {
+            tryClaimUnit(loneItem.node, false);
+            for (const nl of loneItem.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of loneItem.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          }
+          return;
+        }
+
+        // Run contains bare text nodes (or multiple unwrapped inline siblings): cannot wrap safely.
+        stats.mixedSkipped += 1;
+        for (const it of significant) {
+          if (it.kind === 'IFC_EL') {
+            for (const nl of it.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of it.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          }
+        }
+      };
+
+      let currentRun = [];
+      for (const item of items) {
+        if (
+          item.kind === 'TEXT' ||
+          item.kind === 'IFC_EL' ||
+          item.kind === 'IFC_ATOMIC' ||
+          item.kind === 'IFC_BR'
+        ) {
+          currentRun.push(item);
+          continue;
+        }
+
+        if (item.kind === 'WALKABLE_OUT') {
+          // Out-of-flow boxes do not split the in-flow run, but must be walked independently.
+          continue;
+        }
+
+        if (item.kind === 'BOX' && !item.substantive) {
+          continue;
+        }
+
+        // Split boundary: substantive BOX, INLINE_WITH_BOX, BARRIER, or NESTED_LIST
+        flushRun(currentRun);
+        currentRun = [];
+
+        if (item.kind === 'BOX' || item.kind === 'NESTED_LIST') {
+          visitContainer(item.node, shadowDepth);
+        } else if (item.kind === 'INLINE_WITH_BOX') {
+          if (LETTER_RE.test(item.sub.ifcText)) {
+            stats.mixedSkipped += 1;
+          }
+          for (const b of item.sub.innerBoxes) visitContainer(b, shadowDepth);
+          for (const nl of item.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+          for (const wo of item.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+        }
+      }
+      flushRun(currentRun);
+
+      // Walk any out-of-flow boxes encountered in this mixed container
+      for (const item of items) {
+        if (item.kind === 'WALKABLE_OUT') {
+          visitContainer(item.node, shadowDepth);
+        }
+      }
+    };
+
+    const uniqueRoots = roots.length > 1
+      ? dedupeTopmost(roots.filter((r) => r && r.nodeType === Node.ELEMENT_NODE && r.isConnected))
+      : roots.filter((r) => r && r.nodeType === Node.ELEMENT_NODE && r.isConnected);
+
+    for (const root of uniqueRoots) {
+      if (root.closest && root.closest(SKIP_ANCESTOR_SELECTOR)) continue;
+      if (scope !== 'all' && root.closest && isInsideExcludedChrome(root)) continue;
+      const rootInfo = getLayoutInfo(root, styleCache);
+      if (rootInfo.role === 'OUT' && !rootInfo.walkableOut) {
+        stats.outSkipped += 1;
+        continue;
+      }
+      visitContainer(root, 0);
+    }
+
+    // A unit never contains another unit: the outer host renders its whole inline content, so an
+    // inner host (e.g. a float walked separately) would be moved into the outer's original wrapper.
+    let finalUnits = results;
+    if (results.length > 1) {
+      const hostSet = new Set(results);
+      finalUnits = results.filter((u) => {
+        let crossedNestedList = false;
+        for (let cur = u.parentElement; cur; cur = cur.parentElement) {
+          // An LI host only renders its own text up to its nested <ul>/<ol>; units inside that
+          // nested list are separate units, not nested ones.
+          if ((cur.tagName === 'UL' || cur.tagName === 'OL') && cur.parentElement && cur.parentElement.closest('li')) {
+            crossedNestedList = true;
+          }
+          if (hostSet.has(cur) && !(cur.tagName === 'LI' && crossedNestedList)) {
+            stats.nestedDropped = (stats.nestedDropped || 0) + 1;
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
+    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    stats.ms = Math.round((t1 - t0) * 10) / 10;
+    stats.units = finalUnits.length;
+    lastSegmentationStats = stats;
+
+    return finalUnits;
+  }
+
+  function collectUniversalCandidateElementsLegacy(roots, scope, elementState) {
     if (!Array.isArray(roots) || roots.length === 0) return [];
 
     preparePdfOverlayLayers(roots);
@@ -2396,7 +3491,6 @@
       if (el.querySelector(CHILD_BLOCK_SELECTOR)) return false;
       if (el.querySelector(LEAF_FORBIDDEN_DESCENDANT_SELECTOR)) return false;
       if (el.querySelector('[data-kct-ui="trans"]')) return false;
-      if (isCompositeLayoutBlock(el)) return false;
       if (el.closest(SKIP_ANCESTOR_SELECTOR)) return false;
       if (scope !== 'all' && (isInsideExcludedChrome(el) || el.closest(LEAF_UI_CONTROL_SELECTOR))) {
         return false;
@@ -2486,8 +3580,16 @@
     return combined;
   }
 
+  function collectUniversalCandidateElements(roots, scope, elementState) {
+    return collectTranslationUnits(roots, scope, elementState);
+  }
+
   globalThis.KCTSiteAnalyzer = {
     isCompositeLayoutBlock,
+    classifyLayoutRole,
+    collectTranslationUnits,
+    collectUniversalCandidateElementsLegacy,
+    getLastSegmentationStats,
     BLOCK_SELECTOR,
     SKIP_ANCESTOR_SELECTOR,
     NAV_EXCLUDE_SELECTOR,
@@ -2978,7 +4080,10 @@
     ':host-context(html.kct-mode-original) .kct-trans-wrap { display: none !important; }',
     ':host-context(html.kct-mode-original) .kct-orig-wrap { display: contents; }',
     ':host-context(html.kct-mode-bilingual) .kct-orig-wrap { display: contents; }',
-    ':host-context(html.kct-mode-bilingual) .kct-trans-wrap { display: block; margin-top: 0.35em; padding-left: 10px; border-left: 2px solid rgba(148,163,184,0.45); font-size: 0.94em; line-height: 1.7; opacity: 0.88; }'
+    ':host-context(html.kct-mode-bilingual) .kct-trans-wrap { display: block; margin-top: 0.35em; padding-left: 10px; border-left: 2px solid rgba(148,163,184,0.45); font-size: 0.94em; line-height: 1.7; opacity: 0.88; }',
+    ':host-context(html.kct-mode-bilingual) .kct-trans-wrap [data-kct-atomic="box"] { display: none !important; }',
+    ':host-context(html.kct-mode-replace) [data-kct-structure-fallback="1"] > .kct-orig-wrap { display: contents !important; }',
+    '.kct-flex-run { min-width: 0; }'
   ].join('\n');
 
   const GENERIC_FONT_TOKENS = new Set([
@@ -3198,14 +4303,61 @@
     return { ok: true, reason: '' };
   }
 
+  let cloneIdSeq = 0;
+
   function stripDuplicateIds(node, deep) {
     if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+    if (deep && node.querySelector('svg [id], svg[id]')) {
+      // SVG paints reference ids (url(#grad), <use href="#icon">). Rename them inside the clone and
+      // rewrite the references, so the clone does not point at definitions in the hidden original.
+      const suffix = `-kct${++cloneIdSeq}`;
+      const renamed = new Map();
+      for (const desc of node.querySelectorAll('svg [id], svg[id]')) {
+        const id = desc.getAttribute('id');
+        renamed.set(id, id + suffix);
+        desc.setAttribute('id', id + suffix);
+      }
+      const rewrite = (value) => value.replace(/url\(\s*(['"]?)#([^'")\s]+)\1\s*\)/g, (m, q, id) => (renamed.has(id) ? `url(#${renamed.get(id)})` : m));
+      for (const el of node.querySelectorAll('svg *, svg')) {
+        for (const attr of Array.from(el.attributes)) {
+          if ((attr.name === 'href' || attr.name === 'xlink:href') && attr.value.startsWith('#') && renamed.has(attr.value.slice(1))) {
+            el.setAttribute(attr.name, '#' + renamed.get(attr.value.slice(1)));
+          } else if (attr.value.includes('url(#')) {
+            el.setAttribute(attr.name, rewrite(attr.value));
+          }
+        }
+      }
+    }
     if (node.hasAttribute('id')) node.removeAttribute('id');
     if (deep) {
       for (const desc of node.querySelectorAll('[id]')) {
+        if (desc.closest('svg')) continue;
         desc.removeAttribute('id');
       }
     }
+  }
+
+  const ATOMIC_BOX_SELECTOR = 'img, picture, svg, video, canvas, iframe, object, embed, input, select, textarea, button, progress, meter';
+  const LAZY_SRC_ATTRS = ['data-src', 'data-lazy-src', 'data-original', 'data-lazy'];
+
+  // Mark the clone's kind (bilingual mode hides media/box copies, since the original is visible
+  // there too) and give lazy-loaded images their real source (the hidden original never loads).
+  function prepareAtomicClone(clone, origNode, snap) {
+    const display = snap?.__display || '';
+    const isBox = clone.matches(ATOMIC_BOX_SELECTOR) || Boolean(clone.querySelector(ATOMIC_BOX_SELECTOR)) ||
+      (display && !display.startsWith('inline') && display !== 'contents');
+    clone.setAttribute('data-kct-atomic', isBox ? 'box' : 'inline');
+    const imgs = clone.matches('img') ? [clone] : Array.from(clone.querySelectorAll('img'));
+    const origImgs = origNode.matches('img') ? [origNode] : Array.from(origNode.querySelectorAll('img'));
+    imgs.forEach((img, i) => {
+      const orig = origImgs[i];
+      const live = orig && orig.complete && orig.naturalWidth > 0 ? orig.currentSrc || orig.src : '';
+      const lazy = LAZY_SRC_ATTRS.map((a) => img.getAttribute(a)).find(Boolean);
+      if (live) img.setAttribute('src', live);
+      else if (lazy) img.setAttribute('src', lazy);
+      if (img.getAttribute('loading') === 'lazy') img.removeAttribute('loading');
+      if (live || lazy) img.removeAttribute('srcset');
+    });
   }
 
   function appendTextWithBreaks(parent, str) {
@@ -3247,7 +4399,9 @@
           if (origNode) {
             const clone = origNode.cloneNode(true);
             stripDuplicateIds(clone, true);
+            prepareAtomicClone(clone, origNode, map.styleSnapshots?.get(origNode));
             currentParent.appendChild(clone);
+            if (map.clonePairs) map.clonePairs.push([clone, origNode]);
           }
           continue;
         }
@@ -3257,11 +4411,14 @@
           if (origNode) {
             const clone = origNode.cloneNode(false);
             stripDuplicateIds(clone, false);
-            // A paired tag is rebuilt as an inline run inside translated prose; never let a
-            // block/flex/grid original turn the translated text into separate layout boxes.
+            if (map.clonePairs) map.clonePairs.push([clone, origNode]);
+            // A paired tag is rebuilt around translated prose; never let a flex/grid original turn
+            // the translated text runs into separate layout cells (block originals keep their box).
             try {
-              const d = origNode.isConnected ? getComputedStyle(origNode).display : 'inline';
-              if (d && !d.startsWith('inline') && d !== 'contents') clone.style.display = 'inline';
+              // The original is already inside the detached .kct-orig-wrap here, so use the display
+              // recorded at extraction time.
+              const d = map.styleSnapshots?.get(origNode)?.__display || '';
+              if (/flex|grid/.test(d)) clone.style.display = 'inline';
             } catch (_) { /* ignore */ }
             currentParent.appendChild(clone);
             stack.push({ key: openKey, node: clone });
@@ -3762,12 +4919,73 @@
     }
   }
 
+  // Clones sit in a new DOM position (inside .kct-trans-wrap), where site selectors that depend on
+  // the original parent (`.titleline > a`) no longer match. Re-apply the typography recorded at
+  // extraction time wherever the clone now renders differently, so translation looks like the original.
+  function restoreCloneTypography(placeholders) {
+    const pairs = placeholders?.clonePairs;
+    const snaps = placeholders?.styleSnapshots;
+    if (!pairs || !snaps) return;
+    // Read everything first, then write (avoids a style recalculation per property).
+    const writes = [];
+    for (const [clone, origNode] of pairs) {
+      const snap = snaps.get(origNode);
+      if (!snap || !snap.__parent || !clone.isConnected || !clone.parentElement) continue;
+      let cs = null;
+      let ps = null;
+      try { cs = getComputedStyle(clone); ps = getComputedStyle(clone.parentElement); } catch (_) { continue; }
+      for (const prop of Object.keys(snap)) {
+        if (prop.startsWith('__')) continue;
+        // Only the element's OWN styling (it differed from its original parent) is restored, and only
+        // when the clone lost it (it now matches its new parent).
+        if (snap[prop] === snap.__parent[prop]) continue;
+        if (prop === 'fontSize') {
+          const own = parseFloat(snap.fontSize);
+          const par = parseFloat(snap.__parent.fontSize);
+          const nowPar = parseFloat(ps.fontSize);
+          const now = parseFloat(cs.fontSize);
+          if (!own || !par || !nowPar) continue;
+          const want = (own / par) * nowPar; // keep the relative size (bilingual mode scales the wrapper)
+          if (Math.abs(now - want) > 0.5) writes.push([clone, 'font-size', `${want.toFixed(2)}px`]);
+          continue;
+        }
+        if (cs[prop] === ps[prop] && cs[prop] !== snap[prop]) {
+          writes.push([clone, prop.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase()), snap[prop]]);
+        }
+      }
+    }
+    for (const [clone, prop, value] of writes) clone.style.setProperty(prop, value);
+    placeholders.clonePairs = null;
+  }
+
+
+  // Inside a flex/grid host every child node is its own layout item. Mirror the original item
+  // structure: atomic clones (icons, code, kept boxes) stay separate items, and each run of translated
+  // text + inline tags between them becomes ONE item, so a sentence is never split into cells.
+  function groupFlexRuns(transWrap) {
+    let run = null;
+    for (const node of Array.from(transWrap.childNodes)) {
+      const isItem = node.nodeType === Node.ELEMENT_NODE && node.hasAttribute('data-kct-atomic');
+      if (isItem) {
+        run = null;
+        continue;
+      }
+      if (!run) {
+        if (node.nodeType === Node.TEXT_NODE && !node.nodeValue.trim()) continue;
+        run = document.createElement('span');
+        run.className = 'kct-flex-run';
+        transWrap.insertBefore(run, node);
+      }
+      run.appendChild(node);
+    }
+  }
+
   function applyBlockTranslation(job, settings, state) {
     const { el, zh, placeholders, nestedListEl, typo } = job;
     if (!el || !el.isConnected) {
       return 'disconnected';
     }
-    if (el.hasAttribute('data-kct-has-trans') || el.querySelector('[data-kct-ui="trans"]')) {
+    if (el.hasAttribute('data-kct-has-trans') || el.querySelector(':scope > [data-kct-ui="trans"]')) {
       if (state?.elementState) state.elementState.set(el, 'done');
       return 'already';
     }
@@ -3778,9 +4996,19 @@
     origWrap.className = 'kct-orig-wrap';
     origWrap.setAttribute('data-kct-ui', 'orig');
 
+    // The nested list (or the wrapper that contains it, e.g. a display:contents <div>) stays in place.
+    let listAnchor = null;
+    if (nestedListEl && el.contains(nestedListEl)) {
+      for (const child of el.childNodes) {
+        if (child === nestedListEl || (child.nodeType === Node.ELEMENT_NODE && child.contains(nestedListEl))) {
+          listAnchor = child;
+          break;
+        }
+      }
+    }
     const children = Array.from(el.childNodes);
     for (const child of children) {
-      if (nestedListEl && child === nestedListEl) break;
+      if (listAnchor && child === listAnchor) break;
       origWrap.appendChild(child);
     }
 
@@ -3792,6 +5020,7 @@
 
     if (validation.ok) {
       el.removeAttribute('data-kct-structure-fallback');
+      if (placeholders instanceof Map) placeholders.clonePairs = [];
       transWrap.appendChild(buildTranslatedFragment(zh, placeholders));
     } else {
       console.debug('[NativeRead] structure fallback:', validation.reason);
@@ -3802,6 +5031,15 @@
     if (needsInlineInjection(el)) {
       el.setAttribute('data-kct-inline-layout', '1');
     }
+    // In replace mode the translation wrapper is display:contents. Inside a flex/grid host that
+    // would turn every translated text run and link into its own layout cell, so the wrapper
+    // becomes ONE cell there instead.
+    try {
+      if (/flex|grid/.test(getComputedStyle(el).display || '')) {
+        el.setAttribute('data-kct-flex-host', '1');
+        groupFlexRuns(transWrap);
+      }
+    } catch (_) { /* ignore */ }
 
     const typoInfo = typo || KCTSiteAnalyzer?.probeTypography?.(el) || {
       archetype: 'sans',
@@ -3824,14 +5062,15 @@
       el.removeAttribute('data-kct-has-orig-font');
     }
 
-    if (nestedListEl && nestedListEl.parentElement === el) {
-      el.insertBefore(origWrap, nestedListEl);
-      el.insertBefore(transWrap, nestedListEl);
+    if (listAnchor && listAnchor.parentNode === el) {
+      el.insertBefore(origWrap, listAnchor);
+      el.insertBefore(transWrap, listAnchor);
     } else {
       el.append(origWrap, transWrap);
     }
 
     el.setAttribute('data-kct-has-trans', '1');
+    restoreCloneTypography(placeholders);
     if (el.getAttribute('data-kct-pdf-block') === '1') {
       if (el.getAttribute('data-kct-pdf-toc') === '1') appendPdfTocTail(el);
       styleAndFitPdfOverlayBlock(el);
@@ -3922,6 +5161,7 @@
       el.removeAttribute('data-kct-has-trans');
       el.removeAttribute('data-kct-structure-fallback');
       el.removeAttribute('data-kct-inline-layout');
+      el.removeAttribute('data-kct-flex-host');
       el.removeAttribute('data-kct-typo');
       el.removeAttribute('data-kct-lh-lift');
       el.removeAttribute('data-kct-has-orig-font');
@@ -4163,7 +5403,7 @@
   const KCTRenderer = globalThis.KCTRenderer;
   const KCTCodeOverlay = globalThis.KCTCodeOverlay;
 
-  const PAGE_STYLE_CSS = "/* Universal AI Web & Notebook Translator v2.0 - Page Typography & Mode Rules */\n/* Note: Floating control pill & selection popover are encapsulated in Shadow DOM. */\n\n:root {\n  --kct-accent: #0284c7;\n  --kct-accent-soft: rgba(2, 132, 199, 0.08);\n  --kct-hairline: rgba(148, 163, 184, 0.45);\n  --kct-border: rgba(15, 23, 42, 0.12);\n  --kct-text: #1e293b;\n  --kct-bilingual-ink: #475569;\n  --kct-bg: rgba(255, 255, 255, 0.9);\n\n  /* Default target language: Traditional Chinese (zh-TW) */\n  --kct-font-serif: \"Noto Serif TC\", \"Songti TC\", \"PMingLiU\", \"Source Han Serif TC\", Georgia, serif;\n  --kct-font-sans: \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", \"Heiti TC\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", monospace;\n}\n\nhtml.kct-lang-sc {\n  --kct-font-serif: \"Noto Serif SC\", \"Songti SC\", \"STSong\", \"SimSun\", \"Source Han Serif SC\", Georgia, serif;\n  --kct-font-sans: \"PingFang SC\", \"Noto Sans SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang SC\", \"Noto Sans SC\", \"Microsoft YaHei\", monospace;\n}\n\nhtml.kct-lang-ja {\n  --kct-font-serif: \"Hiragino Mincho ProN\", \"Yu Mincho\", \"Noto Serif JP\", \"MS PMincho\", Georgia, serif;\n  --kct-font-sans: \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"Noto Sans JP\", \"Yu Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Hiragino Sans\", \"Noto Sans JP\", monospace;\n}\n\nhtml.kct-lang-ko {\n  --kct-font-serif: \"Noto Serif KR\", \"AppleMyungjo\", \"Batang\", Georgia, serif;\n  --kct-font-sans: \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Apple SD Gothic Neo\", \"Noto Sans KR\", monospace;\n}\n\nhtml.kct-lang-latin {\n  --kct-font-serif: Georgia, \"Charter\", \"Times New Roman\", serif;\n  --kct-font-sans: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Inter\", sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace;\n}\n\nhtml.kct-page-dark,\nbody[data-jp-theme-light=\"false\"],\nhtml[data-theme=\"dark\"],\nhtml.dark,\nbody.theme-dark {\n  --kct-accent: #38bdf8;\n  --kct-accent-soft: rgba(56, 189, 248, 0.12);\n  --kct-hairline: rgba(148, 163, 184, 0.34);\n  --kct-border: rgba(255, 255, 255, 0.16);\n  --kct-text: #f1f5f9;\n  --kct-bilingual-ink: #cbd5e1;\n  --kct-bg: rgba(15, 23, 42, 0.9);\n}\n\n/* Preserve table & Infobox column widths when CJK labels sit next to long unbroken URLs */\nhtml.kct-active:not(.kct-mode-original) table th[data-kct-has-trans=\"1\"] {\n  min-width: 4.5em;\n  word-break: keep-all;\n  overflow-wrap: break-word;\n}\n\nhtml.kct-active:not(.kct-mode-original) table td[data-kct-has-trans=\"1\"],\nhtml.kct-active:not(.kct-mode-original) .infobox td {\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n/* =========================================================\n   1. Replace Mode (Native-Feel Typography Matching)\n   ========================================================= */\nhtml.kct-mode-replace .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-replace .kct-trans-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\n/* Native mode: keep original site Latin font first (when non-generic), fall back to matched Serif/Sans/Mono CJK */\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-font-mono) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-mono) !important;\n}\n\n/* System mode: uniform clean sans font */\nhtml.kct-typo-system.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\n/* Preserve mode: do not override font-family or line-height */\n\n/* Selective line-height lift ONLY on dense multi-line reading prose */\nhtml.kct-mode-replace:not(.kct-typo-preserve) [data-kct-has-trans=\"1\"][data-kct-lh-lift=\"1\"] {\n  line-height: 1.72 !important;\n}\n\n/* =========================================================\n   2. Original Mode (Instant Zero-Cost Compare)\n   ========================================================= */\nhtml.kct-mode-original .kct-trans-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-original .kct-orig-wrap {\n  display: contents;\n}\n\n/* =========================================================\n   3. Bilingual Mode (Clean Hairline Contrast)\n   ========================================================= */\nhtml.kct-mode-bilingual .kct-orig-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-bilingual .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-mono);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-mono);\n}\n\nhtml.kct-typo-system.kct-mode-bilingual .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-mode-bilingual [data-kct-inline-layout=\"1\"] > .kct-trans-wrap {\n  display: inline;\n  margin-top: 0;\n  margin-left: 0.45em;\n  padding-left: 0.45em;\n  border-left: 1px solid var(--kct-hairline);\n}\n\n/* =========================================================\n   Non-destructive Code Comment Translation\n   - Static <pre>: CSS attr() + font-size:0 swap\n   - CodeMirror 6 (.cm-editor): non-intrusive .cm-scroller overlay layer\n   ========================================================= */\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans] {\n  font-size: 0 !important;\n  letter-spacing: 0 !important;\n}\n\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans]::after {\n  content: attr(data-kct-comment-trans);\n  font-size: var(--kct-code-font-size, 13px);\n  letter-spacing: normal;\n  font-family: var(--kct-font-mono);\n}\n\n.kct-cm-layer {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 4;\n  overflow: visible;\n}\n\n.kct-cm-comment {\n  position: absolute;\n  display: flex;\n  align-items: center;\n  white-space: pre;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  font-family: var(--kct-font-mono);\n  pointer-events: none;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-cm-layer,\nhtml:not(.kct-comments-on) .kct-cm-layer,\nhtml .cm-editor.cm-focused .kct-cm-layer {\n  display: none !important;\n}\n\n/* =========================================================\n   Jupyter Code Cell Output Quick Translate Button & Result\n   ========================================================= */\n.kct-output-host {\n  position: relative;\n}\n\n.kct-output-btn {\n  all: unset;\n  box-sizing: border-box;\n  position: absolute;\n  top: 6px;\n  right: 8px;\n  z-index: 10;\n  cursor: pointer;\n  font-family: var(--kct-font-sans);\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: var(--kct-bg);\n  color: var(--kct-accent);\n  border: 1px solid var(--kct-border);\n  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);\n  opacity: 0.85;\n  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;\n}\n\n.kct-output-btn:hover {\n  opacity: 1;\n  background: var(--kct-accent);\n  color: #ffffff;\n  border-color: transparent;\n}\n\n.kct-output-trans {\n  font-family: var(--kct-font-sans);\n  color: var(--kct-text);\n  background: var(--kct-accent-soft);\n  border-left: 2px solid var(--kct-accent);\n  border-radius: 0 6px 6px 0;\n  padding: 8px 12px;\n  margin-top: 8px;\n  font-size: 13px;\n  line-height: 1.65;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n/* =========================================================\n   5. Image/Canvas-Backed PDF Text Layer Overlay (Google Drive PDF Viewer)\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] {\n  z-index: 2 !important;\n  opacity: 1 !important;\n  pointer-events: none !important;\n  overflow: visible !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > :not([data-kct-has-trans=\"1\"]),\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > [data-kct-pdf-merged=\"absorbed\"] {\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] {\n  opacity: 1 !important;\n  pointer-events: auto !important;\n  background-color: var(--kct-pdf-bg, #ffffff) !important;\n  box-shadow: 0 0 0 2px var(--kct-pdf-bg, #ffffff) !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  font-size: var(--kct-pdf-fs, 13px) !important;\n  line-height: var(--kct-pdf-lh, 1.42) !important;\n  font-weight: var(--kct-pdf-fw, 400) !important;\n  box-sizing: border-box !important;\n  margin: 0 !important;\n  padding: 1px 4px !important;\n  border-radius: 2px !important;\n  display: block !important;\n  white-space: normal !important;\n  word-break: break-word !important;\n  overflow: hidden !important;\n  transition: box-shadow 0.14s ease;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  overflow: visible !important;\n  height: auto !important;\n}\n\n/* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: contents !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  margin: 0 !important;\n  padding: 0 !important;\n  border: none !important;\n  font-size: inherit !important;\n  line-height: inherit !important;\n  font-weight: inherit !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  height: auto !important;\n  padding: 8px 10px !important;\n  border-radius: 6px !important;\n  border: 1px solid var(--kct-accent) !important;\n  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.25) !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: block !important;\n  font-size: 0.86em !important;\n  line-height: 1.4 !important;\n  opacity: 0.76 !important;\n  margin-bottom: 6px !important;\n  padding-bottom: 6px !important;\n  border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;\n}\n\n/* =========================================================\n   Google Drive PDF: table-of-contents rows\n   (translated title + native dot leader + right-aligned page number).\n   Placed last so it overrides the generic overlay / bilingual hover rules above.\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] {\n  display: flex !important;\n  align-items: baseline !important;\n  white-space: nowrap !important;\n  overflow: hidden !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap,\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: block !important;\n  flex: 0 1 auto !important;\n  min-width: 0 !important;\n  overflow: hidden !important;\n  text-overflow: ellipsis !important;\n  white-space: nowrap !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  height: auto !important;\n  padding: 1px 4px !important;\n}\n\n[data-kct-pdf-layer=\"1\"] > p > .kct-pdf-toc-tail {\n  display: none;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-pdf-toc-tail {\n  display: flex !important;\n  flex: 1 1 auto !important;\n  align-items: baseline !important;\n  min-width: 2.2em !important;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-leader {\n  flex: 1 1 auto;\n  height: 0;\n  margin: 0 0.5em;\n  border-bottom: 0.13em dotted currentColor;\n  opacity: 0.6;\n}\n\n[data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-toc-leader=\"none\"] .kct-pdf-toc-leader {\n  border-bottom-color: transparent;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-num {\n  flex: none;\n  font-variant-numeric: tabular-nums;\n}\n\n/* =========================================================\n   6. R4: On-Demand Vision Image Overlay Translation\n   ========================================================= */\n.kct-img-overlay-host {\n  position: relative;\n  line-height: 0;\n}\n\n.kct-img-overlay-layer {\n  position: absolute;\n  pointer-events: none;\n  z-index: 6;\n  overflow: hidden;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-img-overlay-layer,\n.kct-img-overlay-host > img[data-kct-img-mode=\"original\"] ~ .kct-img-overlay-layer {\n  display: none !important;\n}\n\n.kct-img-overlay-block {\n  position: absolute;\n  box-sizing: border-box;\n  background-color: var(--kct-img-bg, #ffffff);\n  box-shadow: 0 0 0 2px var(--kct-img-bg, #ffffff);\n  color: var(--kct-img-fg, #1e293b);\n  font-family: var(--kct-font-sans);\n  line-height: 1.28;\n  padding: 1px 3px;\n  border-radius: 3px;\n  display: flex;\n  align-items: center;\n  white-space: normal;\n  word-break: break-word;\n  overflow: hidden;\n  pointer-events: auto;\n}\n\n.kct-img-overlay-block.kct-img-role-title {\n  font-weight: 700;\n  line-height: 1.22;\n}\n\n.kct-img-overlay-block.kct-img-role-badge {\n  font-weight: 600;\n  justify-content: center;\n  text-align: center;\n  border-radius: 999px;\n}\n\n.kct-img-overlay-block:hover {\n  z-index: 20;\n  overflow: visible;\n  height: auto !important;\n  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--kct-accent);\n}\n\n/* =========================================================\n   Structure guard: when a translation lost a link or protected node,\n   keep the clickable original visible next to the translation.\n   ========================================================= */\nhtml.kct-mode-replace [data-kct-structure-fallback=\"1\"] > .kct-orig-wrap {\n  display: contents !important;\n}\n\nhtml.kct-mode-replace [data-kct-structure-fallback=\"1\"] > .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n";
+  const PAGE_STYLE_CSS = "/* Universal AI Web & Notebook Translator v2.0 - Page Typography & Mode Rules */\n/* Note: Floating control pill & selection popover are encapsulated in Shadow DOM. */\n\n:root {\n  --kct-accent: #0284c7;\n  --kct-accent-soft: rgba(2, 132, 199, 0.08);\n  --kct-hairline: rgba(148, 163, 184, 0.45);\n  --kct-border: rgba(15, 23, 42, 0.12);\n  --kct-text: #1e293b;\n  --kct-bilingual-ink: #475569;\n  --kct-bg: rgba(255, 255, 255, 0.9);\n\n  /* Default target language: Traditional Chinese (zh-TW) */\n  --kct-font-serif: \"Noto Serif TC\", \"Songti TC\", \"PMingLiU\", \"Source Han Serif TC\", Georgia, serif;\n  --kct-font-sans: \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", \"Heiti TC\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", monospace;\n}\n\nhtml.kct-lang-sc {\n  --kct-font-serif: \"Noto Serif SC\", \"Songti SC\", \"STSong\", \"SimSun\", \"Source Han Serif SC\", Georgia, serif;\n  --kct-font-sans: \"PingFang SC\", \"Noto Sans SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang SC\", \"Noto Sans SC\", \"Microsoft YaHei\", monospace;\n}\n\nhtml.kct-lang-ja {\n  --kct-font-serif: \"Hiragino Mincho ProN\", \"Yu Mincho\", \"Noto Serif JP\", \"MS PMincho\", Georgia, serif;\n  --kct-font-sans: \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"Noto Sans JP\", \"Yu Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Hiragino Sans\", \"Noto Sans JP\", monospace;\n}\n\nhtml.kct-lang-ko {\n  --kct-font-serif: \"Noto Serif KR\", \"AppleMyungjo\", \"Batang\", Georgia, serif;\n  --kct-font-sans: \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Apple SD Gothic Neo\", \"Noto Sans KR\", monospace;\n}\n\nhtml.kct-lang-latin {\n  --kct-font-serif: Georgia, \"Charter\", \"Times New Roman\", serif;\n  --kct-font-sans: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Inter\", sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace;\n}\n\nhtml.kct-page-dark,\nbody[data-jp-theme-light=\"false\"],\nhtml[data-theme=\"dark\"],\nhtml.dark,\nbody.theme-dark {\n  --kct-accent: #38bdf8;\n  --kct-accent-soft: rgba(56, 189, 248, 0.12);\n  --kct-hairline: rgba(148, 163, 184, 0.34);\n  --kct-border: rgba(255, 255, 255, 0.16);\n  --kct-text: #f1f5f9;\n  --kct-bilingual-ink: #cbd5e1;\n  --kct-bg: rgba(15, 23, 42, 0.9);\n}\n\n/* Preserve table & Infobox column widths when CJK labels sit next to long unbroken URLs */\nhtml.kct-active:not(.kct-mode-original) table th[data-kct-has-trans=\"1\"] {\n  min-width: 4.5em;\n  word-break: keep-all;\n  overflow-wrap: break-word;\n}\n\nhtml.kct-active:not(.kct-mode-original) table td[data-kct-has-trans=\"1\"],\nhtml.kct-active:not(.kct-mode-original) .infobox td {\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n/* =========================================================\n   1. Replace Mode (Native-Feel Typography Matching)\n   ========================================================= */\nhtml.kct-mode-replace .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-replace .kct-trans-wrap {\n  display: contents;\n}\n\n/* Bilingual mode shows the original too: hide media/box copies so they are not shown twice. */\nhtml.kct-mode-bilingual .kct-trans-wrap [data-kct-atomic=\"box\"] {\n  display: none !important;\n}\n\n/* Flex/grid hosts: each translated text run is ONE item (.kct-flex-run), atomic clones stay items. */\n.kct-flex-run {\n  min-width: 0;\n}\n\nhtml.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\n/* Native mode: keep original site Latin font first (when non-generic), fall back to matched Serif/Sans/Mono CJK */\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-font-mono) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-mono) !important;\n}\n\n/* System mode: uniform clean sans font */\nhtml.kct-typo-system.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\n/* Preserve mode: do not override font-family or line-height */\n\n/* Selective line-height lift ONLY on dense multi-line reading prose */\nhtml.kct-mode-replace:not(.kct-typo-preserve) [data-kct-has-trans=\"1\"][data-kct-lh-lift=\"1\"] {\n  line-height: 1.72 !important;\n}\n\n/* =========================================================\n   2. Original Mode (Instant Zero-Cost Compare)\n   ========================================================= */\nhtml.kct-mode-original .kct-trans-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-original .kct-orig-wrap {\n  display: contents;\n}\n\n/* =========================================================\n   3. Bilingual Mode (Clean Hairline Contrast)\n   ========================================================= */\nhtml.kct-mode-bilingual .kct-orig-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-bilingual .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-mono);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-mono);\n}\n\nhtml.kct-typo-system.kct-mode-bilingual .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-mode-bilingual [data-kct-inline-layout=\"1\"] > .kct-trans-wrap {\n  display: inline;\n  margin-top: 0;\n  margin-left: 0.45em;\n  padding-left: 0.45em;\n  border-left: 1px solid var(--kct-hairline);\n}\n\n/* =========================================================\n   Non-destructive Code Comment Translation\n   - Static <pre>: CSS attr() + font-size:0 swap\n   - CodeMirror 6 (.cm-editor): non-intrusive .cm-scroller overlay layer\n   ========================================================= */\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans] {\n  font-size: 0 !important;\n  letter-spacing: 0 !important;\n}\n\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans]::after {\n  content: attr(data-kct-comment-trans);\n  font-size: var(--kct-code-font-size, 13px);\n  letter-spacing: normal;\n  font-family: var(--kct-font-mono);\n}\n\n.kct-cm-layer {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 4;\n  overflow: visible;\n}\n\n.kct-cm-comment {\n  position: absolute;\n  display: flex;\n  align-items: center;\n  white-space: pre;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  font-family: var(--kct-font-mono);\n  pointer-events: none;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-cm-layer,\nhtml:not(.kct-comments-on) .kct-cm-layer,\nhtml .cm-editor.cm-focused .kct-cm-layer {\n  display: none !important;\n}\n\n/* =========================================================\n   Jupyter Code Cell Output Quick Translate Button & Result\n   ========================================================= */\n.kct-output-host {\n  position: relative;\n}\n\n.kct-output-btn {\n  all: unset;\n  box-sizing: border-box;\n  position: absolute;\n  top: 6px;\n  right: 8px;\n  z-index: 10;\n  cursor: pointer;\n  font-family: var(--kct-font-sans);\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: var(--kct-bg);\n  color: var(--kct-accent);\n  border: 1px solid var(--kct-border);\n  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);\n  opacity: 0.85;\n  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;\n}\n\n.kct-output-btn:hover {\n  opacity: 1;\n  background: var(--kct-accent);\n  color: #ffffff;\n  border-color: transparent;\n}\n\n.kct-output-trans {\n  font-family: var(--kct-font-sans);\n  color: var(--kct-text);\n  background: var(--kct-accent-soft);\n  border-left: 2px solid var(--kct-accent);\n  border-radius: 0 6px 6px 0;\n  padding: 8px 12px;\n  margin-top: 8px;\n  font-size: 13px;\n  line-height: 1.65;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n/* =========================================================\n   5. Image/Canvas-Backed PDF Text Layer Overlay (Google Drive PDF Viewer)\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] {\n  z-index: 2 !important;\n  opacity: 1 !important;\n  pointer-events: none !important;\n  overflow: visible !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > :not([data-kct-has-trans=\"1\"]),\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > [data-kct-pdf-merged=\"absorbed\"] {\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] {\n  opacity: 1 !important;\n  pointer-events: auto !important;\n  background-color: var(--kct-pdf-bg, #ffffff) !important;\n  box-shadow: 0 0 0 2px var(--kct-pdf-bg, #ffffff) !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  font-size: var(--kct-pdf-fs, 13px) !important;\n  line-height: var(--kct-pdf-lh, 1.42) !important;\n  font-weight: var(--kct-pdf-fw, 400) !important;\n  box-sizing: border-box !important;\n  margin: 0 !important;\n  padding: 1px 4px !important;\n  border-radius: 2px !important;\n  display: block !important;\n  white-space: normal !important;\n  word-break: break-word !important;\n  overflow: hidden !important;\n  transition: box-shadow 0.14s ease;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  overflow: visible !important;\n  height: auto !important;\n}\n\n/* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: contents !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  margin: 0 !important;\n  padding: 0 !important;\n  border: none !important;\n  font-size: inherit !important;\n  line-height: inherit !important;\n  font-weight: inherit !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  height: auto !important;\n  padding: 8px 10px !important;\n  border-radius: 6px !important;\n  border: 1px solid var(--kct-accent) !important;\n  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.25) !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: block !important;\n  font-size: 0.86em !important;\n  line-height: 1.4 !important;\n  opacity: 0.76 !important;\n  margin-bottom: 6px !important;\n  padding-bottom: 6px !important;\n  border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;\n}\n\n/* =========================================================\n   Google Drive PDF: table-of-contents rows\n   (translated title + native dot leader + right-aligned page number).\n   Placed last so it overrides the generic overlay / bilingual hover rules above.\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] {\n  display: flex !important;\n  align-items: baseline !important;\n  white-space: nowrap !important;\n  overflow: hidden !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap,\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: block !important;\n  flex: 0 1 auto !important;\n  min-width: 0 !important;\n  overflow: hidden !important;\n  text-overflow: ellipsis !important;\n  white-space: nowrap !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  height: auto !important;\n  padding: 1px 4px !important;\n}\n\n[data-kct-pdf-layer=\"1\"] > p > .kct-pdf-toc-tail {\n  display: none;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-pdf-toc=\"1\"][data-kct-has-trans=\"1\"] > .kct-pdf-toc-tail {\n  display: flex !important;\n  flex: 1 1 auto !important;\n  align-items: baseline !important;\n  min-width: 2.2em !important;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-leader {\n  flex: 1 1 auto;\n  height: 0;\n  margin: 0 0.5em;\n  border-bottom: 0.13em dotted currentColor;\n  opacity: 0.6;\n}\n\n[data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-toc-leader=\"none\"] .kct-pdf-toc-leader {\n  border-bottom-color: transparent;\n}\n\n[data-kct-pdf-layer=\"1\"] .kct-pdf-toc-num {\n  flex: none;\n  font-variant-numeric: tabular-nums;\n}\n\n/* =========================================================\n   6. R4: On-Demand Vision Image Overlay Translation\n   ========================================================= */\n.kct-img-overlay-host {\n  position: relative;\n  line-height: 0;\n}\n\n.kct-img-overlay-layer {\n  position: absolute;\n  pointer-events: none;\n  z-index: 6;\n  overflow: hidden;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-img-overlay-layer,\n.kct-img-overlay-host > img[data-kct-img-mode=\"original\"] ~ .kct-img-overlay-layer {\n  display: none !important;\n}\n\n.kct-img-overlay-block {\n  position: absolute;\n  box-sizing: border-box;\n  background-color: var(--kct-img-bg, #ffffff);\n  box-shadow: 0 0 0 2px var(--kct-img-bg, #ffffff);\n  color: var(--kct-img-fg, #1e293b);\n  font-family: var(--kct-font-sans);\n  line-height: 1.28;\n  padding: 1px 3px;\n  border-radius: 3px;\n  display: flex;\n  align-items: center;\n  white-space: normal;\n  word-break: break-word;\n  overflow: hidden;\n  pointer-events: auto;\n}\n\n.kct-img-overlay-block.kct-img-role-title {\n  font-weight: 700;\n  line-height: 1.22;\n}\n\n.kct-img-overlay-block.kct-img-role-badge {\n  font-weight: 600;\n  justify-content: center;\n  text-align: center;\n  border-radius: 999px;\n}\n\n.kct-img-overlay-block:hover {\n  z-index: 20;\n  overflow: visible;\n  height: auto !important;\n  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--kct-accent);\n}\n\n/* =========================================================\n   Structure guard: when a translation lost a link or protected node,\n   keep the clickable original visible next to the translation.\n   ========================================================= */\nhtml.kct-mode-replace [data-kct-structure-fallback=\"1\"] > .kct-orig-wrap {\n  display: contents !important;\n}\n\nhtml.kct-mode-replace [data-kct-structure-fallback=\"1\"] > .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n";
 
   // ============================================================
   // 1. Storage Adapter (GM_getValue / GM_setValue + localStorage)

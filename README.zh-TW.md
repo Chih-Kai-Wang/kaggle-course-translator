@@ -2,7 +2,7 @@
 
 [English](README.md) · **繁體中文** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
-**NativeRead（v2.5.1）** 是一款 Manifest V3 瀏覽器擴充功能與行動版 PWA，可翻譯網頁、PDF、程式碼註解與嵌入式資訊圖表，同時完整保留原始頁面字體與排版。它預設保持靜默，僅在使用者主動觸發時透過自備的 LLM API 金鑰運作，並逐段串流輸出譯文，不中斷閱讀節奏。
+**NativeRead（v2.6.0）** 是一款 Manifest V3 瀏覽器擴充功能與行動版 PWA，可翻譯網頁、PDF、程式碼註解與嵌入式資訊圖表，同時完整保留原始頁面字體與排版。它預設保持靜默，僅在使用者主動觸發時透過自備的 LLM API 金鑰運作，並逐段串流輸出譯文，不中斷閱讀節奏。
 
 ---
 
@@ -130,7 +130,7 @@ flowchart TD
 
     subgraph L1["Layer 1：決定翻譯什麼 (content/site-analyzer.js)"]
         C1["findContentRoots + scoreReadabilityContainer"]
-        C1 --> C2["collectUniversalCandidateElements + queryAllDeep (Shadow DOM)"]
+        C1 --> C2["collectUniversalCandidateElements + collectTranslationUnits (classifyLayoutRole, queryAllDeep)"]
         C2 --> C3["shouldSkipBlock / isMeaningfulLeafText / shouldTranslateText"]
         C3 -->|"略過"| SKIP["介面元件 / 程式碼 / 已屬目標語言 (0 Token)"]
         C3 -->|"保留"| C4["resolveInlineHost + extractBlockContent ([[C#]] [[M#]] [[L#]] 與 [[A#]] [[S#]] 標記)"]
@@ -164,11 +164,13 @@ flowchart TD
 ```
 
 - **主內容偵測（`findContentRoots`、`scoreReadabilityContainer`）**：優先辨識嵌入式 Jupyter／Notebook 儲存格（`LESSON_CELL_SELECTOR`）、Google Drive PDF 檢視頁（`.ndfHFb-c4YZDc-cYSp0e-DARUcf`）及語意容器（`article`、`main`、`[role="main"]`、`.markdown-body`、`.prose`、`#mw-content-text`）。容器依 `textLen + pCount * 40` 計分，當 `linkRatio > 0.55` 時降權，文章／文件容器給予 `1.25x` 加權，若內層容器保留 `>= 65%` 文字則收斂至更精準的內層容器，並保留頂層 `#firstHeading` / `h1` 標題。
-- **兩階段 DOM 掃描（`collectUniversalCandidateElements`）**：
-  - *第一階段*：蒐集語意區塊（`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`），略過巢狀容器，僅選取葉層正文區塊。
-  - *第二階段*：針對現代 SPA 遍歷 `DIV`、`SPAN`、`A`、`LABEL` 與 `BUTTON` 葉節點候選項目，排除 Shadow DOM 宿主、含區塊子元素或互動控制項的節點（`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`）、純中繼資料計數器（`PURE_METADATA_REGEX`），以及僅包裹 `<a href>` 連結的 `div`/`span` 容器。兩階段結果依 DOM 文件順序（`compareDocumentPosition`）合併。
+- **版面模型切分（`collectUniversalCandidateElements`、`collectTranslationUnits`、`classifyLayoutRole`）**：切分不再依據標籤名稱猜測翻譯單元，而是由 `collectTranslationUnits`（由 `collectUniversalCandidateElements` 呼叫）遵循 CSS 排版格式化模型，將單一區塊容器（單一行內格式化上下文）中的文流內行內內容視為一個翻譯單元。
+  - *版面角色分類（`classifyLayoutRole`）*：依據 `getComputedStyle`（每次掃描對每個元素快取一次）將元素分為 `BOX`（區塊級或 flex/grid 項目）、`INLINE`（inline、inline-block 等）、`CONTENTS`（`display: contents`，透明穿透）或 `OUT`（未渲染、`visibility: hidden`、視覺隱藏的螢幕閱讀器文字、絕對／固定定位或浮動方塊、表單控制項、圖示字型）。隱藏內容（`display: none`、視覺隱藏）不會送出翻譯；含實際正文的浮動與定位方塊則會作為獨立容器遍歷。
+  - *多欄隔離、混合區段與原子行內內容*：文字分布於多個並排儲存格的容器（例如論壇列：標題｜作者｜票數｜留言數）不會被合併成單一句子，每個儲存格各自成為獨立單元。文字旁鄰接區塊子元素的容器會拆分為多個區段：單一行內元素的區段會成為翻譯單元，緊鄰區塊的裸文字區段則保持不翻譯而不包裹頁面自有文字節點（計入 `getLastSegmentationStats` 的 `mixedSkipped`）。原子行內內容（`code`、數學公式、引用標記）即使展示型公式使用 `display: block` 也不會切斷段落。
+  - *舊版對照保留*：先前的兩階段掃描保留為 `collectUniversalCandidateElementsLegacy`，僅供比較之用。
 - **Shadow DOM 遍歷（`queryAllDeep`、`ensureShadowModeStyle`）**：最深遞迴遍歷至第 5 層開啟中的 `shadowRoot`，同時略過程式碼編輯器與 UI 節點（`SHADOW_SKIP_SELECTOR`），並注入 `:host-context(html.kct-mode-*)` 樣式規則，使替換／原文／雙語切換在 Shadow DOM 內同樣生效。
 - **行內結構與保護符記（`extractBlockContent`、`buildTranslatedFragment`、`resolveInlineHost`、`validateTranslatedTokens`）**：將行內程式碼（`code, kbd, var`）替換為原子符記 `[[C#]]`，數學公式與引用標記（`.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`）替換為 `[[M#]]`，不須翻譯的 `<a href>` 連結（如識別碼、URL 或引用標記）替換為 `[[L#]]`，並以成對標記 `[[A#]]…[[/A#]]` 包裹可翻譯的可點擊連結、`[[S#]]…[[/S#]]` 包裹行內強調樣式（bold/strong/italic/em/u/mark/s/small/sub/sup）；`buildTranslatedFragment` 將原子符記以深層複製（`cloneNode(true)`）、成對標記以淺層複製（`cloneNode(false)`，保留 `href`/`class` 並移除 `id`）還原至 `DocumentFragment`。當區塊文字完全位於單一行內鏈（例如 `li > a > b`）內時，`resolveInlineHost` 會下潛至該節點，讓譯文直接渲染在原始連結或強調元素內而不必依賴模型。渲染前 `validateTranslatedTokens` 會檢查每個佔位符皆恰好出現一次且成對標記平衡巢狀；若未通過，則以 `data-kct-structure-fallback="1"` 渲染，在譯文旁保留可點擊原文而非靜默遺失連結。
+- **樣式保留與 flex/grid 宿主（`[[S#]]`、`.kct-trans-wrap`、`resolveInlineHost`、`data-kct-flex-host`）**：凡外觀與父元素不同的行內元素（字級、字重、字體樣式、字族、顏色、裝飾線、行內標題或僅供螢幕閱讀器讀取的標籤）皆保留為成對 `[[S#]]` 標記；擷取時會記錄每個保留元素在原位置的排版樣式，若網站 CSS（例如 `.titleline > a` 等子選擇器）在 `.kct-trans-wrap` 內不再套用，則重新套用至複製節點。此外，`resolveInlineHost` 不會下潛進入 flex/grid 容器，flex/grid 宿主會將整段譯文維持在單一排版儲存格內（`data-kct-flex-host`）。 任何可見內容都不會被丟棄或合併：已算繪但不可翻譯的行內內容（圖示、圖示字體、`aria-hidden` 視覺元素、圖片、CSS 繪製的元素）以及區塊級或脫離文件流的後代元素會以不可分割的 `[[C#]]` 權杖形式保留在原位（雙語模式會隱藏重複的媒體副本），即時控制項與媒體（輸入框、按鈕、`video`、`canvas`、`iframe`、已指派的 `slot`）絕不會成為翻譯單元的一部分，隱藏文字（`display: none`、`visibility: hidden`、僅供螢幕閱讀器使用的標籤）絕不會被傳送，且一個單元絕不會包含另一個單元。
 - **語言過濾（`shouldTranslateText`）**：依據 Unicode 字集比例過濾網址、電子郵件、檔案路徑、Jupyter `In[]`/`Out[]` 提示字、單一 ASCII 程式碼識別字，以及原本即為目標語言的文字（針對 `zh-TW`/`zh-CN`，當漢字比例 `>= 0.55` 且拉丁單詞 `< 6` 時略過，但仍會翻譯假名比例 `>= 0.12` 的日文內容）。
 - **字體基因配對（`probeTypography`、`detectRenderedSerif`、`sanitizeFontFamily`、`content/content.css`）**：依計算後的 `fontFamily` 將每個區塊分類為 `serif`、`sans` 或 `mono`——若網站字體無法依名稱辨識（例如宣告 `sans-serif` 兜底的 `CMS` Computer Modern 網頁字體），則由 `detectRenderedSerif` 在畫布繪製字母「I」偵測襯線（依字體家族快取），確保襯線網站配對襯線 CJK 字體——接著剔除通用 CSS 兜底字體（`serif`、`sans-serif`、`monospace`、`system-ui` 等）使 `--kct-orig-font` 保留最多 5 個網站專屬拉丁字體，再接上對應的目標語言字體堆疊（`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`）。對於未限高且 `lineHeight / fontSize < 1.62` 的密集正文區塊，選擇性提升至 `line-height: 1.72`（`data-kct-lh-lift="1"`）。
 
@@ -260,6 +262,8 @@ for f in shared/*.js background/*.js content/*.js popup/*.js options/*.js viewer
 `docs/nativeread.user.js`、`docs/nativeread.meta.js`、`docs/version.json`、`docs/nativeread-android-extension.zip`、`docs/vendor/pdfjs/`、`docs/icons/` 與 `docs/.nojekyll` 皆由 `scripts/build-mobile.js` 自動產生——請編輯 `shared/`、`content/`、`viewer/` 與 `docs/app.js` 下的原始模組後再重新執行建置腳本。
 
 **發佈流程（維護者）**：更新 `manifest.json` 的 `"version"` → 執行 `node scripts/build-mobile.js` → 提交並推送至遠端，GitHub Pages 即會提供最新的 PWA、Userscript、中繼檔、`version.json` 與 Android ZIP。
+
+**回歸測試語料庫（`tests/corpus/`）**：`capture.sh` 透過 ego-browser 擷取真實頁面快照（將 DOM 與 `document.styleSheets` 內的 CSS 序列化，把每個單字置換為等長偽字並替換連結與圖片；快照已由 git 忽略），`run.sh [git-rev]` 則使用 1:1 假翻譯器渲染所有快照與手寫的 `fixtures/edge-cases.html`，並逐頁回報與切分器無關的不變量：合併儲存格、譯文內非行內方塊、遺失連結、樣式改變（`styleLost`）、退回原文顯示、未滿足的 `data-expect` 預期、水平溢位、單元數量與覆蓋率。此測試組可重現 v2.5.0 的 Kaggle 錯誤，並在 v2.6.0 上於 8 個網站（Kaggle、Wikipedia、colah、MDN、Hacker News、Stack Overflow、GitHub、arXiv）全數通過。
 
 ---
 

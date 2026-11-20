@@ -577,8 +577,90 @@
     'B', 'STRONG', 'I', 'EM', 'U', 'MARK', 'S', 'SMALL', 'SUB', 'SUP'
   ]);
 
+  const STYLE_PRESERVE_PROPS = ['fontSize', 'fontWeight', 'fontStyle', 'fontFamily', 'color', 'textDecorationLine', 'textTransform', 'verticalAlign', 'backgroundColor'];
+
+  function needsInlineStylePreserve(node, cs) {
+    if (/^H[1-6]$/.test(node.tagName)) return true;
+    if (isVisuallyHiddenStyle(cs)) return true;
+    const parent = node.parentElement;
+    if (!parent) return false;
+    let ps = null;
+    try { ps = getComputedStyle(parent); } catch (_) { return false; }
+    for (const prop of STYLE_PRESERVE_PROPS) {
+      if (prop === 'backgroundColor') {
+        if (cs.backgroundColor !== ps.backgroundColor && !/rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor)) return true;
+        continue;
+      }
+      if (cs[prop] !== ps[prop]) return true;
+    }
+    return false;
+  }
+
+  // Typography each kept element had in its ORIGINAL position. The renderer re-applies it when the
+  // clone lands in a different DOM position where the site's selectors (e.g. `.title > a`) miss.
+  const SNAPSHOT_PROPS = ['fontSize', 'fontWeight', 'fontStyle', 'color', 'textDecorationLine', 'letterSpacing', 'textTransform'];
+
+  // snap[prop] = the element's value; snap.__parent[prop] = its original parent's value (to know
+  // which properties were the element's OWN styling); snap.__display = its original display.
+  function snapshotTypography(node) {
+    try {
+      const cs = getComputedStyle(node);
+      const snap = { __display: cs.display, __parent: null };
+      for (const prop of SNAPSHOT_PROPS) snap[prop] = cs[prop];
+      if (node.parentElement) {
+        const ps = getComputedStyle(node.parentElement);
+        snap.__parent = {};
+        for (const prop of SNAPSHOT_PROPS) snap.__parent[prop] = ps[prop];
+      }
+      return snap;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  const KEEP_ATOMIC_SELECTOR = 'svg, canvas, textarea, input, select, button, [role="button"], img, picture, video, audio, iframe, object, embed, progress, meter, slot, .anchor-link, .jp-InternalAnchorLink, .material-icons, .material-icons-outlined, .material-symbols-outlined, .material-symbols-rounded, .google-symbols, [aria-hidden="true"], [translate="no"], .notranslate';
+
+  // Rendered = generates visible output. display:contents has no box of its own, so look at children.
+  function isRenderedNode(node, cs) {
+    let style = cs;
+    if (!style) {
+      try { style = getComputedStyle(node); } catch (_) { return false; }
+    }
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (style.display === 'contents') {
+      for (const child of node.children) {
+        if (isRenderedNode(child, null)) return true;
+      }
+      return /\S/.test(node.textContent || '');
+    }
+    return node.getClientRects().length > 0;
+  }
+
+  const PHRASING_TAGS = new Set(['A', 'ABBR', 'B', 'BDI', 'BDO', 'CITE', 'CODE', 'DATA', 'DFN', 'EM', 'I', 'KBD', 'LABEL', 'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TIME', 'U', 'VAR']);
+
+  // Units are extracted once while segmenting; the caller (content.js) reuses that result instead
+  // of walking and styling every descendant a second time. Cleared at the start of every scan.
+  let segmentationExtractCache = new WeakMap();
+
   function extractBlockContent(el) {
+    const cached = segmentationExtractCache.get(el);
+    if (cached) {
+      segmentationExtractCache.delete(el);
+      return cached;
+    }
+    return extractBlockContentUncached(el);
+  }
+
+  function extractBlockContentUncached(el) {
     const placeholders = new Map();
+    const styleSnapshots = new Map();
+    placeholders.styleSnapshots = styleSnapshots;
+    const remember = (node) => {
+      if (!styleSnapshots.has(node)) {
+        const snap = snapshotTypography(node);
+        if (snap) styleSnapshots.set(node, snap);
+      }
+    };
     let codeIdx = 0;
     let mathIdx = 0;
     let linkIdx = 0;
@@ -594,6 +676,30 @@
       return buf.join('');
     }
 
+    function keepAtomic(node, out, kind) {
+      const token = kind === 'M' ? `[[M${mathIdx++}]]` : kind === 'L' ? `[[L${linkIdx++}]]` : `[[C${codeIdx++}]]`;
+      placeholders.set(token, node);
+      remember(node);
+      out.push(token);
+    }
+
+    function pairedTag(node, insideLiRoot, out, kind) {
+      const inner = walkChildren(node, insideLiRoot);
+      if (!inner.replace(PLACEHOLDER_STRIP_RE, '').trim() && !/\[\[/.test(inner)) {
+        // Nothing translatable inside, but it may still be visible (CSS ::before/::after content,
+        // a background image, a coloured chip): keep it in place rather than dropping it.
+        if (isRenderedNode(node, null)) keepAtomic(node, out, kind === 'A' ? 'L' : 'C');
+        else if (inner) out.push(inner);
+        return;
+      }
+      const id = kind === 'A' ? anchorIdx++ : styleIdx++;
+      const open = `[[${kind}${id}]]`;
+      const close = `[[/${kind}${id}]]`;
+      placeholders.set(open, node);
+      remember(node);
+      out.push(open, inner, close);
+    }
+
     function walk(node, insideLiRoot, out) {
       if (!node) return;
       if (node.nodeType === Node.TEXT_NODE) {
@@ -601,24 +707,12 @@
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
-
       if (node.matches('[data-kct-ui]')) return;
+      if (node.matches('script, style, noscript, template')) return;
 
       // For <li>, stop before nested <ul>/<ol> so we only translate the parent bullet's own text
       if (insideLiRoot && (node.tagName === 'UL' || node.tagName === 'OL')) {
         if (!nestedListEl) nestedListEl = node;
-        return;
-      }
-
-      if (node.matches(INLINE_PROTECT_SELECTOR)) {
-        const isMath = node.matches('.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference');
-        const token = isMath ? `[[M${mathIdx++}]]` : `[[C${codeIdx++}]]`;
-        placeholders.set(token, node);
-        out.push(token);
-        return;
-      }
-
-      if (node.matches('script, style, noscript, svg, canvas, textarea, input, select, .anchor-link, .jp-InternalAnchorLink, .material-icons, .material-symbols-outlined, .material-symbols-rounded, .google-symbols, [aria-hidden="true"]')) {
         return;
       }
 
@@ -627,39 +721,83 @@
         return;
       }
 
-      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
-        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!aText) return;
-        if (!shouldTranslateText(aText)) {
-          const token = `[[L${linkIdx++}]]`;
-          placeholders.set(token, node);
-          out.push(token);
-          return;
-        }
-        const inner = walkChildren(node, insideLiRoot);
-        if (!inner.trim()) {
-          if (inner) out.push(inner);
-          return;
-        }
-        const id = anchorIdx++;
-        const open = `[[A${id}]]`;
-        const close = `[[/A${id}]]`;
-        placeholders.set(open, node);
-        out.push(open, inner, close);
+      let cs = null;
+      if (node !== el) {
+        try { cs = getComputedStyle(node); } catch (_) { cs = null; }
+        // What the reader cannot see is not part of the translation: display:none, hidden, and
+        // visually-hidden screen-reader text (checked BEFORE links/emphasis, so a hidden link or
+        // label never resurfaces inside the translation where parent-scoped CSS no longer hides it).
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse')) return;
+        if (cs && isVisuallyHiddenStyle(cs)) return;
+      }
+
+      if (node.matches(INLINE_PROTECT_SELECTOR)) {
+        const isMath = node.matches('.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference');
+        keepAtomic(node, out, isMath ? 'M' : 'C');
         return;
       }
 
-      if (PAIRED_STYLE_TAGS.has(node.tagName) && node !== el) {
-        const inner = walkChildren(node, insideLiRoot);
-        if (!inner.trim()) {
-          if (inner) out.push(inner);
+      // Rendered but not translatable (icons, aria-hidden visuals, controls, media, translate="no"):
+      // keep it in place as an atomic token. Dropping it would make it vanish, because the original
+      // moves into the hidden .kct-orig-wrap.
+      const iconFont = node !== el && cs && ICON_FONT_FIRST_RE.test(String(cs.fontFamily || '').split(',')[0]);
+      if (node !== el && (iconFont || node.matches(KEEP_ATOMIC_SELECTOR))) {
+        if (isRenderedNode(node, cs)) keepAtomic(node, out, 'C');
+        return;
+      }
+
+      if (node !== el && cs) {
+        // A block-level or out-of-flow descendant is not part of this unit's inline flow (the
+        // segmenter treats it as its own box or as excluded chrome). Keep it exactly as it is, in
+        // place, as an atomic token: never merge its text into this sentence, never drop it.
+        const d = cs.display || 'inline';
+        let inFlowInline = d.startsWith('inline') || d === 'contents' || d.startsWith('ruby');
+        if (!inFlowInline && PHRASING_TAGS.has(node.tagName) && node.parentElement) {
+          // A phrasing element (<b>, <span>, <a>…) only computes as block because a flex/grid parent
+          // blockified it; in the translation it is part of the sentence (the renderer groups runs).
+          try {
+            if (/flex|grid/.test(getComputedStyle(node.parentElement).display || '')) inFlowInline = true;
+          } catch (_) { /* ignore */ }
+        }
+        const outOfFlow = cs.position === 'absolute' || cs.position === 'fixed' || (cs.float && cs.float !== 'none');
+        // A floated drop cap (<span style="float:left">T</span>he …) is part of the word, not a box.
+        const dropCap = outOfFlow && cs.position !== 'absolute' && cs.position !== 'fixed' &&
+          node.children.length === 0 && String(node.textContent || '').trim().length <= 2;
+        if (dropCap) {
+          // Keep the letter in its word for the translation (the drop-cap styling is not carried over).
+          for (const child of node.childNodes) walk(child, insideLiRoot, out);
           return;
         }
-        const id = styleIdx++;
-        const open = `[[S${id}]]`;
-        const close = `[[/S${id}]]`;
-        placeholders.set(open, node);
-        out.push(open, inner, close);
+        if (!inFlowInline || outOfFlow) {
+          keepAtomic(node, out, 'C');
+          return;
+        }
+      }
+
+      if (node.tagName === 'A' && node !== el && node.hasAttribute('href')) {
+        const aText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!aText) {
+          // Icon-only / image-only link: keep it (clickable) in place.
+          if (isRenderedNode(node, cs)) keepAtomic(node, out, 'L');
+          return;
+        }
+        if (!shouldTranslateText(aText)) {
+          keepAtomic(node, out, 'L');
+          return;
+        }
+        pairedTag(node, insideLiRoot, out, 'A');
+        return;
+      }
+
+      if (node !== el && PAIRED_STYLE_TAGS.has(node.tagName)) {
+        pairedTag(node, insideLiRoot, out, 'S');
+        return;
+      }
+
+      // Any inline element that LOOKS different from its parent (an inline <h2>, a styled span, a
+      // font change...) is kept as a paired tag, so the translation is rebuilt inside a clone of it.
+      if (node !== el && cs && needsInlineStylePreserve(node, cs)) {
+        pairedTag(node, insideLiRoot, out, 'S');
         return;
       }
 
@@ -725,6 +863,10 @@
       if (!INLINE_DESCENT_TAGS.has(onlyChildEl.tagName)) break;
       if (onlyChildEl.matches(INLINE_PROTECT_SELECTOR)) break;
       if (onlyChildEl.matches(FORM_CONTROL_SELECTOR)) break;
+      // Never descend into a flex/grid container: its children are separate layout cells.
+      let childDisplay = '';
+      try { childDisplay = getComputedStyle(onlyChildEl).display || ''; } catch (_) { /* ignore */ }
+      if (/flex|grid/.test(childDisplay)) break;
 
       cur = onlyChildEl;
     }
@@ -1058,8 +1200,6 @@
       return true;
     }
 
-    if (isCompositeLayoutBlock(el)) return true;
-
     return false;
   }
 
@@ -1100,7 +1240,962 @@
     return false;
   }
 
-  function collectUniversalCandidateElements(roots, scope, elementState) {
+  // =========================================================
+  // Layout-Model Segmenter (CSS Formatting Contexts)
+  // =========================================================
+
+  const SEMANTIC_BLOCK_TAGS = new Set([
+    'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'P', 'LI', 'BLOCKQUOTE', 'TD', 'TH',
+    'FIGCAPTION', 'SUMMARY', 'DT', 'DD'
+  ]);
+
+  const HARD_OUT_TAGS = new Set([
+    'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE',
+    'SVG', 'CANVAS', 'VIDEO', 'AUDIO', 'IFRAME', 'OBJECT', 'EMBED',
+    'PRE', 'SAMP',
+    'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGROUP', 'OUTPUT', 'METER', 'PROGRESS'
+  ]);
+
+  const NAV_OUT_TAGS = new Set(['NAV', 'FOOTER', 'ASIDE']); // buttons are live controls (barriers), not chrome
+
+  const HARD_OUT_ATTR_SELECTOR = [
+    '[data-kct-ui]',
+    '[hidden]',
+    '.sr-only',
+    '[aria-hidden="true"]',
+    '[translate="no"]',
+    '.notranslate',
+    '[contenteditable="true"]',
+    '[role="button"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="switch"]'
+  ].join(', ');
+
+  const VISIBLE_CONTROL_OUT_SELECTOR = 'button, input, textarea, select, option, optgroup, output, meter, progress, [role="button"], [role="checkbox"], [role="radio"], [role="switch"]';
+  const BLOCKING_MEDIA_TAGS = new Set(['IMG', 'PICTURE', 'VIDEO', 'AUDIO', 'CANVAS', 'SVG']);
+  // Media whose state or content cannot survive cloneNode (playback, drawing, embedded documents).
+  const LIVE_MEDIA_TAGS = new Set(['VIDEO', 'AUDIO', 'CANVAS', 'IFRAME', 'OBJECT', 'EMBED']);
+  // Interactive controls: a clone would have no listeners/state, so they are never inside a unit.
+  const LIVE_CONTROL_SELECTOR = 'button, input, select, textarea, [role="button"], [role="checkbox"], [role="radio"], [role="switch"], [contenteditable="true"]';
+  const ICON_FONT_FIRST_RE = /(?:material\s*(?:icons|symbols)|google\s*symbols|font\s*awesome|fontawesome|icomoon|ionicons|octicons|codicon|bootstrap-icons|glyphicon)/i;
+  const FLEX_OR_GRID_RE = /(?:^|\s)(?:inline-)?(?:flex|grid)(?:\s|$)/;
+  const CLIP_RECT_RE = /^rect\(\s*([^,)\s]+)[,\s]+([^,)\s]+)[,\s]+([^,)\s]+)[,\s]+([^,)\s]+)\s*\)$/i;
+  const LETTER_RE = /\p{L}/u;
+  const PLACEHOLDER_STRIP_RE = /\[\[\s*\/?[CMLAS]\d+\s*\]\]/g;
+  const MAX_SUBSTANTIVE_SCAN_NODES = 400;
+
+  let lastSegmentationStats = {
+    units: 0,
+    mixedSkipped: 0,
+    outSkipped: 0,
+    ms: 0
+  };
+
+  function getLastSegmentationStats() {
+    return { ...lastSegmentationStats };
+  }
+
+  function isVisuallyHiddenStyle(style) {
+    const clip = style.clip;
+    if (clip && clip !== 'auto') {
+      const m = clip.match(CLIP_RECT_RE);
+      if (m) {
+        const top = parseFloat(m[1]);
+        const right = parseFloat(m[2]);
+        const bottom = parseFloat(m[3]);
+        const left = parseFloat(m[4]);
+        if (
+          Number.isFinite(top) && Number.isFinite(right) &&
+          Number.isFinite(bottom) && Number.isFinite(left) &&
+          ((right - left) <= 1 || (bottom - top) <= 1)
+        ) {
+          return true;
+        }
+      }
+    }
+
+    const clipPath = style.clipPath;
+    if (clipPath && clipPath !== 'none') {
+      const insetMatch = clipPath.match(/^inset\(\s*([^)]+)\)/i);
+      if (insetMatch) {
+        const rawVals = insetMatch[1].split(/\s+round\s+/i)[0].trim().split(/\s+/);
+        const pct = (s) => (s && s.endsWith('%') ? parseFloat(s) : null);
+        const p0 = pct(rawVals[0]);
+        const p1 = rawVals.length > 1 ? pct(rawVals[1]) : p0;
+        const p2 = rawVals.length > 2 ? pct(rawVals[2]) : p0;
+        const p3 = rawVals.length > 3 ? pct(rawVals[3]) : p1;
+        if (
+          (p0 !== null && p2 !== null && (p0 + p2) >= 100) ||
+          (p1 !== null && p3 !== null && (p1 + p3) >= 100) ||
+          (p0 !== null && p0 >= 100) ||
+          (p1 !== null && p1 >= 100) ||
+          (p2 !== null && p2 >= 100) ||
+          (p3 !== null && p3 >= 100)
+        ) {
+          return true;
+        }
+      }
+    }
+
+    const ov = style.overflow;
+    const ovHidden = (
+      ov === 'hidden' ||
+      ov === 'clip' ||
+      ((style.overflowX === 'hidden' || style.overflowX === 'clip') &&
+        (style.overflowY === 'hidden' || style.overflowY === 'clip'))
+    );
+    if (ovHidden) {
+      const wStr = style.width;
+      const hStr = style.height;
+      if (wStr && hStr && wStr.endsWith('px') && hStr.endsWith('px')) {
+        if (parseFloat(wStr) <= 1 && parseFloat(hStr) <= 1) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  function isExcludedChromeElement(el) {
+    // Controls are not chrome to skip silently: they must act as barriers so no unit swallows them.
+    if (el.matches(LIVE_CONTROL_SELECTOR)) return false;
+    if (NAV_OUT_TAGS.has(el.tagName)) return true;
+    if (el.matches(NAV_EXCLUDE_SELECTOR)) return true;
+    if (el.tagName === 'HEADER') {
+      const insideContent = Boolean(el.closest('article, main, [role="main"]'));
+      const isSiteBanner = el.getAttribute('role') === 'banner' || Boolean(el.querySelector('nav'));
+      if (!insideContent || isSiteBanner) return true;
+    }
+    return false;
+  }
+
+  function getLayoutInfo(el, cache) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) {
+      return { role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'non-element' };
+    }
+    if (cache && cache.has(el)) {
+      return cache.get(el);
+    }
+
+    const store = (info) => {
+      if (cache) cache.set(el, info);
+      return info;
+    };
+
+    // PDF absorbed / overlay chrome
+    if (
+      el.getAttribute('data-kct-pdf-merged') === 'absorbed' ||
+      (el.classList && el.classList.contains('ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-tJHJj'))
+    ) {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'pdf' });
+    }
+
+    // Fast O(1) tag and attribute checks before getComputedStyle
+    const tag = el.tagName;
+    if (HARD_OUT_TAGS.has(tag)) {
+      const isControl = (
+        tag === 'BUTTON' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        tag === 'OPTION' || tag === 'OPTGROUP' || tag === 'OUTPUT' || tag === 'METER' || tag === 'PROGRESS'
+      );
+      const isMedia = BLOCKING_MEDIA_TAGS.has(tag);
+      return store({
+        role: 'OUT',
+        walkableOut: false,
+        atomicInline: false,
+        display: 'none',
+        style: null,
+        hardReason: isControl ? 'control' : (isMedia ? 'media' : 'tag')
+      });
+    }
+
+    if (el.matches(HARD_OUT_ATTR_SELECTOR)) {
+      const isControl = el.matches('[role="button"], [role="checkbox"], [role="radio"], [role="switch"]');
+      return store({
+        role: 'OUT',
+        walkableOut: false,
+        atomicInline: false,
+        display: 'none',
+        style: null,
+        hardReason: isControl ? 'control' : 'attr'
+      });
+    }
+
+    const view = el.ownerDocument?.defaultView || window;
+    const readStyle = () => {
+      try {
+        return view.getComputedStyle(el);
+      } catch (_) {
+        return null;
+      }
+    };
+
+    // Atomic inline-protect elements (code, kbd, var, math, .katex, mjx-container, .mwe-math-element, sup.reference)
+    // remain atomic INLINE leaves regardless of their inner/outer display (e.g. display: block math).
+    if (el.matches(INLINE_PROTECT_SELECTOR)) {
+      if (tag === 'CODE' && el.parentElement && el.parentElement.tagName === 'PRE') {
+        return store({ role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'skip' });
+      }
+      const style = readStyle();
+      const display = style?.display || 'inline';
+      if (
+        !style ||
+        display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.visibility === 'collapse' ||
+        isVisuallyHiddenStyle(style)
+      ) {
+        return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'hidden' });
+      }
+      return store({ role: 'INLINE', walkableOut: false, atomicInline: true, display, style, hardReason: null });
+    }
+
+    if (el.matches(SKIP_ANCESTOR_SELECTOR)) {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'skip' });
+    }
+
+    const style = readStyle();
+    if (!style) {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display: 'none', style: null, hardReason: 'hidden' });
+    }
+
+    const display = style.display || 'inline';
+    if (display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'hidden' });
+    }
+
+    if (isVisuallyHiddenStyle(style)) {
+      return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'visually-hidden' });
+    }
+
+    if (style.fontFamily) {
+      const firstFamily = style.fontFamily.split(',')[0];
+      if (firstFamily && ICON_FONT_FIRST_RE.test(firstFamily)) {
+        return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'icon-font' });
+      }
+    }
+
+    if (display === 'contents') {
+      return store({ role: 'CONTENTS', walkableOut: false, atomicInline: false, display, style, hardReason: null });
+    }
+
+    const pos = style.position;
+    const flt = style.float || style.cssFloat || 'none';
+    if (pos === 'absolute' || pos === 'fixed' || (flt && flt !== 'none')) {
+      // Off-screen absolute/fixed screen-reader elements (left/top <= -5000px) are never walkable prose
+      if (pos === 'absolute' || pos === 'fixed') {
+        const lStr = style.left;
+        const tStr = style.top;
+        if (
+          (lStr && lStr.endsWith('px') && parseFloat(lStr) <= -5000) ||
+          (tStr && tStr.endsWith('px') && parseFloat(tStr) <= -5000)
+        ) {
+          return store({ role: 'OUT', walkableOut: false, atomicInline: false, display, style, hardReason: 'visually-hidden' });
+        }
+      }
+      return store({ role: 'OUT', walkableOut: true, atomicInline: false, display, style, hardReason: null });
+    }
+
+    // Determine effective parent display (skipping transparent display: contents ancestors, crossing ShadowRoot host)
+    let parentDisplay = '';
+    let parentEl = el.parentElement;
+    if (!parentEl && el.getRootNode) {
+      const rootNode = el.getRootNode();
+      if (rootNode instanceof ShadowRoot && rootNode.host) {
+        parentEl = rootNode.host;
+      }
+    }
+    while (parentEl && parentEl.nodeType === Node.ELEMENT_NODE) {
+      const pInfo = getLayoutInfo(parentEl, cache);
+      if (pInfo.role !== 'CONTENTS') {
+        parentDisplay = pInfo.display || '';
+        break;
+      }
+      parentEl = parentEl.parentElement;
+    }
+
+    const blockified = FLEX_OR_GRID_RE.test(parentDisplay);
+    const isInlineDisplay = (
+      display === 'inline' ||
+      display.startsWith('inline-') ||
+      display.startsWith('inline ') ||
+      display === 'ruby' ||
+      display.startsWith('ruby-') ||
+      display === 'math'
+    );
+
+    const role = (blockified || !isInlineDisplay) ? 'BOX' : 'INLINE';
+    return store({ role, walkableOut: false, atomicInline: false, display, style, hardReason: null });
+  }
+
+  function classifyLayoutRole(el, cache) {
+    const map = cache instanceof Map ? cache : new Map();
+    return getLayoutInfo(el, map).role;
+  }
+
+  function isUiControlHost(host) {
+    if (!host || host.nodeType !== Node.ELEMENT_NODE) return false;
+    if (host.closest(LEAF_UI_CONTROL_SELECTOR)) return true;
+    if (host.querySelector('time, [datetime]')) {
+      let otherText = 0;
+      for (const cn of host.childNodes) {
+        if (cn.nodeType === Node.TEXT_NODE) {
+          otherText += cn.nodeValue.trim().length;
+        } else if (cn.nodeType === Node.ELEMENT_NODE && !cn.matches('time, [datetime], [data-kct-ui]')) {
+          otherText += (cn.textContent || '').trim().length;
+        }
+      }
+      if (otherText < 4) return true;
+    }
+    return false;
+  }
+
+  function isPdfLenientUnit(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if (el.hasAttribute('data-kct-pdf-block')) return true;
+    return Boolean(el.closest && el.closest('.textLayer'));
+  }
+
+  function hasVisibleControlStyle(el, styleCache) {
+    if (el.matches('[hidden], .sr-only, [aria-hidden="true"], [data-kct-ui]')) return false;
+    const cached = styleCache.get(el);
+    if (cached && cached.style) {
+      return cached.style.display !== 'none' && cached.style.visibility !== 'hidden';
+    }
+    try {
+      const view = el.ownerDocument?.defaultView || window;
+      const st = view.getComputedStyle(el);
+      return st.display !== 'none' && st.visibility !== 'hidden' && !isVisuallyHiddenStyle(st);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Returns true iff a BOX child contains visible non-OUT, non-protect alphanumeric text
+  // or a visible interactive control (so claiming the parent would merge cells or destroy UI).
+  function isSubstantiveBox(boxEl, styleCache, scope) {
+    let seen = 0;
+    const stack = [boxEl];
+    while (stack.length > 0 && seen < MAX_SUBSTANTIVE_SCAN_NODES) {
+      const node = stack.pop();
+      if (!node) continue;
+      seen += 1;
+
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (COMPOSITE_TEXT_RE.test(node.nodeValue || '')) {
+          return true;
+        }
+        continue;
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      // Already translated content counts as substantive, so a rescan never claims its parent.
+      if (node.hasAttribute('data-kct-has-trans')) return true;
+      // Live content that a clone cannot reproduce (playback, drawing, embedded documents, custom
+      // elements with their own shadow tree) must never be swallowed into a parent unit.
+      if (node !== boxEl && (LIVE_MEDIA_TAGS.has(node.tagName) || node.shadowRoot || node.matches(LIVE_CONTROL_SELECTOR)) && hasVisibleControlStyle(node, styleCache)) return true;
+
+      if (node !== boxEl) {
+        if (scope !== 'all' && isExcludedChromeElement(node)) continue;
+        const info = getLayoutInfo(node, styleCache);
+        if (info.atomicInline) continue;
+        if (info.role === 'OUT') {
+          if (info.hardReason === 'control' && hasVisibleControlStyle(node, styleCache)) {
+            return true;
+          }
+          continue;
+        }
+      }
+
+      if (node.tagName === 'SLOT' && node.assignedNodes && node.assignedNodes().length > 0) {
+        continue;
+      }
+
+      const children = node.childNodes;
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(children[i]);
+      }
+    }
+    // Scan budget exhausted on a large subtree: assume it matters rather than cloning it whole.
+    return stack.length > 0;
+  }
+
+  function collectTranslationUnits(roots, scope, elementState) {
+    const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const stats = { units: 0, mixedSkipped: 0, outSkipped: 0, ms: 0 };
+
+    if (!Array.isArray(roots) || roots.length === 0) {
+      lastSegmentationStats = stats;
+      return [];
+    }
+
+    preparePdfOverlayLayers(roots);
+    segmentationExtractCache = new WeakMap();
+
+    const styleCache = new Map();
+    const visited = new Set();
+    const claimedSet = new Set();
+    const results = [];
+
+    const tryClaimUnit = (candidateEl, isSemantic) => {
+      if (!candidateEl || !candidateEl.isConnected) return false;
+      if (candidateEl.shadowRoot) return false;
+      if (elementState && elementState.has(candidateEl)) return false;
+      if (candidateEl.hasAttribute('data-kct-has-trans')) return false;
+
+      const host = resolveInlineHost(candidateEl);
+      if (!host || !host.isConnected || host.shadowRoot) return false;
+      if (claimedSet.has(host)) return false;
+      if (elementState && elementState.has(host)) return false;
+      if (host.hasAttribute('data-kct-has-trans')) return false;
+      if (host.querySelector(':scope > [data-kct-ui="trans"]')) return false;
+
+      const lenient = isSemantic || isPdfLenientUnit(host);
+      if (scope !== 'all' && !lenient && isUiControlHost(host)) {
+        return false;
+      }
+
+      const extracted = extractBlockContentUncached(host);
+      const { text } = extracted;
+      if (lenient) {
+        const clean = String(text || '').replace(PLACEHOLDER_STRIP_RE, '').replace(/\s+/g, ' ').trim();
+        if (!clean || !LETTER_RE.test(clean)) return false;
+      } else {
+        if (!isMeaningfulLeafText(text)) return false;
+      }
+
+      segmentationExtractCache.set(host, extracted);
+      claimedSet.add(host);
+      if (host !== candidateEl) {
+        let cur = host.parentElement;
+        while (cur && cur !== candidateEl) {
+          claimedSet.add(cur);
+          cur = cur.parentElement;
+        }
+      }
+      results.push(host);
+      stats.units += 1;
+      return true;
+    };
+
+    const scanInlineSubtree = (rootInline, insideLiRoot) => {
+      const sub = {
+        ifcText: '',
+        nonLinkTextLen: 0,
+        links: [],
+        innerBoxes: [],
+        innerNestedLists: [],
+        innerWalkableOuts: [],
+        hasClaimedDescendant: false,
+        hasForbiddenControl: false,
+        hasLiveControl: false
+      };
+
+      const walkInline = (node, insideLink) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const val = node.nodeValue || '';
+          if (val) {
+            sub.ifcText += val;
+            if (!insideLink) {
+              sub.nonLinkTextLen += val.trim().length;
+            }
+          }
+          return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+        if (elementState && elementState.has(node)) {
+          sub.hasClaimedDescendant = true;
+        }
+        if (node.hasAttribute('data-kct-has-trans')) {
+          sub.hasClaimedDescendant = true;
+        }
+
+        if (node !== rootInline) {
+          if (scope !== 'all' && isExcludedChromeElement(node)) {
+            stats.outSkipped += 1;
+            return;
+          }
+          const info = getLayoutInfo(node, styleCache);
+          if (info.role === 'OUT') {
+            if (info.walkableOut) {
+              sub.innerWalkableOuts.push(node);
+            } else {
+              stats.outSkipped += 1;
+              const live = info.hardReason === 'control' || LIVE_MEDIA_TAGS.has(node.tagName) || node.matches(LIVE_CONTROL_SELECTOR);
+              if (
+                (live || info.hardReason === 'media') &&
+                hasVisibleControlStyle(node, styleCache)
+              ) {
+                sub.hasForbiddenControl = true;
+                if (live) sub.hasLiveControl = true;
+              }
+            }
+            return;
+          }
+          if (info.role === 'BOX') {
+            if (insideLiRoot && (node.tagName === 'UL' || node.tagName === 'OL')) {
+              sub.innerNestedLists.push(node);
+            } else {
+              sub.innerBoxes.push(node);
+            }
+            return;
+          }
+          if (info.atomicInline) {
+            return;
+          }
+          if (BLOCKING_MEDIA_TAGS.has(node.tagName)) {
+            sub.hasForbiddenControl = true;
+            return;
+          }
+          if (node.shadowRoot) {
+            sub.innerBoxes.push(node);
+            return;
+          }
+        }
+
+        if (node.tagName === 'SLOT' && node.assignedNodes && node.assignedNodes().length > 0) {
+          sub.hasForbiddenControl = true;
+          sub.hasLiveControl = true;
+          return;
+        }
+
+        let nextInsideLink = insideLink;
+        if (node.tagName === 'A' && node.hasAttribute('href') && !insideLink) {
+          sub.links.push(node);
+          nextInsideLink = true;
+        }
+
+        for (const child of node.childNodes) {
+          walkInline(child, nextInsideLink);
+        }
+      };
+
+      walkInline(rootInline, false);
+      return sub;
+    };
+
+    const walkShadowRoot = (shadowRoot, shadowDepth) => {
+      if (!shadowRoot || shadowDepth > 5) return;
+      for (const child of shadowRoot.childNodes) {
+        if (child.nodeType !== Node.ELEMENT_NODE) continue;
+        if (scope !== 'all' && isExcludedChromeElement(child)) {
+          stats.outSkipped += 1;
+          continue;
+        }
+        const info = getLayoutInfo(child, styleCache);
+        if (info.role === 'OUT' && !info.walkableOut) {
+          stats.outSkipped += 1;
+          continue;
+        }
+        visitContainer(child, shadowDepth);
+      }
+    };
+
+    const visitContainer = (el, shadowDepth) => {
+      if (!el || el.nodeType !== Node.ELEMENT_NODE || !el.isConnected) return;
+      if (visited.has(el)) return;
+      visited.add(el);
+
+      const isLi = el.tagName === 'LI';
+      const isAlreadyClaimed = (
+        claimedSet.has(el) ||
+        (elementState && elementState.has(el)) ||
+        el.hasAttribute('data-kct-has-trans') ||
+        Boolean(el.querySelector(':scope > [data-kct-ui="trans"]'))
+      );
+
+      // Shadow host: never claim the host itself; walk its shadow DOM and light DOM children
+      if (el.shadowRoot) {
+        if (shadowDepth < 5 && !el.matches(SHADOW_SKIP_SELECTOR)) {
+          walkShadowRoot(el.shadowRoot, shadowDepth + 1);
+        }
+        for (const child of el.childNodes) {
+          if (child.nodeType !== Node.ELEMENT_NODE) continue;
+          if (scope !== 'all' && isExcludedChromeElement(child)) {
+            stats.outSkipped += 1;
+            continue;
+          }
+          const cInfo = getLayoutInfo(child, styleCache);
+          if (cInfo.role === 'OUT' && !cInfo.walkableOut) {
+            stats.outSkipped += 1;
+            continue;
+          }
+          visitContainer(child, shadowDepth);
+        }
+        return;
+      }
+
+      if (isAlreadyClaimed) {
+        // Still recurse into nested UL/OL inside an already-translated LI
+        if (isLi) {
+          for (const child of el.childNodes) {
+            if (child.nodeType === Node.ELEMENT_NODE && (child.tagName === 'UL' || child.tagName === 'OL')) {
+              visitContainer(child, shadowDepth);
+            }
+          }
+        }
+        return;
+      }
+
+      const isSemantic = SEMANTIC_BLOCK_TAGS.has(el.tagName);
+
+      // Collect effective children in DOM order, transparently flattening display: contents
+      const items = [];
+      let ownIfcText = '';
+      let ownNonLinkTextLen = 0;
+      const ifcLinks = [];
+      let hasClaimedInIfc = false;
+      let hasForbiddenInIfc = false;
+      let hasLiveInIfc = false;
+
+      const collectChildList = (parentNode) => {
+        for (const child of parentNode.childNodes) {
+          if (child.nodeType === Node.TEXT_NODE) {
+            const val = child.nodeValue || '';
+            if (val.trim().length > 0) {
+              ownIfcText += val;
+              ownNonLinkTextLen += val.trim().length;
+              items.push({ kind: 'TEXT', node: child, text: val });
+            }
+            continue;
+          }
+          if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+          if (child.tagName === 'SLOT' && child.assignedNodes && child.assignedNodes().length > 0) {
+            items.push({ kind: 'BARRIER', node: child });
+            continue;
+          }
+
+          if (scope !== 'all' && isExcludedChromeElement(child)) {
+            stats.outSkipped += 1;
+            continue;
+          }
+
+          const info = getLayoutInfo(child, styleCache);
+
+          if (info.role === 'CONTENTS') {
+            if (child.shadowRoot) {
+              items.push({ kind: 'BOX', node: child });
+            } else {
+              collectChildList(child);
+            }
+            continue;
+          }
+
+          if (info.role === 'OUT') {
+            if (info.walkableOut) {
+              items.push({ kind: 'WALKABLE_OUT', node: child });
+            } else {
+              stats.outSkipped += 1;
+              const live = info.hardReason === 'control' || LIVE_MEDIA_TAGS.has(child.tagName) || child.matches(LIVE_CONTROL_SELECTOR);
+              if (
+                (live || (!isSemantic && info.hardReason === 'media')) &&
+                hasVisibleControlStyle(child, styleCache)
+              ) {
+                // Live controls/media cannot be cloned into a translation (state, listeners, ids):
+                // they split the block even inside semantic tags.
+                items.push({ kind: 'BARRIER', node: child });
+              }
+            }
+            continue;
+          }
+
+          if (info.role === 'BOX') {
+            if (isLi && (child.tagName === 'UL' || child.tagName === 'OL')) {
+              items.push({ kind: 'NESTED_LIST', node: child });
+            } else {
+              items.push({ kind: 'BOX', node: child });
+            }
+            continue;
+          }
+
+          // INLINE
+          if (info.atomicInline) {
+            items.push({ kind: 'IFC_ATOMIC', node: child });
+            continue;
+          }
+
+          if (child.tagName === 'BR' || child.tagName === 'WBR') {
+            items.push({ kind: 'IFC_BR', node: child });
+            continue;
+          }
+
+          if (BLOCKING_MEDIA_TAGS.has(child.tagName)) {
+            if (!isSemantic) {
+              items.push({ kind: 'BARRIER', node: child });
+            }
+            continue;
+          }
+
+          if (child.shadowRoot) {
+            items.push({ kind: 'BOX', node: child });
+            continue;
+          }
+
+          // inline-block / inline-flex / inline-grid / inline-table are atomic inline boxes: inside a
+          // sentence they are part of it; a row made only of them (cards, chips) is a row of cells.
+          if (/^inline-(block|flex|grid|table)/.test(info.display || '')) {
+            const aSub = scanInlineSubtree(child, isLi);
+            if (aSub.hasClaimedDescendant) hasClaimedInIfc = true;
+            if (aSub.hasForbiddenControl) hasForbiddenInIfc = true;
+            if (aSub.hasLiveControl) hasLiveInIfc = true;
+            items.push({ kind: 'IFC_EL', node: child, sub: aSub, atomicBox: true });
+            continue;
+          }
+
+          const sub = scanInlineSubtree(child, isLi);
+          if (sub.hasClaimedDescendant) hasClaimedInIfc = true;
+          if (sub.hasForbiddenControl) hasForbiddenInIfc = true;
+          if (sub.hasLiveControl) hasLiveInIfc = true;
+
+          const hasSubstantiveInnerBox = sub.innerBoxes.some((b) => isSubstantiveBox(b, styleCache, scope));
+          if (hasSubstantiveInnerBox) {
+            if (sub.ifcText) ownIfcText += sub.ifcText;
+            items.push({ kind: 'INLINE_WITH_BOX', node: child, sub });
+          } else {
+            if (sub.ifcText) ownIfcText += sub.ifcText;
+            ownNonLinkTextLen += sub.nonLinkTextLen;
+            for (const a of sub.links) ifcLinks.push(a);
+            items.push({ kind: 'IFC_EL', node: child, sub });
+          }
+        }
+      };
+
+      collectChildList(el);
+
+      // Resolve atomic inline boxes now that the surrounding text is known.
+      const sentenceAround = LETTER_RE.test(ownIfcText);
+      for (const item of items) {
+        if (!item.atomicBox) continue;
+        if (!sentenceAround && LETTER_RE.test(item.sub.ifcText)) {
+          item.kind = 'BOX';
+        } else {
+          if (item.sub.ifcText) ownIfcText += item.sub.ifcText;
+          ownNonLinkTextLen += item.sub.nonLinkTextLen;
+          for (const a of item.sub.links) ifcLinks.push(a);
+        }
+      }
+
+      const hasOwnLetters = LETTER_RE.test(ownIfcText);
+
+      // Case 1: Pure layout container (no own IFC letters) -> recurse into child containers in DOM order
+      if (!hasOwnLetters) {
+        for (const item of items) {
+          if (item.kind === 'BOX' || item.kind === 'NESTED_LIST' || item.kind === 'WALKABLE_OUT') {
+            visitContainer(item.node, shadowDepth);
+          } else if (item.kind === 'INLINE_WITH_BOX') {
+            for (const b of item.sub.innerBoxes) visitContainer(b, shadowDepth);
+            for (const nl of item.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of item.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          } else if (item.kind === 'IFC_EL') {
+            for (const nl of item.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of item.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          }
+        }
+        return;
+      }
+
+      // Case 2: Container has own IFC text. Determine whether any BOX/BARRIER splits it.
+      let hasBlockingChild = false;
+      for (const item of items) {
+        if (item.kind === 'BOX') {
+          item.substantive = isSubstantiveBox(item.node, styleCache, scope);
+          if (item.substantive) hasBlockingChild = true;
+        } else if (item.kind === 'INLINE_WITH_BOX' || item.kind === 'BARRIER') {
+          hasBlockingChild = true;
+        }
+      }
+
+      // Step 3: Single clean IFC (no text-bearing BOX children, no already-claimed inline descendants)
+      if (!hasBlockingChild && !hasClaimedInIfc) {
+        // Generic container whose inline descendant contains visible controls/media (e.g. <div><a><img><span>Title</span></a></div>):
+        // descend into inline children instead of destroying the control/media.
+        if ((!isSemantic && hasForbiddenInIfc) || hasLiveInIfc) {
+          for (const item of items) {
+            if (item.kind === 'IFC_EL' && item.sub.hasForbiddenControl) {
+              visitContainer(item.node, shadowDepth);
+            } else if (item.kind === 'IFC_EL' && LETTER_RE.test(item.sub.ifcText)) {
+              tryClaimUnit(item.node, false);
+            } else if (item.kind === 'TEXT' && LETTER_RE.test(item.text)) {
+              stats.mixedSkipped += 1;
+            } else if (item.kind === 'NESTED_LIST' || item.kind === 'WALKABLE_OUT') {
+              visitContainer(item.node, shadowDepth);
+            }
+          }
+          return;
+        }
+
+        // Link-wrapper deferral: a <div>/<span> wrapping links with <4 chars of own non-link text
+        // defers to its <a> children (keeps multi-link bars/tags independent & clickable).
+        if (
+          (el.tagName === 'DIV' || el.tagName === 'SPAN') &&
+          ifcLinks.length > 0 &&
+          ownNonLinkTextLen < 4
+        ) {
+          if (ifcLinks.length === 1 && resolveInlineHost(el) === ifcLinks[0]) {
+            tryClaimUnit(el, false);
+          } else {
+            for (const a of ifcLinks) {
+              tryClaimUnit(a, false);
+            }
+          }
+        } else {
+          tryClaimUnit(el, isSemantic);
+        }
+
+        // Step 5 & 7: Always recurse into nested UL/OL inside LI and into walkable OUT boxes (floats/absolute)
+        for (const item of items) {
+          if (item.kind === 'NESTED_LIST' || item.kind === 'WALKABLE_OUT') {
+            visitContainer(item.node, shadowDepth);
+          } else if (item.kind === 'IFC_EL') {
+            for (const nl of item.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of item.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          }
+        }
+        return;
+      }
+
+      // Step 4: Mixed content (own IFC text + substantive BOX / BARRIER children)
+      // Split effective child list into maximal IFC runs between split boundaries in DOM order.
+      const flushRun = (run) => {
+        if (run.length === 0) return;
+
+        const significant = [];
+        let runText = '';
+        let hasBareText = false;
+
+        for (const it of run) {
+          if (it.kind === 'IFC_BR') continue;
+          significant.push(it);
+          if (it.kind === 'TEXT') {
+            runText += it.text;
+            if (LETTER_RE.test(it.text)) hasBareText = true;
+          } else if (it.kind === 'IFC_EL') {
+            runText += it.sub.ifcText;
+          }
+        }
+
+        if (!LETTER_RE.test(runText)) return;
+
+        if (!hasBareText && significant.length === 1 && significant[0].kind === 'IFC_EL') {
+          const loneItem = significant[0];
+          if (loneItem.sub.hasClaimedDescendant) {
+            visitContainer(loneItem.node, shadowDepth);
+          } else if (!isSemantic && loneItem.sub.hasForbiddenControl) {
+            visitContainer(loneItem.node, shadowDepth);
+          } else {
+            tryClaimUnit(loneItem.node, false);
+            for (const nl of loneItem.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of loneItem.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          }
+          return;
+        }
+
+        // Run contains bare text nodes (or multiple unwrapped inline siblings): cannot wrap safely.
+        stats.mixedSkipped += 1;
+        for (const it of significant) {
+          if (it.kind === 'IFC_EL') {
+            for (const nl of it.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+            for (const wo of it.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+          }
+        }
+      };
+
+      let currentRun = [];
+      for (const item of items) {
+        if (
+          item.kind === 'TEXT' ||
+          item.kind === 'IFC_EL' ||
+          item.kind === 'IFC_ATOMIC' ||
+          item.kind === 'IFC_BR'
+        ) {
+          currentRun.push(item);
+          continue;
+        }
+
+        if (item.kind === 'WALKABLE_OUT') {
+          // Out-of-flow boxes do not split the in-flow run, but must be walked independently.
+          continue;
+        }
+
+        if (item.kind === 'BOX' && !item.substantive) {
+          continue;
+        }
+
+        // Split boundary: substantive BOX, INLINE_WITH_BOX, BARRIER, or NESTED_LIST
+        flushRun(currentRun);
+        currentRun = [];
+
+        if (item.kind === 'BOX' || item.kind === 'NESTED_LIST') {
+          visitContainer(item.node, shadowDepth);
+        } else if (item.kind === 'INLINE_WITH_BOX') {
+          if (LETTER_RE.test(item.sub.ifcText)) {
+            stats.mixedSkipped += 1;
+          }
+          for (const b of item.sub.innerBoxes) visitContainer(b, shadowDepth);
+          for (const nl of item.sub.innerNestedLists) visitContainer(nl, shadowDepth);
+          for (const wo of item.sub.innerWalkableOuts) visitContainer(wo, shadowDepth);
+        }
+      }
+      flushRun(currentRun);
+
+      // Walk any out-of-flow boxes encountered in this mixed container
+      for (const item of items) {
+        if (item.kind === 'WALKABLE_OUT') {
+          visitContainer(item.node, shadowDepth);
+        }
+      }
+    };
+
+    const uniqueRoots = roots.length > 1
+      ? dedupeTopmost(roots.filter((r) => r && r.nodeType === Node.ELEMENT_NODE && r.isConnected))
+      : roots.filter((r) => r && r.nodeType === Node.ELEMENT_NODE && r.isConnected);
+
+    for (const root of uniqueRoots) {
+      if (root.closest && root.closest(SKIP_ANCESTOR_SELECTOR)) continue;
+      if (scope !== 'all' && root.closest && isInsideExcludedChrome(root)) continue;
+      const rootInfo = getLayoutInfo(root, styleCache);
+      if (rootInfo.role === 'OUT' && !rootInfo.walkableOut) {
+        stats.outSkipped += 1;
+        continue;
+      }
+      visitContainer(root, 0);
+    }
+
+    // A unit never contains another unit: the outer host renders its whole inline content, so an
+    // inner host (e.g. a float walked separately) would be moved into the outer's original wrapper.
+    let finalUnits = results;
+    if (results.length > 1) {
+      const hostSet = new Set(results);
+      finalUnits = results.filter((u) => {
+        let crossedNestedList = false;
+        for (let cur = u.parentElement; cur; cur = cur.parentElement) {
+          // An LI host only renders its own text up to its nested <ul>/<ol>; units inside that
+          // nested list are separate units, not nested ones.
+          if ((cur.tagName === 'UL' || cur.tagName === 'OL') && cur.parentElement && cur.parentElement.closest('li')) {
+            crossedNestedList = true;
+          }
+          if (hostSet.has(cur) && !(cur.tagName === 'LI' && crossedNestedList)) {
+            stats.nestedDropped = (stats.nestedDropped || 0) + 1;
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
+    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    stats.ms = Math.round((t1 - t0) * 10) / 10;
+    stats.units = finalUnits.length;
+    lastSegmentationStats = stats;
+
+    return finalUnits;
+  }
+
+  function collectUniversalCandidateElementsLegacy(roots, scope, elementState) {
     if (!Array.isArray(roots) || roots.length === 0) return [];
 
     preparePdfOverlayLayers(roots);
@@ -1146,7 +2241,6 @@
       if (el.querySelector(CHILD_BLOCK_SELECTOR)) return false;
       if (el.querySelector(LEAF_FORBIDDEN_DESCENDANT_SELECTOR)) return false;
       if (el.querySelector('[data-kct-ui="trans"]')) return false;
-      if (isCompositeLayoutBlock(el)) return false;
       if (el.closest(SKIP_ANCESTOR_SELECTOR)) return false;
       if (scope !== 'all' && (isInsideExcludedChrome(el) || el.closest(LEAF_UI_CONTROL_SELECTOR))) {
         return false;
@@ -1236,8 +2330,16 @@
     return combined;
   }
 
+  function collectUniversalCandidateElements(roots, scope, elementState) {
+    return collectTranslationUnits(roots, scope, elementState);
+  }
+
   globalThis.KCTSiteAnalyzer = {
     isCompositeLayoutBlock,
+    classifyLayoutRole,
+    collectTranslationUnits,
+    collectUniversalCandidateElementsLegacy,
+    getLastSegmentationStats,
     BLOCK_SELECTOR,
     SKIP_ANCESTOR_SELECTOR,
     NAV_EXCLUDE_SELECTOR,

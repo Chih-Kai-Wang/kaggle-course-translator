@@ -2,7 +2,7 @@
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **한국어** · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
-**NativeRead (v2.5.1)**는 웹 페이지, PDF, 코드 주석, 내장 인포그래픽을 원본 페이지의 타이포그래피와 레이아웃을 유지한 채 번역하는 Manifest V3 브라우저 확장 프로그램이자 모바일 PWA입니다. 기본적으로는 아무 동작도 하지 않으며, 사용자의 LLM API 키를 이용해 필요할 때만 실행되고 읽기 흐름을 방해하지 않도록 문단 단위로 스트리밍 번역합니다.
+**NativeRead (v2.6.0)**는 웹 페이지, PDF, 코드 주석, 내장 인포그래픽을 원본 페이지의 타이포그래피와 레이아웃을 유지한 채 번역하는 Manifest V3 브라우저 확장 프로그램이자 모바일 PWA입니다. 기본적으로는 아무 동작도 하지 않으며, 사용자의 LLM API 키를 이용해 필요할 때만 실행되고 읽기 흐름을 방해하지 않도록 문단 단위로 스트리밍 번역합니다.
 
 ---
 
@@ -130,7 +130,7 @@ flowchart TD
 
     subgraph L1["Layer 1: 번역 대상 식별 (content/site-analyzer.js)"]
         C1["findContentRoots + scoreReadabilityContainer"]
-        C1 --> C2["collectUniversalCandidateElements + queryAllDeep (Shadow DOM)"]
+        C1 --> C2["collectUniversalCandidateElements + collectTranslationUnits (classifyLayoutRole, queryAllDeep)"]
         C2 --> C3["shouldSkipBlock / isMeaningfulLeafText / shouldTranslateText"]
         C3 -->|"건너뛰기"| SKIP["UI 크롬 / 코드 / 대상 언어 (0 Tokens)"]
         C3 -->|"유지"| C4["resolveInlineHost + extractBlockContent ([[C#]] [[M#]] [[L#]] & [[A#]] [[S#]] 태그)"]
@@ -164,11 +164,13 @@ flowchart TD
 ```
 
 - **본문 감지 (`findContentRoots`, `scoreReadabilityContainer`)**: 내장 Jupyter/노트북 셀(`LESSON_CELL_SELECTOR`), Google Drive PDF 뷰어 페이지(`.ndfHFb-c4YZDc-cYSp0e-DARUcf`), 시맨틱 컨테이너(`article`, `main`, `[role="main"]`, `.markdown-body`, `.prose`, `#mw-content-text`)를 우선합니다. 컨테이너는 `textLen + pCount * 40`으로 점수를 매기고 `linkRatio > 0.55`일 때 감점하며 article/doc 컨테이너에는 `1.25x` 가중치를 부여하고, 텍스트의 `>= 65%`를 유지하는 더 좁은 내부 컨테이너로 정제합니다. 최상위 `#firstHeading` / `h1` 제목은 보존됩니다.
-- **2패스 DOM 스캔 (`collectUniversalCandidateElements`)**:
-  - *패스 1*: 시맨틱 블록(`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`)을 수집하며 중첩된 컨테이너는 건너뛰어 리프 산문 블록만 선택합니다.
-  - *패스 2*: 최신 SPA를 위해 `DIV`, `SPAN`, `A`, `LABEL`, `BUTTON` 리프 후보를 순회하며 Shadow DOM 호스트, 블록 자식이나 대화형 컨트롤이 있는 요소(`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`), 순수 메타데이터 카운터(`PURE_METADATA_REGEX`), `<a href>` 링크만 감싸는 래퍼 `div`/`span` 노드를 제외합니다. 두 패스는 DOM 문서 순서(`compareDocumentPosition`)로 병합됩니다.
+- **레이아웃 모델 기반 분할 (`collectUniversalCandidateElements`, `collectTranslationUnits`, `classifyLayoutRole`)**: 분할은 더 이상 태그 이름에서 번역 단위를 추측하지 않습니다. `collectUniversalCandidateElements`가 호출하는 `collectTranslationUnits`는 CSS 서식 모델을 따라 하나의 블록 컨테이너(하나의 인라인 서식 컨텍스트) 내 인플로우(in-flow) 인라인 콘텐츠를 단일 번역 단위로 취급합니다.
+  - *레이아웃 역할 분류 (`classifyLayoutRole`)*: `getComputedStyle`(스캔당 요소별로 한 번 캐시됨)을 기반으로 각 요소를 `BOX`(블록 레벨 또는 flex/grid 아이템), `INLINE`(inline, inline-block 등), `CONTENTS`(`display: contents`, 투명), 또는 `OUT`(렌더링되지 않음, `visibility: hidden`, 시각적으로 숨겨진 스크린 리더 텍스트, 절대/고정 위치 또는 플로트 박스, 폼 컨트롤, 아이콘 폰트)으로 분류합니다. 숨겨진 콘텐츠(`display: none`, 시각적 숨김)는 번역 대상으로 전송되지 않으며, 실제 본문이 포함된 플로트 및 위치 지정 박스는 자체 컨테이너로 순회됩니다.
+  - *셀 격리, 혼합 런(run) 및 원자적 인라인 콘텐츠*: 텍스트가 나란히 배치된 셀에 있는 컨테이너(예: 포럼 행: 제목 | 작성자 | 투표수 | 댓글 수)는 절대 하나의 문장으로 병합되지 않으며 각 셀이 독립적인 단위가 됩니다. 블록 자식 옆에 텍스트가 있는 컨테이너는 런(run)으로 분할됩니다. 단일 인라인 요소인 런은 하나의 단위가 되는 반면, 블록 옆의 맨 텍스트는 페이지 소유의 텍스트 노드를 감싸지 않고 번역하지 않은 채 남겨집니다(`getLastSegmentationStats`에서 `mixedSkipped`로 집계). 원자적 인라인 콘텐츠(`code`, 수식, 인용)는 디스플레이 수식이 `display: block`을 사용하더라도 단락을 분할하지 않습니다.
+  - *레거시 참조*: 이전의 2패스 스캔은 비교용으로만 `collectUniversalCandidateElementsLegacy`로 유지됩니다.
 - **Shadow DOM 순회 (`queryAllDeep`, `ensureShadowModeStyle`)**: 코드 에디터와 UI 노드(`SHADOW_SKIP_SELECTOR`)를 건너뛰면서 최대 깊이 5까지 열린 `shadowRoot` 트리를 순회하고, Shadow DOM 내부에서도 교체 / 원본 / 이중 언어 전환이 작동하도록 `:host-context(html.kct-mode-*)` 규칙을 주입합니다.
 - **인라인 구조 및 보호 토큰 (`extractBlockContent`, `buildTranslatedFragment`, `resolveInlineHost`, `validateTranslatedTokens`)**: 원자적 토큰 `[[C#]]`(인라인 코드 `code, kbd, var`), `[[M#]]`(수식 및 인용 `.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`), `[[L#]]`(식별자, URL, 인용 마커 등 번역 불필요한 `<a href>` 링크)와 함께 쌍으로 된 `[[A#]]…[[/A#]]`(번역 가능한 클릭 가능 링크) 및 `[[S#]]…[[/S#]]`(인라인 강조: bold/strong/italic/em/u/mark/s/small/sub/sup)를 생성합니다. `buildTranslatedFragment`는 원자적 토큰을 깊은 복제(`cloneNode(true)`)로, 쌍 태그를 얕은 복제(`cloneNode(false)`, `id`는 제거하고 `href`/`class` 유지)로 `DocumentFragment`에 복원합니다. 블록의 텍스트가 단일 인라인 체인(예: `li > a > b`) 내부에 있을 때 `resolveInlineHost`가 그 안으로 내려가 모델에 의존하지 않고 원본 링크나 강조 내부에 번역을 렌더링합니다. 렌더링 전에 `validateTranslatedTokens`가 모든 플레이스홀더가 한 번씩 나타나고 쌍 태그가 균형 있게 중첩되었는지 검증하며, 그렇지 않으면 블록이 `data-kct-structure-fallback="1"`로 렌더링되어 링크를 조용히 누락하는 대신 번역과 함께 클릭 가능한 원문을 유지합니다.
+- **스타일 보존 및 flex/grid 호스트 (`[[S#]]`, `.kct-trans-wrap`, `resolveInlineHost`, `data-kct-flex-host`)**: 부모와 외형이 다른 모든 인라인 요소(글꼴 크기, 굵기, 스타일 또는 패밀리, 색상, 장식, 인라인 제목 또는 스크린 리더 전용 레이블)는 쌍으로 된 `[[S#]]` 태그로 유지됩니다. 유지된 각 요소가 원래 위치에서 가졌던 타이포그래피는 추출 시 기록되며, 사이트의 CSS(예: `.titleline > a`와 같은 자식 선택자)가 `.kct-trans-wrap` 내부에서 더 이상 일치하지 않을 경우 복제본에 다시 적용됩니다. 또한 `resolveInlineHost`는 flex/grid 컨테이너 내부로 내려가지 않으며, flex/grid 호스트는 전체 번역을 하나의 레이아웃 셀 내에 유지합니다(`data-kct-flex-host`). 보이는 내용은 절대 누락되거나 병합되지 않습니다. 렌더링되었지만 번역할 수 없는 인라인 콘텐츠(아이콘, 아이콘 폰트, `aria-hidden` 시각 요소, 이미지, CSS로 그린 요소)와 블록 수준 또는 플로우 외부의 하위 요소는 원자적 `[[C#]]` 토큰으로 제자리에 유지되며(이중 언어 모드에서는 중복된 미디어 사본이 숨겨짐), 라이브 컨트롤과 미디어(입력 필드, 버튼, `video`, `canvas`, `iframe`, 할당된 `slot`)는 절대 번역 단위의 일부가 되지 않고, 숨겨진 텍스트(`display: none`, `visibility: hidden`, 스크린 리더 전용 레이블)는 절대 전송되지 않으며, 하나의 단위가 다른 단위를 포함하는 일도 없습니다.
 - **언어 필터링 (`shouldTranslateText`)**: URL, 이메일, 파일 경로, Jupyter `In[]`/`Out[]` 프롬프트, 단일 토큰 ASCII 코드 식별자를 걸러내며, 유니코드 스크립트 비율을 사용해 이미 대상 언어로 작성된 텍스트를 제외합니다(`zh-TW`/`zh-CN`의 경우 라틴 단어 `< 6`개이면서 한자 비율 `>= 0.55`이면 건너뛰되, 가나 비율 `>= 0.12`인 일본어 텍스트는 계속 번역합니다).
 - **폰트-진(Font-gene) 페어링 (`probeTypography`, `detectRenderedSerif`, `sanitizeFontFamily`, `content/content.css`)**: 계산된 `fontFamily`로부터 각 블록을 `serif`, `sans`, `mono`로 분류하며, 사이트 폰트가 이름으로 인식되지 않는 경우(예: `sans-serif` 폴백을 선언하는 `CMS` Computer Modern 웹폰트) `detectRenderedSerif`가 캔버스에 `"I"`를 그려 세리프 여부를 확인(패밀리별 캐시)하여 세리프 사이트에 세리프 CJK 폰트를 적용합니다. 그런 다음 일반 CSS 포괄 패밀리(`serif`, `sans-serif`, `monospace`, `system-ui` 등)를 제거하여 최대 5개의 사이트 고유 라틴 폰트를 `--kct-orig-font`에 남긴 뒤, 일치하는 대상 언어 스택(`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`)을 뒤에 붙입니다. `lineHeight / fontSize < 1.62`인 밀집된 비고정 산문 블록에는 선택적으로 `line-height: 1.72` 상승(`data-kct-lh-lift="1"`)을 적용합니다.
 
@@ -260,6 +262,8 @@ for f in shared/*.js background/*.js content/*.js popup/*.js options/*.js viewer
 `docs/nativeread.user.js`, `docs/nativeread.meta.js`, `docs/version.json`, `docs/nativeread-android-extension.zip`, `docs/vendor/pdfjs/`, `docs/icons/`, `docs/.nojekyll`은 `scripts/build-mobile.js`에 의해 생성됩니다. `shared/`, `content/`, `viewer/`, `docs/app.js` 아래의 소스 모듈을 편집한 다음 빌드 스크립트를 다시 실행하세요.
 
 **릴리스 흐름(메인테이너)**: `manifest.json`에서 `"version"` 올리기 → `node scripts/build-mobile.js` 실행 → GitHub Pages가 업데이트된 PWA, 유저스크립트, 메타데이터, `version.json`, Android ZIP을 제공하도록 커밋 및 푸시.
+
+**회귀 코퍼스 (`tests/corpus/`)**: `capture.sh`는 ego-browser를 통해 실제 페이지를 스냅샷하고(`document.styleSheets`에서 DOM과 CSS를 직렬화하고, 모든 단어를 같은 길이의 유사 단어로 스크램블하며, 링크/이미지를 교체함; 스냅샷은 git-ignored), `run.sh [git-rev]`는 모든 스냅샷과 직접 작성한 `fixtures/edge-cases.html`을 1:1 가짜 번역기로 렌더링하여 페이지별로 분할기와 무관한 불변 조건(병합된 셀, 번역 내부의 비인라인 박스, 유실된 링크, 변경된 타이포그래피(`styleLost`), 폴백, 충족되지 않은 `data-expect` 기대치, 가로 오버플로, 단위 수, 커버리지)을 보고합니다. 이는 v2.5.0의 Kaggle 버그를 재현하며 v2.6.0에서는 8개 사이트(Kaggle, Wikipedia, colah, MDN, Hacker News, Stack Overflow, GitHub, arXiv)에서 모두 정상 통과합니다.
 
 ---
 

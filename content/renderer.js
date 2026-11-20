@@ -10,7 +10,10 @@
     ':host-context(html.kct-mode-original) .kct-trans-wrap { display: none !important; }',
     ':host-context(html.kct-mode-original) .kct-orig-wrap { display: contents; }',
     ':host-context(html.kct-mode-bilingual) .kct-orig-wrap { display: contents; }',
-    ':host-context(html.kct-mode-bilingual) .kct-trans-wrap { display: block; margin-top: 0.35em; padding-left: 10px; border-left: 2px solid rgba(148,163,184,0.45); font-size: 0.94em; line-height: 1.7; opacity: 0.88; }'
+    ':host-context(html.kct-mode-bilingual) .kct-trans-wrap { display: block; margin-top: 0.35em; padding-left: 10px; border-left: 2px solid rgba(148,163,184,0.45); font-size: 0.94em; line-height: 1.7; opacity: 0.88; }',
+    ':host-context(html.kct-mode-bilingual) .kct-trans-wrap [data-kct-atomic="box"] { display: none !important; }',
+    ':host-context(html.kct-mode-replace) [data-kct-structure-fallback="1"] > .kct-orig-wrap { display: contents !important; }',
+    '.kct-flex-run { min-width: 0; }'
   ].join('\n');
 
   const GENERIC_FONT_TOKENS = new Set([
@@ -230,14 +233,61 @@
     return { ok: true, reason: '' };
   }
 
+  let cloneIdSeq = 0;
+
   function stripDuplicateIds(node, deep) {
     if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+    if (deep && node.querySelector('svg [id], svg[id]')) {
+      // SVG paints reference ids (url(#grad), <use href="#icon">). Rename them inside the clone and
+      // rewrite the references, so the clone does not point at definitions in the hidden original.
+      const suffix = `-kct${++cloneIdSeq}`;
+      const renamed = new Map();
+      for (const desc of node.querySelectorAll('svg [id], svg[id]')) {
+        const id = desc.getAttribute('id');
+        renamed.set(id, id + suffix);
+        desc.setAttribute('id', id + suffix);
+      }
+      const rewrite = (value) => value.replace(/url\(\s*(['"]?)#([^'")\s]+)\1\s*\)/g, (m, q, id) => (renamed.has(id) ? `url(#${renamed.get(id)})` : m));
+      for (const el of node.querySelectorAll('svg *, svg')) {
+        for (const attr of Array.from(el.attributes)) {
+          if ((attr.name === 'href' || attr.name === 'xlink:href') && attr.value.startsWith('#') && renamed.has(attr.value.slice(1))) {
+            el.setAttribute(attr.name, '#' + renamed.get(attr.value.slice(1)));
+          } else if (attr.value.includes('url(#')) {
+            el.setAttribute(attr.name, rewrite(attr.value));
+          }
+        }
+      }
+    }
     if (node.hasAttribute('id')) node.removeAttribute('id');
     if (deep) {
       for (const desc of node.querySelectorAll('[id]')) {
+        if (desc.closest('svg')) continue;
         desc.removeAttribute('id');
       }
     }
+  }
+
+  const ATOMIC_BOX_SELECTOR = 'img, picture, svg, video, canvas, iframe, object, embed, input, select, textarea, button, progress, meter';
+  const LAZY_SRC_ATTRS = ['data-src', 'data-lazy-src', 'data-original', 'data-lazy'];
+
+  // Mark the clone's kind (bilingual mode hides media/box copies, since the original is visible
+  // there too) and give lazy-loaded images their real source (the hidden original never loads).
+  function prepareAtomicClone(clone, origNode, snap) {
+    const display = snap?.__display || '';
+    const isBox = clone.matches(ATOMIC_BOX_SELECTOR) || Boolean(clone.querySelector(ATOMIC_BOX_SELECTOR)) ||
+      (display && !display.startsWith('inline') && display !== 'contents');
+    clone.setAttribute('data-kct-atomic', isBox ? 'box' : 'inline');
+    const imgs = clone.matches('img') ? [clone] : Array.from(clone.querySelectorAll('img'));
+    const origImgs = origNode.matches('img') ? [origNode] : Array.from(origNode.querySelectorAll('img'));
+    imgs.forEach((img, i) => {
+      const orig = origImgs[i];
+      const live = orig && orig.complete && orig.naturalWidth > 0 ? orig.currentSrc || orig.src : '';
+      const lazy = LAZY_SRC_ATTRS.map((a) => img.getAttribute(a)).find(Boolean);
+      if (live) img.setAttribute('src', live);
+      else if (lazy) img.setAttribute('src', lazy);
+      if (img.getAttribute('loading') === 'lazy') img.removeAttribute('loading');
+      if (live || lazy) img.removeAttribute('srcset');
+    });
   }
 
   function appendTextWithBreaks(parent, str) {
@@ -279,7 +329,9 @@
           if (origNode) {
             const clone = origNode.cloneNode(true);
             stripDuplicateIds(clone, true);
+            prepareAtomicClone(clone, origNode, map.styleSnapshots?.get(origNode));
             currentParent.appendChild(clone);
+            if (map.clonePairs) map.clonePairs.push([clone, origNode]);
           }
           continue;
         }
@@ -289,11 +341,14 @@
           if (origNode) {
             const clone = origNode.cloneNode(false);
             stripDuplicateIds(clone, false);
-            // A paired tag is rebuilt as an inline run inside translated prose; never let a
-            // block/flex/grid original turn the translated text into separate layout boxes.
+            if (map.clonePairs) map.clonePairs.push([clone, origNode]);
+            // A paired tag is rebuilt around translated prose; never let a flex/grid original turn
+            // the translated text runs into separate layout cells (block originals keep their box).
             try {
-              const d = origNode.isConnected ? getComputedStyle(origNode).display : 'inline';
-              if (d && !d.startsWith('inline') && d !== 'contents') clone.style.display = 'inline';
+              // The original is already inside the detached .kct-orig-wrap here, so use the display
+              // recorded at extraction time.
+              const d = map.styleSnapshots?.get(origNode)?.__display || '';
+              if (/flex|grid/.test(d)) clone.style.display = 'inline';
             } catch (_) { /* ignore */ }
             currentParent.appendChild(clone);
             stack.push({ key: openKey, node: clone });
@@ -794,12 +849,73 @@
     }
   }
 
+  // Clones sit in a new DOM position (inside .kct-trans-wrap), where site selectors that depend on
+  // the original parent (`.titleline > a`) no longer match. Re-apply the typography recorded at
+  // extraction time wherever the clone now renders differently, so translation looks like the original.
+  function restoreCloneTypography(placeholders) {
+    const pairs = placeholders?.clonePairs;
+    const snaps = placeholders?.styleSnapshots;
+    if (!pairs || !snaps) return;
+    // Read everything first, then write (avoids a style recalculation per property).
+    const writes = [];
+    for (const [clone, origNode] of pairs) {
+      const snap = snaps.get(origNode);
+      if (!snap || !snap.__parent || !clone.isConnected || !clone.parentElement) continue;
+      let cs = null;
+      let ps = null;
+      try { cs = getComputedStyle(clone); ps = getComputedStyle(clone.parentElement); } catch (_) { continue; }
+      for (const prop of Object.keys(snap)) {
+        if (prop.startsWith('__')) continue;
+        // Only the element's OWN styling (it differed from its original parent) is restored, and only
+        // when the clone lost it (it now matches its new parent).
+        if (snap[prop] === snap.__parent[prop]) continue;
+        if (prop === 'fontSize') {
+          const own = parseFloat(snap.fontSize);
+          const par = parseFloat(snap.__parent.fontSize);
+          const nowPar = parseFloat(ps.fontSize);
+          const now = parseFloat(cs.fontSize);
+          if (!own || !par || !nowPar) continue;
+          const want = (own / par) * nowPar; // keep the relative size (bilingual mode scales the wrapper)
+          if (Math.abs(now - want) > 0.5) writes.push([clone, 'font-size', `${want.toFixed(2)}px`]);
+          continue;
+        }
+        if (cs[prop] === ps[prop] && cs[prop] !== snap[prop]) {
+          writes.push([clone, prop.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase()), snap[prop]]);
+        }
+      }
+    }
+    for (const [clone, prop, value] of writes) clone.style.setProperty(prop, value);
+    placeholders.clonePairs = null;
+  }
+
+
+  // Inside a flex/grid host every child node is its own layout item. Mirror the original item
+  // structure: atomic clones (icons, code, kept boxes) stay separate items, and each run of translated
+  // text + inline tags between them becomes ONE item, so a sentence is never split into cells.
+  function groupFlexRuns(transWrap) {
+    let run = null;
+    for (const node of Array.from(transWrap.childNodes)) {
+      const isItem = node.nodeType === Node.ELEMENT_NODE && node.hasAttribute('data-kct-atomic');
+      if (isItem) {
+        run = null;
+        continue;
+      }
+      if (!run) {
+        if (node.nodeType === Node.TEXT_NODE && !node.nodeValue.trim()) continue;
+        run = document.createElement('span');
+        run.className = 'kct-flex-run';
+        transWrap.insertBefore(run, node);
+      }
+      run.appendChild(node);
+    }
+  }
+
   function applyBlockTranslation(job, settings, state) {
     const { el, zh, placeholders, nestedListEl, typo } = job;
     if (!el || !el.isConnected) {
       return 'disconnected';
     }
-    if (el.hasAttribute('data-kct-has-trans') || el.querySelector('[data-kct-ui="trans"]')) {
+    if (el.hasAttribute('data-kct-has-trans') || el.querySelector(':scope > [data-kct-ui="trans"]')) {
       if (state?.elementState) state.elementState.set(el, 'done');
       return 'already';
     }
@@ -810,9 +926,19 @@
     origWrap.className = 'kct-orig-wrap';
     origWrap.setAttribute('data-kct-ui', 'orig');
 
+    // The nested list (or the wrapper that contains it, e.g. a display:contents <div>) stays in place.
+    let listAnchor = null;
+    if (nestedListEl && el.contains(nestedListEl)) {
+      for (const child of el.childNodes) {
+        if (child === nestedListEl || (child.nodeType === Node.ELEMENT_NODE && child.contains(nestedListEl))) {
+          listAnchor = child;
+          break;
+        }
+      }
+    }
     const children = Array.from(el.childNodes);
     for (const child of children) {
-      if (nestedListEl && child === nestedListEl) break;
+      if (listAnchor && child === listAnchor) break;
       origWrap.appendChild(child);
     }
 
@@ -824,6 +950,7 @@
 
     if (validation.ok) {
       el.removeAttribute('data-kct-structure-fallback');
+      if (placeholders instanceof Map) placeholders.clonePairs = [];
       transWrap.appendChild(buildTranslatedFragment(zh, placeholders));
     } else {
       console.debug('[NativeRead] structure fallback:', validation.reason);
@@ -834,6 +961,15 @@
     if (needsInlineInjection(el)) {
       el.setAttribute('data-kct-inline-layout', '1');
     }
+    // In replace mode the translation wrapper is display:contents. Inside a flex/grid host that
+    // would turn every translated text run and link into its own layout cell, so the wrapper
+    // becomes ONE cell there instead.
+    try {
+      if (/flex|grid/.test(getComputedStyle(el).display || '')) {
+        el.setAttribute('data-kct-flex-host', '1');
+        groupFlexRuns(transWrap);
+      }
+    } catch (_) { /* ignore */ }
 
     const typoInfo = typo || KCTSiteAnalyzer?.probeTypography?.(el) || {
       archetype: 'sans',
@@ -856,14 +992,15 @@
       el.removeAttribute('data-kct-has-orig-font');
     }
 
-    if (nestedListEl && nestedListEl.parentElement === el) {
-      el.insertBefore(origWrap, nestedListEl);
-      el.insertBefore(transWrap, nestedListEl);
+    if (listAnchor && listAnchor.parentNode === el) {
+      el.insertBefore(origWrap, listAnchor);
+      el.insertBefore(transWrap, listAnchor);
     } else {
       el.append(origWrap, transWrap);
     }
 
     el.setAttribute('data-kct-has-trans', '1');
+    restoreCloneTypography(placeholders);
     if (el.getAttribute('data-kct-pdf-block') === '1') {
       if (el.getAttribute('data-kct-pdf-toc') === '1') appendPdfTocTail(el);
       styleAndFitPdfOverlayBlock(el);
@@ -954,6 +1091,7 @@
       el.removeAttribute('data-kct-has-trans');
       el.removeAttribute('data-kct-structure-fallback');
       el.removeAttribute('data-kct-inline-layout');
+      el.removeAttribute('data-kct-flex-host');
       el.removeAttribute('data-kct-typo');
       el.removeAttribute('data-kct-lh-lift');
       el.removeAttribute('data-kct-has-orig-font');

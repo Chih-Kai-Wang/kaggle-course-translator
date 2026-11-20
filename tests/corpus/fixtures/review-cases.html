@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>corpus review cases</title>
+<style>
+  body { font-family: Georgia, serif; max-width: 860px; margin: 24px auto; }
+  .post > a.print-only { display: none; }
+  .item > .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+  .cards li { display: inline-block; width: 220px; margin-right: 16px; border: 1px solid #ccc; vertical-align: top; }
+</style></head>
+<body><main><article>
+<h1 data-expect="translated">Review cases from model reviewers</h1>
+
+<!-- R1 nested list: child item must be translated too -->
+<ul><li data-expect="translated">Parent bullet text describing the overall topic
+  <ul><li data-expect="translated">Child bullet text that explains one detail</li></ul></li></ul>
+
+<!-- R2 rescan: card with bare text beside a paragraph (checked by the rescan invariant) -->
+<div class="card">Posted by Alice today<p data-expect="translated">This is the body text of the post written by Alice.</p></div>
+
+<!-- R3 inline-block cards must stay separate units -->
+<ul class="cards"><li data-expect="translated" data-expect-unit="self">First card title about transformers</li><li data-expect="translated" data-expect-unit="self">Second card title about diffusion</li></ul>
+
+<!-- R4 inline-flex link inside a paragraph -->
+<p data-expect="translated">Read <a href="https://example.com/docs" style="display:inline-flex;gap:8px">the <b>updated</b> guide</a> now before you start the training run.</p>
+
+<!-- R5 media and controls inside semantic blocks -->
+<p data-expect="translated"><a href="https://example.com/post"><span data-corpus-media="img" style="display:block;width:120px;height:40px;background:#ccc"></span>Read the full article about scaling here</a></p>
+<ul><li data-expect="translated"><input type="checkbox" id="c1"> <label for="c1">Enable weekly updates about new papers</label></li></ul>
+<!-- live controls are never cloned: text around a button stays original (bare text beside a barrier) -->
+<p>Click <button type="button">Save</button> to keep your current experiment settings.</p>
+
+<!-- R6 icon-only link inside a paragraph -->
+<p data-expect="translated">Follow the project on GitHub <a href="https://example.com/gh"><svg width="16" height="16"><rect width="16" height="16"></rect></svg></a> for future updates and releases.</p>
+
+<!-- R7 grid host with an icon column -->
+<p data-expect="translated" style="display:grid;grid-template-columns:24px 1fr"><svg width="24" height="24"><circle cx="12" cy="12" r="10"></circle></svg>This full-width paragraph lives in the second column of the grid.</p>
+
+<!-- R8 hidden content must stay hidden -->
+<p class="post" data-expect="translated">Read more about the evaluation protocol <a class="print-only" href="https://example.com/print">Print version</a></p>
+<p data-expect="translated">Hello <span style="visibility:hidden">hidden text here</span> world of attention mechanisms.</p>
+<p class="item" data-expect="translated"><span class="sr-only">Breaking:</span> Markets rise today after the new model release.</p>
+
+<!-- R10 nested list inside a display:contents wrapper -->
+<ul><li data-expect="translated">Intro text for the nested wrapper case
+  <div style="display:contents"><ul><li data-expect="translated">Nested item inside a contents wrapper</li></ul></div></li></ul>
+
+<!-- R11 translate=no must stay verbatim -->
+<p data-expect="translated">Install the <span translate="no">NativeRead</span> extension from the store and pin it.</p>
+
+<!-- R14 picture / aria-hidden with display:contents -->
+<p data-expect="translated">See the diagram <picture style="display:contents"><span data-corpus-media="img" style="display:inline-block;width:40px;height:20px;background:#ccc"></span></picture> above for the full architecture.</p>
+
+<!-- F3 a button inside a generic div is a live control, never cloned -->
+<div class="comment"><span>Great article, thanks for sharing all the details!</span> <button class="reply">Reply</button></div>
+
+<!-- F5 a card whose chart canvas sits inside a box must not be swallowed -->
+<div class="card"><span data-expect="translated">Monthly revenue overview for the team</span><div class="chart"><canvas width="80" height="20"></canvas></div></div>
+
+<!-- F8 styled empty icon (CSS-drawn dot) must stay -->
+<p data-expect="translated">Status: <span style="display:inline-block;width:8px;height:8px;border-radius:4px;background:#2a2"></span> Online and serving requests.</p>
+
+<!-- F9a icon-font ligature must not be translated -->
+<p data-expect="translated">Back to the documentation home page. <span style="font-family:'Material Icons', monospace">home</span></p>
+
+<!-- F9d drop cap stays part of the word -->
+<p data-expect="translated"><span style="float:left;font-size:3em;line-height:1">T</span>he quick brown fox jumps over the lazy dog in this paragraph.</p>
+
+<!-- F17 svg gradient reference in an icon inside a sentence -->
+<p data-expect="translated">Our logo <svg width="16" height="16"><defs><linearGradient id="g1"><stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/></linearGradient></defs><rect width="16" height="16" fill="url(#g1)"/></svg> appears in the header of every page.</p>
+</article></main></body></html>
