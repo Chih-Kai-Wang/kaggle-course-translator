@@ -352,6 +352,7 @@
 
   function injectOutputTranslateButtons(settings, pageContext) {
     if (!settings || settings.showOutputTranslateBtn === false) return;
+    if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) return;
     const targetLangId = settings.targetLang || 'zh-TW';
     const outputAreas = document.querySelectorAll(
       '.jp-OutputArea-output .jp-RenderedText, .output_subarea.output_text, .output_subarea.output_stream, .output_subarea.output_error'

@@ -1,8 +1,8 @@
-# NativeRead — 原版美感 AI 網頁與 PDF 翻譯（v2.1.0）
+# NativeRead — 原版美感 AI 網頁與 PDF 翻譯（v2.2.0 電腦＆手機全平台版）
 
-> 讓外文網頁與 PDF 白皮書讀起來像母語原版一樣自然 —— **預設靜默按需啟動、統一通用 DOM 遍歷（支援現代 SPA `div`/`span`、Shadow DOM、跨域 `<iframe>` 與程式碼編輯器）、SSE 串流逐段上屏、母語級字體基因配對，並內建本機 PDF.js 原位翻譯閱讀器**。
+> 讓外文網頁與 PDF 白皮書讀起來像母語原版一樣自然 —— **預設靜默按需啟動、統一通用 DOM 遍歷（支援現代 SPA `div`/`span`、Shadow DOM、跨域 `<iframe>` 與程式碼編輯器）、SSE 串流逐段上屏、母語級字體基因配對、內建本機 PDF.js 原位翻譯閱讀器，並完整支援 Android 與 iOS 手機端（PWA / Userscript / Android 擴充包 / 零打字 QR Code 金鑰同步）**。
 
-適用於所有 Chromium Manifest V3 瀏覽器（Google Chrome、Microsoft Edge、Brave、Arc、**Ego Lite** 等），零第三方伺服器中轉，直接使用你自己的 **Google Gemini / DeepSeek / OpenAI / OpenRouter / 本機 Ollama** API Key。
+適用於所有桌面與手機端瀏覽器（Chrome、Edge、Brave、**Ego Lite**、Android **狐猴 Lemur / Kiwi / Edge / Firefox / Tampermonkey**，以及 **iPhone / iPad Safari**），零第三方伺服器中轉，直接使用你自己的 **Google Gemini / DeepSeek / OpenAI / OpenRouter / 本機 Ollama** API Key。
 
 ---
 
@@ -67,6 +67,19 @@ flowchart TD
 - **Google Gemini 原生介面（推薦）**：支援 `gemini-3.5-flash-lite`、`gemini-3.6-flash`、`gemini-3.8-flash`、`gemini-4-hydrogen`、`gemini-2.5-flash` 等，自動配置最低必要思考強度（`MINIMAL` / `LOW` / `thinkingBudget: 0`）。
 - **OpenAI 相容端點**：內建 DeepSeek、OpenAI、通義千問 Qwen、SiliconFlow、Moonshot Kimi、智譜 GLM、OpenRouter，以及本機 **Ollama**（`http://localhost:11434/v1`）。
 
+### 5. 手機與平板全平台支援（Android & iOS）
+- **零打字掃碼／連結同步 API Key（`#nr_sync`）**：於電腦端設定頁點擊「**產生手機一鍵同步連結 & QR Code**」（由本機純 JS Canvas 繪製 ISO/IEC 18004 QR Code，金鑰僅編碼於不會傳送至伺服器的 URL `#` Fragment），手機掃描後 **0.1 秒自動匯入 API Key 與偏好並清除網址列**。
+- **三種手機使用方式（任選或並用）**：
+  1. **NativeRead 手機版 PWA（免換瀏覽器 · Android Chrome & iOS Safari 皆可「加到主畫面」）**：
+     - 網址：`https://chih-kai-wang.github.io/native-read/`
+     - 內建**手機版 PDF.js 原位覆蓋／上下對照白皮書翻譯器**、**網址／文章原版翻譯器**、離線 App Shell 與本機 IndexedDB 快取。
+  2. **全平台 Userscript 單檔腳本（`nativeread.user.js`）**：
+     - 安裝網址：`https://chih-kai-wang.github.io/native-read/nativeread.user.js`
+     - 適用於 **Android**（Tampermonkey / 狐猴 Lemur / Kiwi / Firefox / Via）與 **iPhone / iPad Safari**（搭配免費的 *Stay* 或 *Userscripts* 擴充）；頁緣顯示可上下拖曳的透明 `NR` 觸控膠囊，點一下即可在任何網頁啟動原版串流翻譯與頁內設定面板。
+  3. **Android 擴充瀏覽器安裝包（`nativeread-android-extension.zip`）**：
+     - 下載網址：`https://chih-kai-wang.github.io/native-read/nativeread-android-extension.zip`
+     - 適用於 **狐猴瀏覽器（Lemur Browser）、Kiwi Browser、Quetta、Microsoft Edge Android**，完整具備手機觸控選字（`touchend` / `selectionchange`）劃詞翻譯、可拖曳懸浮列與手機滿版 PDF 閱讀器。
+
 ---
 
 ## 安裝與快速上手
@@ -127,6 +140,11 @@ native-read/
 
 ## 更新日誌
 
+- **`v2.2.0`（Android & iOS 手機全平台版）**：
+  - 新增 **NativeRead 手機版 PWA**（`docs/`，支援加入主畫面、手機端 PDF 原位／上下對照白皮書翻譯器與網址文章閱讀器）。
+  - 新增 **全平台獨立 Userscript（`docs/nativeread.user.js`）** 與 **Android 擴充功能安裝包（`docs/nativeread-android-extension.zip`）** 自動化建置腳本（`scripts/build-mobile.js`）。
+  - 新增電腦端設定頁 **本機 Canvas QR Code 與 `#nr_sync` 零打字手機金鑰同步**（支援 PWA、Userscript 與 Android 擴充瀏覽器自動攔截匯入）。
+  - 全面適配手機觸控體驗：觸控選字（`touchend` / `selectionchange`）劃詞翻譯、懸浮列手機安全區域與邊緣上下拖曳、PDF 閱讀器手機螢幕自適應滿版與上下對照排版。
 - **`v2.1.0`（NativeRead 正式正名）**：
   - 正式更名為 **NativeRead（`native-read`）**。
   - 移除硬編碼站點清單與 Notebook 特殊架構分流，升級為統一元件能力驅動架構（`code-overlay.js`），新增通用 `div`/`span`/`a` 現代 SPA 葉子文字安全遍歷。

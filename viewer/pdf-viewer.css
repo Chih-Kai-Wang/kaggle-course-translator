@@ -1061,7 +1061,62 @@ body {
 }
 
 @media (max-width: 900px) {
-  .nr-main[data-mode="split"] .nr-page-row {
+  .nr-main[data-mode="split"] .nr-page-row,
+  .nr-viewer-main[data-mode="split"] .nr-page-row {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .nr-toolbar {
+    padding: 8px 10px;
+    gap: 8px;
+    overflow-x: auto;
+    flex-wrap: wrap;
+  }
+
+  .nr-toolbar-left,
+  .nr-toolbar-center,
+  .nr-toolbar-right {
+    gap: 6px;
+  }
+
+  .nr-doc-title {
+    max-width: 130px;
+  }
+
+  .nr-main {
+    padding: 12px 8px 48px;
+  }
+
+  .nr-state-card {
+    margin-top: 20px;
+    padding: 24px 16px;
+  }
+
+  .nr-url-form {
+    flex-direction: column;
+  }
+
+  .nr-main[data-mode="split"] .nr-page-row,
+  .nr-viewer-main[data-mode="split"] .nr-page-row {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .nr-split-card-body {
+    padding: 16px 16px 20px;
+  }
+}
+
+@media (max-width: 640px) {
+  #comparePopover,
+  .nr-compare-popover {
+    left: 10px !important;
+    right: 10px !important;
+    width: auto !important;
+    bottom: max(12px, env(safe-area-inset-bottom, 12px)) !important;
+    top: auto !important;
+    max-height: min(62vh, 380px);
   }
 }

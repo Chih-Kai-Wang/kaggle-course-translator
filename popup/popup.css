@@ -436,3 +436,33 @@ input:checked + .slider::before {
 .link-btn:hover {
   text-decoration: underline;
 }
+
+@media (max-width: 520px) {
+  body {
+    width: 100%;
+    max-width: 100%;
+    padding: 16px;
+    font-size: 14px;
+  }
+
+  .sub {
+    max-width: 72vw;
+  }
+
+  .btn,
+  .select-input,
+  .text-input,
+  .segmented button,
+  .scope-segmented button {
+    min-height: 42px;
+    font-size: 13.5px;
+  }
+
+  .check-row,
+  .site-auto-toggle,
+  .link-btn {
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+  }
+}

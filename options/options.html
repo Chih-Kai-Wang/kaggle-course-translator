@@ -194,6 +194,48 @@
         <button id="btn-clear-cache" type="button" class="btn danger-outline">清空全部快取</button>
       </div>
     </section>
+
+    <section class="panel">
+      <h2>📱 手機端使用與一鍵同步設定（Android / iOS）</h2>
+      <p class="hint panel-intro">在手機上無需重新手動輸入長串 API Key，可透過以下三種方式使用 NativeRead，並用本機產生的 QR Code 或加密錨點連結一鍵同步目前設定：</p>
+
+      <ol class="mobile-methods-list">
+        <li>
+          <strong>NativeRead 手機版 PWA（免換瀏覽器，支援手機看 PDF 白皮書與網頁）</strong>：
+          <a href="https://chih-kai-wang.github.io/native-read/" target="_blank" rel="noopener noreferrer">https://chih-kai-wang.github.io/native-read/</a>
+        </li>
+        <li>
+          <strong>全平台 Userscript 腳本（Android / iOS Safari）</strong>：
+          <a href="https://chih-kai-wang.github.io/native-read/nativeread.user.js" target="_blank" rel="noopener noreferrer">https://chih-kai-wang.github.io/native-read/nativeread.user.js</a>
+        </li>
+        <li>
+          <strong>Android 擴充瀏覽器安裝包（狐猴 Lemur / Kiwi / Edge / Firefox）</strong>：
+          <a href="https://chih-kai-wang.github.io/native-read/nativeread-android-extension.zip" target="_blank" rel="noopener noreferrer">https://chih-kai-wang.github.io/native-read/nativeread-android-extension.zip</a>
+        </li>
+      </ol>
+
+      <div class="security-note">
+        🔒 安全設計：金鑰僅編碼於網址 # 錨點（URL Fragment），瀏覽器絕不會將 # 後方的內容發送給 GitHub 或任何伺服器；手機打開後會自動匯入本機並立即從網址列清除。
+      </div>
+
+      <div class="btn-row">
+        <button id="btn-generate-mobile-sync" type="button" class="btn primary">產生手機一鍵同步連結 &amp; QR Code</button>
+        <button id="btn-copy-mobile-sync" type="button" class="btn secondary" disabled>複製同步連結</button>
+        <span id="mobile-sync-status" class="inline-status"></span>
+      </div>
+
+      <div id="mobile-sync-box" class="mobile-sync-box hidden">
+        <div class="mobile-qr-wrap">
+          <canvas id="mobile-sync-qr" width="220" height="220" aria-label="手機一鍵同步 QR Code"></canvas>
+          <span class="hint">請使用手機相機掃描上方 QR Code</span>
+        </div>
+        <div class="mobile-url-wrap">
+          <label for="mobile-sync-url">手機一鍵同步連結（含 #nr_sync 本機錨點）</label>
+          <input id="mobile-sync-url" type="text" readonly placeholder="點擊上方按鈕產生同步連結...">
+          <p class="hint">提示：若使用 Android 擴充瀏覽器或已安裝 Userscript，開啟此連結即可直接將設定同步至擴充功能與 PWA。</p>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script src="../shared/config.js"></script>

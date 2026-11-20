@@ -1,8 +1,10 @@
 importScripts('../shared/config.js', '../shared/cache-db.js');
 
 const {
+  PROVIDER_PRESETS,
   DEFAULT_GLOSSARY,
   getSettings,
+  saveSettings,
   resolveEndpoint,
   resolveStreamEndpoint,
   resolveThinkingConfig,
@@ -1413,9 +1415,62 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
+async function tryImportNrSyncFromUrl(urlStr) {
+  if (!urlStr || !urlStr.includes('nr_sync=')) return false;
+  const match = urlStr.match(/[#&]nr_sync=([A-Za-z0-9_%-]+)/);
+  if (!match || !match[1]) return false;
+  try {
+    const rawToken = decodeURIComponent(match[1]);
+    const b64 = rawToken.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+    const binary = atob(b64 + pad);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const data = JSON.parse(new TextDecoder().decode(bytes));
+    if (!data || typeof data !== 'object') return false;
+
+    const providerId = String(data.providerId || data.p || '').trim();
+    const preset = (providerId && PROVIDER_PRESETS?.[providerId]) || null;
+    const patch = {};
+    if (providerId) patch.providerId = providerId;
+    const protocol = String(data.protocol || data.r || preset?.protocol || '').trim();
+    if (protocol === 'openai' || protocol === 'gemini') patch.protocol = protocol;
+    const baseUrl = String(data.baseUrl || data.u || preset?.baseUrl || '').trim();
+    if (baseUrl) patch.baseUrl = baseUrl;
+    if (typeof (data.apiKey ?? data.k) === 'string') {
+      patch.apiKey = sanitizeApiKey(data.apiKey ?? data.k);
+    }
+    const model = String(data.model || data.m || preset?.defaultModel || '').trim();
+    if (model) patch.model = model;
+    const targetLang = String(data.targetLang || data.l || '').trim();
+    if (targetLang) patch.targetLang = targetLang;
+    const customTargetLang = String(data.customTargetLang ?? data.c ?? '').trim();
+    if (customTargetLang || targetLang === 'custom') patch.customTargetLang = customTargetLang;
+    const thinkingEffort = String(data.thinkingEffort || data.e || '').trim();
+    if (thinkingEffort) patch.thinkingEffort = thinkingEffort;
+    const typographyMatch = String(data.typographyMatch || data.t || '').trim();
+    if (typographyMatch) patch.typographyMatch = typographyMatch;
+
+    await saveSettings(patch);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  const candidateUrl = changeInfo?.url || tab?.url || '';
+  if (candidateUrl.includes('nr_sync=')) {
+    await tryImportNrSyncFromUrl(candidateUrl);
+  }
   if (changeInfo.status !== 'complete' || !isInjectableUrl(tab?.url) || isPdfUrl(tab?.url)) return;
   try {
+    if (tab.url.includes('nr_sync=')) {
+      await tryImportNrSyncFromUrl(tab.url);
+      await ensureInjected(tabId);
+    }
     const settings = await getSettings();
     if (!settings.enabled) return;
     let host = '';

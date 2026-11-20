@@ -1811,8 +1811,13 @@ async function openPdfFromArrayBuffer(arrayBuffer, { title, host, sourceUrl = ''
     const baseViewport = firstPage.getViewport({ scale: 1.0 });
     state.defaultPageWidth = baseViewport.width;
     state.defaultPageHeight = baseViewport.height;
-    const targetDisplayWidth = Math.min(860, Math.max(540, window.innerWidth - 72));
-    state.baseFitScale = Math.max(0.95, Math.min(1.65, targetDisplayWidth / Math.max(200, baseViewport.width)));
+    if (window.innerWidth <= 768) {
+      const targetDisplayWidth = Math.max(280, window.innerWidth - 16);
+      state.baseFitScale = Math.max(0.42, Math.min(1.65, targetDisplayWidth / Math.max(200, baseViewport.width)));
+    } else {
+      const targetDisplayWidth = Math.min(860, Math.max(540, window.innerWidth - 72));
+      state.baseFitScale = Math.max(0.95, Math.min(1.65, targetDisplayWidth / Math.max(200, baseViewport.width)));
+    }
     state.zoom = 1.0;
     updateZoomUI();
 
@@ -2006,7 +2011,10 @@ function applyZoom(nextZoom) {
   state.zoom = clamped;
   updateZoomUI();
   closeComparePopover();
+  refreshPageShellsForCurrentScale();
+}
 
+function refreshPageShellsForCurrentScale() {
   if (!state.pdfDoc) return;
 
   const vh = window.innerHeight || 800;
@@ -2045,6 +2053,32 @@ function stepZoom(direction) {
 // Event Listeners & Initialization
 // ============================================================
 function bindEvents() {
+  let resizeTimer = null;
+  let lastWindowWidth = window.innerWidth;
+  window.addEventListener('resize', () => {
+    if (!state.pdfDoc) return;
+    if (Math.abs(window.innerWidth - lastWindowWidth) < 16) return;
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      lastWindowWidth = window.innerWidth;
+      if (!state.pdfDoc) return;
+      const baseWidth = Math.max(200, state.defaultPageWidth || 612);
+      let nextBaseFitScale;
+      if (window.innerWidth <= 768) {
+        const targetDisplayWidth = Math.max(280, window.innerWidth - 16);
+        nextBaseFitScale = Math.max(0.42, Math.min(1.65, targetDisplayWidth / baseWidth));
+      } else {
+        const targetDisplayWidth = Math.min(860, Math.max(540, window.innerWidth - 72));
+        nextBaseFitScale = Math.max(0.95, Math.min(1.65, targetDisplayWidth / baseWidth));
+      }
+      if (Math.abs(nextBaseFitScale - state.baseFitScale) > 0.015) {
+        state.baseFitScale = nextBaseFitScale;
+        closeComparePopover();
+        refreshPageShellsForCurrentScale();
+      }
+    }, 220);
+  });
+
   // Mode segmented buttons
   dom.modeSegmented.addEventListener('click', (e) => {
     const btn = e.target.closest('.nr-seg-btn');

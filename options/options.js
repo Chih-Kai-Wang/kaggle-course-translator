@@ -191,6 +191,419 @@ function formatCacheSize(bytes) {
   return `${(n / 1024).toFixed(1)} KB`;
 }
 
+function encodeBase64UrlUtf8(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function buildMobileSyncUrl(form) {
+  const preset = PROVIDER_PRESETS[form.providerId] || null;
+  const payload = {
+    p: form.providerId || 'deepseek',
+    r: form.protocol || 'openai',
+    k: form.apiKey || '',
+    m: form.model || '',
+    l: form.targetLang || 'zh-TW',
+    e: form.thinkingEffort || 'fastest',
+    t: form.typographyMatch || 'native'
+  };
+  if (form.baseUrl && (!preset || form.baseUrl !== preset.baseUrl)) {
+    payload.u = form.baseUrl;
+  }
+  if (form.targetLang === 'custom' && form.customTargetLang) {
+    payload.c = form.customTargetLang;
+  }
+  const encoded = encodeBase64UrlUtf8(JSON.stringify(payload));
+  return `https://chih-kai-wang.github.io/native-read/#nr_sync=${encoded}`;
+}
+
+// ============================================================
+// Self-Contained Pure-JS ISO/IEC 18004 QR Code Generator (V1-V14, Level L, Byte Mode)
+// ============================================================
+const QR_LEVEL_L_VERSIONS = [
+  null,
+  { v: 1, totalData: 19, ecPerBlock: 7, groups: [[1, 19]], align: [] },
+  { v: 2, totalData: 34, ecPerBlock: 10, groups: [[1, 34]], align: [6, 18] },
+  { v: 3, totalData: 55, ecPerBlock: 15, groups: [[1, 55]], align: [6, 22] },
+  { v: 4, totalData: 80, ecPerBlock: 20, groups: [[1, 80]], align: [6, 26] },
+  { v: 5, totalData: 108, ecPerBlock: 26, groups: [[1, 108]], align: [6, 30] },
+  { v: 6, totalData: 136, ecPerBlock: 18, groups: [[2, 68]], align: [6, 34] },
+  { v: 7, totalData: 156, ecPerBlock: 20, groups: [[2, 78]], align: [6, 22, 38] },
+  { v: 8, totalData: 194, ecPerBlock: 24, groups: [[2, 97]], align: [6, 24, 42] },
+  { v: 9, totalData: 232, ecPerBlock: 30, groups: [[2, 116]], align: [6, 26, 46] },
+  { v: 10, totalData: 274, ecPerBlock: 18, groups: [[2, 68], [2, 69]], align: [6, 28, 50] },
+  { v: 11, totalData: 324, ecPerBlock: 20, groups: [[4, 81]], align: [6, 30, 54] },
+  { v: 12, totalData: 370, ecPerBlock: 24, groups: [[2, 92], [2, 93]], align: [6, 32, 58] },
+  { v: 13, totalData: 428, ecPerBlock: 26, groups: [[4, 107]], align: [6, 34, 62] },
+  { v: 14, totalData: 461, ecPerBlock: 30, groups: [[3, 115], [1, 116]], align: [6, 26, 46, 66] }
+];
+
+const GF_EXP = new Uint8Array(512);
+const GF_LOG = new Uint8Array(256);
+(() => {
+  let x = 1;
+  for (let i = 0; i < 255; i++) {
+    GF_EXP[i] = x;
+    GF_LOG[x] = i;
+    x <<= 1;
+    if (x & 0x100) x ^= 0x11d;
+  }
+  for (let i = 255; i < 512; i++) {
+    GF_EXP[i] = GF_EXP[i - 255];
+  }
+})();
+
+function gfMul(a, b) {
+  return (a === 0 || b === 0) ? 0 : GF_EXP[GF_LOG[a] + GF_LOG[b]];
+}
+
+function rsGeneratorPoly(degree) {
+  let poly = new Uint8Array([1]);
+  for (let i = 0; i < degree; i++) {
+    const next = new Uint8Array(poly.length + 1);
+    const root = GF_EXP[i];
+    for (let j = 0; j < poly.length; j++) {
+      next[j] ^= poly[j];
+      next[j + 1] ^= gfMul(poly[j], root);
+    }
+    poly = next;
+  }
+  return poly;
+}
+
+function rsComputeEcBytes(dataBytes, ecLen) {
+  const gen = rsGeneratorPoly(ecLen);
+  const rem = new Uint8Array(ecLen);
+  for (let i = 0; i < dataBytes.length; i++) {
+    const factor = dataBytes[i] ^ rem[0];
+    for (let j = 0; j < ecLen - 1; j++) {
+      rem[j] = rem[j + 1] ^ gfMul(gen[j + 1], factor);
+    }
+    rem[ecLen - 1] = gfMul(gen[ecLen], factor);
+  }
+  return rem;
+}
+
+function pickQrVersion(byteLen) {
+  for (let v = 1; v <= 14; v++) {
+    const info = QR_LEVEL_L_VERSIONS[v];
+    const countBits = v <= 9 ? 8 : 16;
+    const maxBytes = Math.floor((info.totalData * 8 - 4 - countBits) / 8);
+    if (byteLen <= maxBytes) return info;
+  }
+  throw new Error('同步連結長度超過 QR V14 容量上限');
+}
+
+function encodeQrCodewords(utf8Bytes, verInfo) {
+  const bitBuf = [];
+  const pushBits = (val, len) => {
+    for (let i = len - 1; i >= 0; i--) {
+      bitBuf.push((val >>> i) & 1);
+    }
+  };
+
+  // Byte mode indicator (0100) + char count
+  pushBits(0b0100, 4);
+  pushBits(utf8Bytes.length, verInfo.v <= 9 ? 8 : 16);
+  for (let i = 0; i < utf8Bytes.length; i++) {
+    pushBits(utf8Bytes[i], 8);
+  }
+
+  const maxBits = verInfo.totalData * 8;
+  const termLen = Math.min(4, Math.max(0, maxBits - bitBuf.length));
+  pushBits(0, termLen);
+  while (bitBuf.length % 8 !== 0) {
+    bitBuf.push(0);
+  }
+
+  const dataCodewords = new Uint8Array(verInfo.totalData);
+  const byteCount = bitBuf.length / 8;
+  for (let i = 0; i < byteCount; i++) {
+    let b = 0;
+    for (let j = 0; j < 8; j++) {
+      b = (b << 1) | bitBuf[i * 8 + j];
+    }
+    dataCodewords[i] = b;
+  }
+  const pads = [0xec, 0x11];
+  for (let i = byteCount; i < verInfo.totalData; i++) {
+    dataCodewords[i] = pads[(i - byteCount) % 2];
+  }
+
+  // Split into RS blocks & interleave
+  const dataBlocks = [];
+  const ecBlocks = [];
+  let offset = 0;
+  let maxBlockLen = 0;
+  for (const [numBlocks, dataLen] of verInfo.groups) {
+    for (let b = 0; b < numBlocks; b++) {
+      const slice = dataCodewords.subarray(offset, offset + dataLen);
+      offset += dataLen;
+      dataBlocks.push(slice);
+      ecBlocks.push(rsComputeEcBytes(slice, verInfo.ecPerBlock));
+      if (dataLen > maxBlockLen) maxBlockLen = dataLen;
+    }
+  }
+
+  const finalBytes = [];
+  for (let i = 0; i < maxBlockLen; i++) {
+    for (let b = 0; b < dataBlocks.length; b++) {
+      if (i < dataBlocks[b].length) finalBytes.push(dataBlocks[b][i]);
+    }
+  }
+  for (let i = 0; i < verInfo.ecPerBlock; i++) {
+    for (let b = 0; b < ecBlocks.length; b++) {
+      finalBytes.push(ecBlocks[b][i]);
+    }
+  }
+  return finalBytes;
+}
+
+function computeFormatBits(mask) {
+  // Level L = 01
+  const data = (0b01 << 3) | mask;
+  let rem = data << 10;
+  for (let i = 14; i >= 10; i--) {
+    if ((rem >>> i) & 1) {
+      rem ^= 0x537 << (i - 10);
+    }
+  }
+  return ((data << 10) | rem) ^ 0x5412;
+}
+
+function computeVersionBits(version) {
+  let rem = version << 12;
+  for (let i = 17; i >= 12; i--) {
+    if ((rem >>> i) & 1) {
+      rem ^= 0x1f25 << (i - 12);
+    }
+  }
+  return (version << 12) | rem;
+}
+
+function buildBaseQrMatrix(verInfo) {
+  const size = 17 + verInfo.v * 4;
+  const grid = Array.from({ length: size }, () => new Uint8Array(size));
+  const reserved = Array.from({ length: size }, () => new Uint8Array(size));
+
+  const setFunctionModule = (r, c, dark) => {
+    if (r < 0 || r >= size || c < 0 || c >= size) return;
+    grid[r][c] = dark ? 1 : 0;
+    reserved[r][c] = 1;
+  };
+
+  // Finder patterns + separators
+  const drawFinder = (topR, leftC) => {
+    for (let dr = -1; dr <= 7; dr++) {
+      for (let dc = -1; dc <= 7; dc++) {
+        const inOuter = dr >= 0 && dr <= 6 && dc >= 0 && dc <= 6;
+        const onBorder = dr === 0 || dr === 6 || dc === 0 || dc === 6;
+        const inInner = dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4;
+        setFunctionModule(topR + dr, leftC + dc, inOuter && (onBorder || inInner));
+      }
+    }
+  };
+  drawFinder(0, 0);
+  drawFinder(0, size - 7);
+  drawFinder(size - 7, 0);
+
+  // Alignment patterns
+  const centers = verInfo.align;
+  for (let i = 0; i < centers.length; i++) {
+    for (let j = 0; j < centers.length; j++) {
+      if ((i === 0 && j === 0) || (i === 0 && j === centers.length - 1) || (i === centers.length - 1 && j === 0)) {
+        continue;
+      }
+      const cr = centers[i];
+      const cc = centers[j];
+      for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
+          const dark = Math.max(Math.abs(dr), Math.abs(dc)) !== 1;
+          setFunctionModule(cr + dr, cc + dc, dark);
+        }
+      }
+    }
+  }
+
+  // Timing patterns
+  for (let i = 8; i < size - 8; i++) {
+    if (!reserved[6][i]) setFunctionModule(6, i, i % 2 === 0);
+    if (!reserved[i][6]) setFunctionModule(i, 6, i % 2 === 0);
+  }
+
+  // Dark module & reserve format info slots
+  setFunctionModule(size - 8, 8, true);
+  for (let i = 0; i < 9; i++) {
+    if (!reserved[8][i]) reserved[8][i] = 1;
+    if (!reserved[i][8]) reserved[i][8] = 1;
+  }
+  for (let i = 0; i < 8; i++) {
+    if (!reserved[8][size - 1 - i]) reserved[8][size - 1 - i] = 1;
+    if (!reserved[size - 1 - i][8]) reserved[size - 1 - i][8] = 1;
+  }
+
+  // Version info (V >= 7)
+  if (verInfo.v >= 7) {
+    const vBits = computeVersionBits(verInfo.v);
+    for (let i = 0; i < 18; i++) {
+      const bit = ((vBits >>> i) & 1) === 1;
+      const a = Math.floor(i / 3);
+      const b = (i % 3) + size - 11;
+      setFunctionModule(b, a, bit);
+      setFunctionModule(a, b, bit);
+    }
+  }
+
+  return { size, grid, reserved };
+}
+
+function placeFormatBits(grid, size, mask) {
+  const bits = computeFormatBits(mask);
+  // Copy 1: around top-left finder pattern (ISO/IEC 18004 Fig 25: bit 0 LSB at (0,8) .. bit 14 MSB at (8,0))
+  for (let i = 0; i <= 5; i++) grid[i][8] = (bits >>> i) & 1;
+  grid[7][8] = (bits >>> 6) & 1;
+  grid[8][8] = (bits >>> 7) & 1;
+  grid[8][7] = (bits >>> 8) & 1;
+  for (let i = 9; i < 15; i++) grid[8][14 - i] = (bits >>> i) & 1;
+
+  // Copy 2: top-right horizontal (bits 0..7) & bottom-left vertical (bits 8..14)
+  for (let i = 0; i < 8; i++) grid[8][size - 1 - i] = (bits >>> i) & 1;
+  for (let i = 8; i < 15; i++) grid[size - 15 + i][8] = (bits >>> i) & 1;
+  grid[size - 8][8] = 1;
+}
+
+function maskCondition(mask, r, c) {
+  switch (mask) {
+    case 0: return (r + c) % 2 === 0;
+    case 1: return r % 2 === 0;
+    case 2: return c % 3 === 0;
+    case 3: return (r + c) % 3 === 0;
+    case 4: return (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0;
+    case 5: return ((r * c) % 2) + ((r * c) % 3) === 0;
+    case 6: return (((r * c) % 2) + ((r * c) % 3)) % 2 === 0;
+    case 7: return (((r + c) % 2) + ((r * c) % 3)) % 2 === 0;
+    default: return false;
+  }
+}
+
+function scoreQrPenalty(grid, size) {
+  let penalty = 0;
+  for (let r = 0; r < size; r++) {
+    let runColor = grid[r][0];
+    let runLen = 1;
+    for (let c = 1; c < size; c++) {
+      if (grid[r][c] === runColor) {
+        runLen++;
+      } else {
+        if (runLen >= 5) penalty += 3 + (runLen - 5);
+        runColor = grid[r][c];
+        runLen = 1;
+      }
+    }
+    if (runLen >= 5) penalty += 3 + (runLen - 5);
+  }
+  for (let c = 0; c < size; c++) {
+    let runColor = grid[0][c];
+    let runLen = 1;
+    for (let r = 1; r < size; r++) {
+      if (grid[r][c] === runColor) {
+        runLen++;
+      } else {
+        if (runLen >= 5) penalty += 3 + (runLen - 5);
+        runColor = grid[r][c];
+        runLen = 1;
+      }
+    }
+    if (runLen >= 5) penalty += 3 + (runLen - 5);
+  }
+  for (let r = 0; r < size - 1; r++) {
+    for (let c = 0; c < size - 1; c++) {
+      const v = grid[r][c];
+      if (v === grid[r][c + 1] && v === grid[r + 1][c] && v === grid[r + 1][c + 1]) {
+        penalty += 3;
+      }
+    }
+  }
+  return penalty;
+}
+
+function generateQrMatrix(text) {
+  const utf8Bytes = new TextEncoder().encode(text);
+  const verInfo = pickQrVersion(utf8Bytes.length);
+  const codewords = encodeQrCodewords(utf8Bytes, verInfo);
+  const { size, grid: baseGrid, reserved } = buildBaseQrMatrix(verInfo);
+
+  // Place data bits in upward/downward 2-column zigzag
+  let bitIdx = 0;
+  const totalBits = codewords.length * 8;
+  let upward = true;
+  for (let rightCol = size - 1; rightCol >= 1; rightCol -= 2) {
+    if (rightCol === 6) rightCol = 5;
+    for (let step = 0; step < size; step++) {
+      const r = upward ? (size - 1 - step) : step;
+      for (let dx = 0; dx < 2; dx++) {
+        const c = rightCol - dx;
+        if (reserved[r][c]) continue;
+        let bit = 0;
+        if (bitIdx < totalBits) {
+          bit = (codewords[bitIdx >>> 3] >>> (7 - (bitIdx & 7))) & 1;
+          bitIdx++;
+        }
+        baseGrid[r][c] = bit;
+      }
+    }
+    upward = !upward;
+  }
+
+  let bestGrid = null;
+  let bestPenalty = Infinity;
+  for (let mask = 0; mask < 8; mask++) {
+    const candidate = baseGrid.map((row) => Uint8Array.from(row));
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        if (!reserved[r][c] && maskCondition(mask, r, c)) {
+          candidate[r][c] ^= 1;
+        }
+      }
+    }
+    placeFormatBits(candidate, size, mask);
+    const p = scoreQrPenalty(candidate, size);
+    if (p < bestPenalty) {
+      bestPenalty = p;
+      bestGrid = candidate;
+    }
+  }
+  return { size, grid: bestGrid };
+}
+
+function renderQrToCanvas(canvas, text) {
+  if (!canvas) return;
+  const { size, grid } = generateQrMatrix(text);
+  const quietZone = 4;
+  const totalModules = size + quietZone * 2;
+  const scale = Math.max(3, Math.floor(220 / totalModules));
+  const pixelSize = totalModules * scale;
+
+  canvas.width = pixelSize;
+  canvas.height = pixelSize;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, pixelSize, pixelSize);
+
+  ctx.fillStyle = '#0f172a';
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (grid[r][c]) {
+        ctx.fillRect((c + quietZone) * scale, (r + quietZone) * scale, scale, scale);
+      }
+    }
+  }
+}
+
 async function refreshCacheStats() {
   const statsEl = document.getElementById('cache-stats');
   try {
@@ -342,4 +755,49 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
     await refreshCacheStats();
   });
+
+  const btnGenSync = document.getElementById('btn-generate-mobile-sync');
+  const btnCopySync = document.getElementById('btn-copy-mobile-sync');
+  const syncStatus = document.getElementById('mobile-sync-status');
+  const syncBox = document.getElementById('mobile-sync-box');
+  const syncUrlInput = document.getElementById('mobile-sync-url');
+  const syncQrCanvas = document.getElementById('mobile-sync-qr');
+
+  if (btnGenSync) {
+    btnGenSync.addEventListener('click', async () => {
+      const form = readFormValues();
+      await saveSettings(form);
+      try {
+        const url = buildMobileSyncUrl(form);
+        syncUrlInput.value = url;
+        renderQrToCanvas(syncQrCanvas, url);
+        syncBox.classList.remove('hidden');
+        btnCopySync.disabled = false;
+        syncStatus.className = 'inline-status ok';
+        syncStatus.textContent = '✓ 已於本機產生同步連結與 QR Code';
+      } catch (err) {
+        syncStatus.className = 'inline-status err';
+        syncStatus.textContent = err?.message || '產生 QR Code 失敗';
+      }
+    });
+  }
+
+  if (btnCopySync) {
+    btnCopySync.addEventListener('click', async () => {
+      const url = syncUrlInput?.value || '';
+      if (!url) return;
+      try {
+        await navigator.clipboard.writeText(url);
+        syncStatus.className = 'inline-status ok';
+        syncStatus.textContent = '✓ 已複製同步連結';
+        setTimeout(() => {
+          if (syncStatus.textContent === '✓ 已複製同步連結') {
+            syncStatus.textContent = '';
+          }
+        }, 2500);
+      } catch (_) {
+        syncUrlInput.select();
+      }
+    });
+  }
 });

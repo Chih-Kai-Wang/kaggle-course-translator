@@ -3,9 +3,11 @@
   globalThis.__KCT_INITIALIZED__ = true;
 
   const {
+    PROVIDER_PRESETS,
     TARGET_LANGUAGES,
     getSettings,
     saveSettings,
+    sanitizeApiKey,
     hashText,
     SETTINGS_KEY,
     isHostWhitelisted,
@@ -714,8 +716,8 @@
       all: initial;
       color-scheme: light dark;
       position: fixed;
-      right: 18px;
-      bottom: 18px;
+      right: max(12px, env(safe-area-inset-right, 12px));
+      bottom: max(14px, env(safe-area-inset-bottom, 14px));
       z-index: 2147483000;
       pointer-events: none;
       --kct-accent: #0284c7;
@@ -796,6 +798,7 @@
       background: transparent;
       font-family: inherit;
       font-size: 12px;
+      touch-action: none;
     }
 
     .kct-brand:hover {
@@ -931,6 +934,31 @@
     .kct-close-btn:hover {
       color: #ef4444;
     }
+
+    @media (max-width: 640px) {
+      .kct-pill {
+        max-width: calc(100vw - 24px);
+        overflow-x: auto;
+        padding: 6px 10px;
+        gap: 6px;
+        scrollbar-width: none;
+      }
+      .kct-pill::-webkit-scrollbar {
+        display: none;
+      }
+      .kct-brand,
+      .kct-seg button,
+      .kct-lang-select,
+      .kct-icon-btn {
+        min-height: 32px;
+        padding: 5px 10px;
+        font-size: 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+    }
   `;
 
   function removeFloatingWidget() {
@@ -977,7 +1005,36 @@
     brandCompact.textContent = 'NR';
     brand.append(dot, brandFull, brandCompact);
 
+    let dragStartY = 0;
+    let dragStartBottom = 18;
+    let dragMoved = false;
+
+    brand.addEventListener('touchstart', (e) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      dragStartY = e.touches[0].clientY;
+      const rect = host.getBoundingClientRect();
+      dragStartBottom = Math.max(14, window.innerHeight - rect.bottom);
+      dragMoved = false;
+    }, { passive: true });
+
+    brand.addEventListener('touchmove', (e) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      const dy = dragStartY - e.touches[0].clientY;
+      if (!dragMoved && Math.abs(dy) < 6) return;
+      dragMoved = true;
+      if (e.cancelable) e.preventDefault();
+      const nextBottom = Math.max(14, Math.min(window.innerHeight - 60, Math.round(dragStartBottom + dy)));
+      host.style.bottom = `${nextBottom}px`;
+    }, { passive: false });
+
+    brand.addEventListener('touchend', () => {
+      if (dragMoved) {
+        setTimeout(() => { dragMoved = false; }, 60);
+      }
+    }, { passive: true });
+
     brand.addEventListener('click', () => {
+      if (dragMoved) return;
       widgetCollapsed = !widgetCollapsed;
       pill.classList.toggle('kct-collapsed', widgetCollapsed);
     });
@@ -1388,9 +1445,17 @@
     pop.append(head, body);
     shadow.appendChild(pop);
 
-    const pos = clampPosition(x, y + 10, 390, 220);
-    pop.style.left = `${pos.left}px`;
-    pop.style.top = `${pos.top}px`;
+    if (window.innerWidth <= 640) {
+      pop.style.left = '12px';
+      pop.style.right = '12px';
+      pop.style.width = 'calc(100vw - 24px)';
+      pop.style.top = 'auto';
+      pop.style.bottom = 'max(14px, env(safe-area-inset-bottom, 14px))';
+    } else {
+      const pos = clampPosition(x, y + 10, 390, 220);
+      pop.style.left = `${pos.left}px`;
+      pop.style.top = `${pos.top}px`;
+    }
     selPopoverEl = pop;
 
     (async () => {
@@ -1426,6 +1491,59 @@
   }
 
   function setupSelectionListener() {
+    const isTouchCapable = () => 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    let touchSelTimer = null;
+    let lastTouchInsideUi = false;
+
+    function renderSelectionTriggerButton(anchorX, anchorY) {
+      const sel = window.getSelection();
+      const text = sel ? sel.toString().trim() : '';
+      const targetLangId = state.settings?.targetLang || 'zh-TW';
+      if (!text || text.length < 2 || text.length > 2500 || !shouldTranslateText(text, targetLangId)) {
+        if (!selPopoverEl) removeSelectionUI();
+        return;
+      }
+      currentSelectionText = text;
+      if (selBtnEl) {
+        selBtnEl.remove();
+        selBtnEl = null;
+      }
+
+      const shadow = ensureSelectionHost();
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'kct-sel-btn';
+      btn.textContent = '譯';
+      const pos = clampPosition(anchorX, anchorY, 48, 30);
+      btn.style.left = `${pos.left}px`;
+      btn.style.top = `${pos.top}px`;
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        showSelectionPopover(pos.left, pos.top, currentSelectionText);
+      });
+      shadow.appendChild(btn);
+      selBtnEl = btn;
+    }
+
+    function computeTouchSelectionButtonCoords() {
+      try {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const rect = sel.getRangeAt(0).getBoundingClientRect();
+          if (rect && (rect.width > 0 || rect.height > 0)) {
+            const centerX = Math.round(rect.left + rect.width / 2 - 22);
+            const preferAbove = rect.bottom + 52 > window.innerHeight;
+            const targetY = preferAbove ? Math.round(rect.top - 38) : Math.round(rect.bottom + 10);
+            return { x: centerX, y: targetY };
+          }
+        }
+      } catch (_) {}
+      return {
+        x: Math.round(window.innerWidth / 2 - 22),
+        y: Math.round(window.innerHeight * 0.5)
+      };
+    }
+
     document.addEventListener('mouseup', (e) => {
       if (!state.settings?.selectionTranslate) return;
       const path = e.composedPath ? e.composedPath() : [];
@@ -1433,34 +1551,41 @@
       if (e.target && e.target.closest && e.target.closest('[data-kct-ui]')) return;
 
       setTimeout(() => {
-        const sel = window.getSelection();
-        const text = sel ? sel.toString().trim() : '';
-        const targetLangId = state.settings?.targetLang || 'zh-TW';
-        if (!text || text.length < 2 || text.length > 2500 || !shouldTranslateText(text, targetLangId)) {
-          if (!selPopoverEl) removeSelectionUI();
-          return;
-        }
-        currentSelectionText = text;
-        if (selBtnEl) {
-          selBtnEl.remove();
-          selBtnEl = null;
-        }
-
-        const shadow = ensureSelectionHost();
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'kct-sel-btn';
-        btn.textContent = '譯';
-        const pos = clampPosition(e.clientX + 8, e.clientY + 10, 44, 28);
-        btn.style.left = `${pos.left}px`;
-        btn.style.top = `${pos.top}px`;
-        btn.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          showSelectionPopover(pos.left, pos.top, currentSelectionText);
-        });
-        shadow.appendChild(btn);
-        selBtnEl = btn;
+        renderSelectionTriggerButton(e.clientX + 8, e.clientY + 10);
       }, 20);
+    });
+
+    document.addEventListener('touchstart', (e) => {
+      const path = e.composedPath ? e.composedPath() : [];
+      lastTouchInsideUi = path.some((n) => n === widgetHostEl || n === selHostEl) ||
+        Boolean(e.target && e.target.closest && e.target.closest('[data-kct-ui]'));
+      if (path.some((n) => n === selHostEl)) return;
+      removeSelectionUI();
+    }, { passive: true });
+
+    document.addEventListener('touchend', (e) => {
+      if (!state.settings?.selectionTranslate) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      if (path.some((n) => n === widgetHostEl || n === selHostEl)) return;
+      if (e.target && e.target.closest && e.target.closest('[data-kct-ui]')) return;
+
+      if (touchSelTimer) clearTimeout(touchSelTimer);
+      touchSelTimer = setTimeout(() => {
+        if (selPopoverEl) return;
+        const coords = computeTouchSelectionButtonCoords();
+        renderSelectionTriggerButton(coords.x, coords.y);
+      }, 160);
+    }, { passive: true });
+
+    document.addEventListener('selectionchange', () => {
+      if (!isTouchCapable() || !state.settings?.selectionTranslate) return;
+      if (lastTouchInsideUi || selPopoverEl) return;
+      if (touchSelTimer) clearTimeout(touchSelTimer);
+      touchSelTimer = setTimeout(() => {
+        if (selPopoverEl) return;
+        const coords = computeTouchSelectionButtonCoords();
+        renderSelectionTriggerButton(coords.x, coords.y);
+      }, 380);
     });
 
     document.addEventListener('mousedown', (e) => {
@@ -1738,8 +1863,80 @@
     updateWidgetUI();
   });
 
+  async function tryImportMobileSyncHash() {
+    if (!isTopFrame()) return false;
+    const rawHash = location.hash || '';
+    const match = rawHash.match(/(?:^|[#&])nr_sync=([A-Za-z0-9_%-]+)/);
+    if (!match) return false;
+
+    try {
+      const b64 = decodeURIComponent(match[1]).replace(/-/g, '+').replace(/_/g, '/');
+      const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+      const binary = atob(b64 + pad);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const jsonStr = new TextDecoder().decode(bytes);
+      const data = JSON.parse(jsonStr);
+      if (!data || typeof data !== 'object') return false;
+
+      const providerId = String(data.providerId || data.p || '').trim();
+      const preset = (providerId && PROVIDER_PRESETS?.[providerId]) || null;
+      const patch = {};
+      if (providerId) patch.providerId = providerId;
+
+      const protocol = String(data.protocol || data.r || preset?.protocol || '').trim();
+      if (protocol === 'openai' || protocol === 'gemini') patch.protocol = protocol;
+
+      const baseUrl = String(data.baseUrl || data.u || preset?.baseUrl || '').trim();
+      if (baseUrl) patch.baseUrl = baseUrl;
+
+      if (typeof (data.apiKey ?? data.k) === 'string') {
+        const cleanKey = typeof sanitizeApiKey === 'function'
+          ? sanitizeApiKey(data.apiKey ?? data.k)
+          : String(data.apiKey ?? data.k).trim();
+        patch.apiKey = cleanKey;
+      }
+
+      const model = String(data.model || data.m || preset?.defaultModel || '').trim();
+      if (model) patch.model = model;
+
+      const targetLang = String(data.targetLang || data.l || '').trim();
+      if (targetLang) patch.targetLang = targetLang;
+
+      const customTargetLang = String(data.customTargetLang ?? data.c ?? '').trim();
+      if (customTargetLang || targetLang === 'custom') {
+        patch.customTargetLang = customTargetLang;
+      }
+
+      const thinkingEffort = String(data.thinkingEffort || data.e || '').trim();
+      if (thinkingEffort) patch.thinkingEffort = thinkingEffort;
+
+      const typographyMatch = String(data.typographyMatch || data.t || '').trim();
+      if (typographyMatch) patch.typographyMatch = typographyMatch;
+
+      history.replaceState(null, '', location.pathname + location.search);
+      state.settings = await saveSettings(patch);
+
+      createFloatingWidget();
+      if (widgetShadow) {
+        const status = widgetShadow.querySelector('.kct-status');
+        if (status) {
+          status.textContent = '已同步手機 API 設定';
+          status.title = '已同步手機 API 設定';
+        }
+      }
+      return true;
+    } catch (err) {
+      console.warn('[NativeRead] #nr_sync import skipped:', err?.message || err);
+      return false;
+    }
+  }
+
   async function init() {
     state.settings = await getSettings();
+    await tryImportMobileSyncHash();
     pageInfo = classifyPage();
     Renderer.applyDisplayModeClass(state.settings);
     setupSelectionListener();
