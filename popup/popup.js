@@ -401,7 +401,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   document.getElementById('btn-open-pdf').addEventListener('click', async () => {
-    await openPdfViewerFromPopup('');
+    const resolvedPdfUrl = typeof globalThis.KCTConfig?.resolvePdfSourceUrl === 'function'
+      ? globalThis.KCTConfig.resolvePdfSourceUrl(activeTab?.url || '')
+      : '';
+    await openPdfViewerFromPopup(resolvedPdfUrl);
   });
 
   const openOptions = async () => {

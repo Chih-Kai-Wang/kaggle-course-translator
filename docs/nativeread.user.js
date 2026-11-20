@@ -456,6 +456,33 @@
     return false;
   }
 
+  function extractGoogleDriveFileId(url) {
+    if (!url || typeof url !== 'string') return '';
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (_) {
+      return '';
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'drive.google.com' && host !== 'docs.google.com') return '';
+    const m = (parsed.pathname || '').match(/\/file\/d\/([a-zA-Z0-9_-]{10,})/);
+    if (m) return m[1];
+    const qId = parsed.searchParams.get('id');
+    if (qId && /^[a-zA-Z0-9_-]{10,}$/.test(qId)) return qId;
+    return '';
+  }
+
+  function resolvePdfSourceUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    const gdriveId = extractGoogleDriveFileId(url);
+    if (gdriveId) {
+      return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(gdriveId)}`;
+    }
+    if (isPdfUrl(url)) return url;
+    return '';
+  }
+
   async function getSettings() {
     if (!chrome?.runtime?.id) {
       return { ...DEFAULT_SETTINGS, autoTranslateHosts: [] };
@@ -572,6 +599,8 @@
     toggleHostWhitelist,
     isInjectableUrl,
     isPdfUrl,
+    extractGoogleDriveFileId,
+    resolvePdfSourceUrl,
     isLocalEndpoint,
     sanitizeApiKey,
     getSettings,
@@ -834,6 +863,14 @@
     // Generic interactive IDE shell skip: cells live inside the editor's embedded iframe
     if (isTopFrame() && document.querySelector('[data-testid="notebook-editor-render-tid"]')) {
       return [];
+    }
+
+    // Dedicated multi-page document viewer containers (e.g. Google Drive PDF Viewer)
+    const gdrivePdfRoot = document.querySelector(
+      '.ndfHFb-c4YZDc-cYSp0e-DARUcf-gSKZZ, .ndfHFb-c4YZDc-cYSp0e-s2gQvd'
+    );
+    if (gdrivePdfRoot && isElementVisible(gdrivePdfRoot)) {
+      return [gdrivePdfRoot];
     }
 
     // Dedicated embedded rendered-cell containers (e.g. Jupyter / Notebook outputs)
@@ -1118,8 +1155,185 @@
     return { text, placeholders, nestedListEl };
   }
 
+  function parsePctBoxStyle(styleStr) {
+    if (!styleStr) return null;
+    const get = (k) => {
+      const m = styleStr.match(new RegExp(`(?:^|;|\\s)${k}\\s*:\\s*([\\d.]+)%`, 'i'));
+      return m ? parseFloat(m[1]) : null;
+    };
+    const left = get('left');
+    const top = get('top');
+    const width = get('width');
+    const height = get('height');
+    if (left === null || top === null || width === null || height === null) return null;
+    return { left, top, width, height };
+  }
+
+  function preparePdfOverlayLayers(roots) {
+    const searchRoots = Array.isArray(roots) && roots.length > 0 ? roots : [document.body];
+    const layerSelector = '.ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-bN97Pc-haAclf';
+    const layers = new Set();
+
+    for (const r of searchRoots) {
+      if (!r || r.nodeType !== Node.ELEMENT_NODE) continue;
+      if (r.matches && r.matches(layerSelector)) layers.add(r);
+      const found = r.querySelectorAll ? r.querySelectorAll(layerSelector) : [];
+      for (const l of found) layers.add(l);
+    }
+
+    for (const layer of layers) {
+      layer.setAttribute('data-kct-pdf-layer', '1');
+      const ps = Array.from(layer.querySelectorAll('p'));
+      if (ps.length === 0) continue;
+
+      if (
+        layer.getAttribute('data-kct-pdf-merged-count') === String(ps.length) &&
+        layer.querySelector('p[data-kct-pdf-block="1"]')
+      ) {
+        continue;
+      }
+
+      // Skip if any <p> in this layer is already wrapped with active translation spans
+      if (layer.querySelector('p[data-kct-has-trans="1"]')) {
+        continue;
+      }
+
+      const items = [];
+      for (const p of ps) {
+        if (!p.hasAttribute('data-kct-orig-style')) {
+          p.setAttribute('data-kct-orig-style', p.getAttribute('style') || '');
+        }
+        if (!p.hasAttribute('data-kct-orig-text')) {
+          p.setAttribute('data-kct-orig-text', p.textContent || '');
+        }
+        p.removeAttribute('data-kct-pdf-merged');
+        p.removeAttribute('data-kct-pdf-block');
+
+        const origStyle = p.getAttribute('data-kct-orig-style') || '';
+        const box = parsePctBoxStyle(origStyle);
+        const origText = (p.getAttribute('data-kct-orig-text') || '').replace(/\s+/g, ' ').trim();
+        if (!box || !origText) continue;
+
+        items.push({
+          el: p,
+          left: box.left,
+          top: box.top,
+          width: box.width,
+          height: box.height,
+          text: origText
+        });
+      }
+
+      if (items.length === 0) continue;
+
+      items.sort((a, b) => (Math.abs(a.top - b.top) > 0.55 ? a.top - b.top : a.left - b.left));
+
+      const groups = [];
+      for (const item of items) {
+        const prev = groups[groups.length - 1];
+        if (prev) {
+          const prevBottom = prev.top + prev.height;
+          const vGap = item.top - prevBottom;
+          const hRatio = Math.abs(item.height - prev.avgLineH) / Math.max(item.height, prev.avgLineH, 0.1);
+          const leftDiff = Math.abs(item.left - prev.left);
+          const isTocLine = /\s+\d{1,3}$/.test(prev.lastLineText) || /\s+\d{1,3}$/.test(item.text);
+          const prevEndedShort = prev.lastWidth < 46 && /[.!?。！？]$/.test(prev.text);
+
+          if (
+            !isTocLine &&
+            !prevEndedShort &&
+            hRatio <= 0.36 &&
+            leftDiff <= 3.6 &&
+            vGap >= -0.45 * prev.avgLineH &&
+            vGap <= 0.88 * prev.avgLineH
+          ) {
+            const newLeft = Math.min(prev.left, item.left);
+            const newRight = Math.max(prev.left + prev.width, item.left + item.width);
+            const newBottom = Math.max(prevBottom, item.top + item.height);
+            prev.left = newLeft;
+            prev.width = newRight - newLeft;
+            prev.height = newBottom - prev.top;
+            prev.avgLineH = (prev.avgLineH * prev.lineCount + item.height) / (prev.lineCount + 1);
+            prev.lineCount += 1;
+            prev.lastWidth = item.width;
+            prev.lastLineText = item.text;
+            prev.text = prev.text.endsWith('-') && /^[a-z]/.test(item.text)
+              ? prev.text.slice(0, -1) + item.text
+              : `${prev.text} ${item.text}`;
+            prev.members.push(item);
+            continue;
+          }
+        }
+
+        groups.push({
+          left: item.left,
+          top: item.top,
+          width: item.width,
+          height: item.height,
+          avgLineH: item.height,
+          lineCount: 1,
+          lastWidth: item.width,
+          lastLineText: item.text,
+          text: item.text,
+          members: [item]
+        });
+      }
+
+      for (const g of groups) {
+        const primary = g.members[0].el;
+        primary.setAttribute(
+          'style',
+          `left: ${g.left.toFixed(4)}%; top: ${g.top.toFixed(4)}%; width: ${g.width.toFixed(4)}%; height: ${g.height.toFixed(4)}%;`
+        );
+        primary.setAttribute('data-kct-pdf-block', '1');
+        primary.setAttribute('data-kct-pdf-lines', String(g.lineCount));
+        primary.setAttribute('data-kct-pdf-line-h', g.avgLineH.toFixed(4));
+        primary.setAttribute(
+          'data-kct-pdf-box',
+          `${g.left.toFixed(3)},${g.top.toFixed(3)},${g.width.toFixed(3)},${g.height.toFixed(3)}`
+        );
+        primary.textContent = g.text;
+
+        for (let i = 1; i < g.members.length; i++) {
+          const absorbed = g.members[i].el;
+          absorbed.setAttribute('data-kct-pdf-merged', 'absorbed');
+        }
+      }
+
+      layer.setAttribute('data-kct-pdf-merged-count', String(ps.length));
+    }
+  }
+
+  function restorePdfOverlayLayers(root = document) {
+    const layers = root.querySelectorAll ? root.querySelectorAll('[data-kct-pdf-layer="1"]') : [];
+    for (const layer of layers) {
+      layer.removeAttribute('data-kct-pdf-merged-count');
+      const ps = layer.querySelectorAll('p[data-kct-orig-style], p[data-kct-orig-text]');
+      for (const p of ps) {
+        if (p.hasAttribute('data-kct-orig-style')) {
+          p.setAttribute('style', p.getAttribute('data-kct-orig-style') || '');
+          p.removeAttribute('data-kct-orig-style');
+        }
+        if (p.hasAttribute('data-kct-orig-text')) {
+          p.textContent = p.getAttribute('data-kct-orig-text') || '';
+          p.removeAttribute('data-kct-orig-text');
+        }
+        p.removeAttribute('data-kct-pdf-block');
+        p.removeAttribute('data-kct-pdf-lines');
+        p.removeAttribute('data-kct-pdf-line-h');
+        p.removeAttribute('data-kct-pdf-box');
+        p.removeAttribute('data-kct-pdf-merged');
+        p.style.removeProperty('--kct-pdf-bg');
+        p.style.removeProperty('--kct-pdf-fg');
+      }
+      layer.removeAttribute('data-kct-pdf-layer');
+    }
+  }
+
   function shouldSkipBlock(el, scope, elementState) {
     if (!el || !el.isConnected) return true;
+    if (el.getAttribute('data-kct-pdf-merged') === 'absorbed') return true;
+    if (el.classList && el.classList.contains('ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-tJHJj')) return true;
     if (elementState && elementState.has(el)) return true;
     if (el.closest(SKIP_ANCESTOR_SELECTOR)) return true;
     if (scope !== 'all' && isInsideExcludedChrome(el)) return true;
@@ -1178,6 +1392,8 @@
 
   function collectUniversalCandidateElements(roots, scope, elementState) {
     if (!Array.isArray(roots) || roots.length === 0) return [];
+
+    preparePdfOverlayLayers(roots);
 
     const claimedSet = new Set();
     const pass1 = [];
@@ -1315,6 +1531,8 @@
     probeTypography,
     extractBlockContent,
     shouldSkipBlock,
+    preparePdfOverlayLayers,
+    restorePdfOverlayLayers,
     collectUniversalCandidateElements
   };
 })();
@@ -1925,6 +2143,192 @@
     return parentDisplay.includes('flex') || parentDisplay.includes('grid');
   }
 
+  function samplePdfImageColors(img, boxStr) {
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight || !boxStr) {
+      return { bg: '#ffffff', fg: '#1e293b', ready: false };
+    }
+    const parts = boxStr.split(',').map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+      return { bg: '#ffffff', fg: '#1e293b', ready: true };
+    }
+    const [leftPct, topPct, widthPct, heightPct] = parts;
+
+    try {
+      const W = 400;
+      const H = 520;
+      if (!img._kctSamplePixels) {
+        const canvas = document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, W, H);
+        img._kctSamplePixels = ctx.getImageData(0, 0, W, H).data;
+      }
+      const data = img._kctSamplePixels;
+      const x0 = Math.max(0, Math.min(W - 1, Math.floor((leftPct / 100) * W)));
+      const y0 = Math.max(0, Math.min(H - 1, Math.floor((topPct / 100) * H)));
+      const x1 = Math.max(x0, Math.min(W - 1, Math.ceil(((leftPct + widthPct) / 100) * W)));
+      const y1 = Math.max(y0, Math.min(H - 1, Math.ceil(((topPct + heightPct) / 100) * H)));
+
+      const borderRs = [];
+      const borderGs = [];
+      const borderBs = [];
+      const pushPixel = (px, py) => {
+        const idx = (py * W + px) * 4;
+        if (data[idx + 3] < 128) return;
+        borderRs.push(data[idx]);
+        borderGs.push(data[idx + 1]);
+        borderBs.push(data[idx + 2]);
+      };
+
+      for (let x = x0; x <= x1; x += 2) {
+        pushPixel(x, y0);
+        pushPixel(x, y1);
+      }
+      for (let y = y0; y <= y1; y += 2) {
+        pushPixel(x0, y);
+        pushPixel(x1, y);
+      }
+
+      if (borderRs.length === 0) {
+        return { bg: '#ffffff', fg: '#1e293b', ready: true };
+      }
+      borderRs.sort((a, b) => a - b);
+      borderGs.sort((a, b) => a - b);
+      borderBs.sort((a, b) => a - b);
+      const mid = Math.floor(borderRs.length / 2);
+      const bgR = borderRs[mid];
+      const bgG = borderGs[mid];
+      const bgB = borderBs[mid];
+      const bgLum = 0.2126 * bgR + 0.7152 * bgG + 0.0722 * bgB;
+
+      const contrastPixels = [];
+      for (let y = y0; y <= y1; y += 1) {
+        for (let x = x0; x <= x1; x += 1) {
+          const idx = (y * W + x) * 4;
+          if (data[idx + 3] < 128) continue;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          const diff = Math.abs(lum - bgLum);
+          if (diff >= 40) {
+            contrastPixels.push({ r, g, b, lum, diff });
+          }
+        }
+      }
+
+      let fg = bgLum > 140 ? '#1e293b' : '#f8fafc';
+      if (contrastPixels.length >= 3) {
+        contrastPixels.sort((a, b) => b.diff - a.diff);
+        const take = Math.max(2, Math.min(20, Math.ceil(contrastPixels.length * 0.08)));
+        let sumR = 0;
+        let sumG = 0;
+        let sumB = 0;
+        for (let i = 0; i < take; i++) {
+          sumR += contrastPixels[i].r;
+          sumG += contrastPixels[i].g;
+          sumB += contrastPixels[i].b;
+        }
+        let fgR = Math.round(sumR / take);
+        let fgG = Math.round(sumG / take);
+        let fgB = Math.round(sumB / take);
+        const fgLum = 0.2126 * fgR + 0.7152 * fgG + 0.0722 * fgB;
+        // Compensate for anti-aliased raster downsampling so body text stays crisp & readable
+        if (bgLum > 160 && fgLum > 95) {
+          const darken = fgLum > 135 ? 0.58 : 0.76;
+          fgR = Math.round(fgR * darken);
+          fgG = Math.round(fgG * darken);
+          fgB = Math.round(fgB * darken);
+        } else if (bgLum <= 95 && fgLum < 185) {
+          fgR = Math.min(255, Math.round(fgR + (255 - fgR) * 0.45));
+          fgG = Math.min(255, Math.round(fgG + (255 - fgG) * 0.45));
+          fgB = Math.min(255, Math.round(fgB + (255 - fgB) * 0.45));
+        }
+        fg = `rgb(${fgR}, ${fgG}, ${fgB})`;
+      }
+
+      const bg = `rgb(${bgR}, ${bgG}, ${bgB})`;
+      return { bg, fg, ready: true };
+    } catch (_) {
+      return { bg: '#ffffff', fg: '#1e293b', ready: true };
+    }
+  }
+
+  function styleAndFitPdfOverlayBlock(el) {
+    if (!el || !el.isConnected || el.getAttribute('data-kct-pdf-block') !== '1') return;
+    const layer = el.closest('[data-kct-pdf-layer="1"]');
+    const pageContainer = layer?.parentElement || el.parentElement;
+    const boxStr = el.getAttribute('data-kct-pdf-box') || '';
+
+    const applyColorsFromImg = () => {
+      if (!el.isConnected) return false;
+      const img = pageContainer?.querySelector('img');
+      const sampled = samplePdfImageColors(img, boxStr);
+      el.style.setProperty('--kct-pdf-bg', sampled.bg);
+      el.style.setProperty('--kct-pdf-fg', sampled.fg);
+      if (!sampled.ready && img) {
+        img.addEventListener('load', () => {
+          const retry = samplePdfImageColors(img, boxStr);
+          if (el.isConnected) {
+            el.style.setProperty('--kct-pdf-bg', retry.bg);
+            el.style.setProperty('--kct-pdf-fg', retry.fg);
+          }
+        }, { once: true });
+      }
+      return sampled.ready;
+    };
+
+    if (!applyColorsFromImg()) {
+      setTimeout(applyColorsFromImg, 650);
+    }
+
+    const rectSource = layer || pageContainer;
+    const pageH = rectSource?.getBoundingClientRect?.().height || 1035.5;
+    const avgLineHPct = parseFloat(el.getAttribute('data-kct-pdf-line-h')) || 1.8;
+    const lineCount = parseInt(el.getAttribute('data-kct-pdf-lines'), 10) || 1;
+    const linePx = (avgLineHPct / 100) * pageH;
+
+    let fontSize;
+    let lineHeight;
+    let fontWeight = '400';
+
+    if (lineCount === 1 && avgLineHPct >= 2.2) {
+      fontSize = Math.round(linePx * 0.80);
+      lineHeight = '1.22';
+      fontWeight = '700';
+    } else if (avgLineHPct >= 2.8) {
+      fontSize = Math.round(linePx * 0.74);
+      lineHeight = '1.28';
+      fontWeight = '400';
+    } else {
+      fontSize = Math.round(linePx * 0.78);
+      lineHeight = '1.42';
+      fontWeight = '400';
+    }
+
+    fontSize = Math.max(10, Math.min(42, fontSize));
+    el.style.setProperty('--kct-pdf-fs', `${fontSize}px`);
+    el.style.setProperty('--kct-pdf-lh', lineHeight);
+    el.style.setProperty('--kct-pdf-fw', fontWeight);
+
+    const targetH = el.clientHeight;
+    const targetW = el.clientWidth;
+    if (targetH > 8 && targetW > 12) {
+      let fs = fontSize;
+      let guard = 0;
+      while (
+        guard < 16 &&
+        fs > 9.5 &&
+        (el.scrollHeight > targetH + 3 || el.scrollWidth > targetW + 6)
+      ) {
+        fs = Math.max(9.5, +(fs - (fs > 18 ? 1.5 : 0.75)).toFixed(2));
+        el.style.setProperty('--kct-pdf-fs', `${fs}px`);
+        guard += 1;
+      }
+    }
+  }
+
   function applyBlockTranslation(job, settings, state) {
     const { el, zh, placeholders, nestedListEl, typo } = job;
     if (!el || !el.isConnected) {
@@ -1986,6 +2390,9 @@
     }
 
     el.setAttribute('data-kct-has-trans', '1');
+    if (el.getAttribute('data-kct-pdf-block') === '1') {
+      styleAndFitPdfOverlayBlock(el);
+    }
     if (state?.elementState) state.elementState.set(el, 'done');
     return 'rendered';
   }
@@ -2073,6 +2480,15 @@
       el.removeAttribute('data-kct-lh-lift');
       el.removeAttribute('data-kct-has-orig-font');
       el.style.removeProperty('--kct-orig-font');
+      el.style.removeProperty('--kct-pdf-bg');
+      el.style.removeProperty('--kct-pdf-fg');
+      el.style.removeProperty('--kct-pdf-fs');
+      el.style.removeProperty('--kct-pdf-lh');
+      el.style.removeProperty('--kct-pdf-fw');
+    }
+
+    if (KCTSiteAnalyzer?.restorePdfOverlayLayers) {
+      KCTSiteAnalyzer.restorePdfOverlayLayers(document);
     }
 
     if (notebookAdapter?.clearNotebookOverlays) {
@@ -2092,13 +2508,22 @@
     }
   }
 
+  function refitAllPdfOverlayBlocks() {
+    const blocks = document.querySelectorAll('p[data-kct-pdf-block="1"][data-kct-has-trans="1"]');
+    for (const el of blocks) {
+      styleAndFitPdfOverlayBlock(el);
+    }
+  }
+
   globalThis.KCTRenderer = {
     applyDisplayModeClass,
     applyBlockTranslation,
     renderJobsWithRAF,
     clearAllInjectedTranslations,
     buildTranslatedFragment,
-    sanitizeFontFamily
+    sanitizeFontFamily,
+    styleAndFitPdfOverlayBlock,
+    refitAllPdfOverlayBlocks
   };
 })();
 
@@ -2132,7 +2557,7 @@
   const KCTRenderer = globalThis.KCTRenderer;
   const KCTCodeOverlay = globalThis.KCTCodeOverlay;
 
-  const PAGE_STYLE_CSS = "/* Universal AI Web & Notebook Translator v2.0 - Page Typography & Mode Rules */\n/* Note: Floating control pill & selection popover are encapsulated in Shadow DOM. */\n\n:root {\n  --kct-accent: #0284c7;\n  --kct-accent-soft: rgba(2, 132, 199, 0.08);\n  --kct-hairline: rgba(148, 163, 184, 0.45);\n  --kct-border: rgba(15, 23, 42, 0.12);\n  --kct-text: #1e293b;\n  --kct-bilingual-ink: #475569;\n  --kct-bg: rgba(255, 255, 255, 0.9);\n\n  /* Default target language: Traditional Chinese (zh-TW) */\n  --kct-font-serif: \"Noto Serif TC\", \"Songti TC\", \"PMingLiU\", \"Source Han Serif TC\", Georgia, serif;\n  --kct-font-sans: \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", \"Heiti TC\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", monospace;\n}\n\nhtml.kct-lang-sc {\n  --kct-font-serif: \"Noto Serif SC\", \"Songti SC\", \"STSong\", \"SimSun\", \"Source Han Serif SC\", Georgia, serif;\n  --kct-font-sans: \"PingFang SC\", \"Noto Sans SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang SC\", \"Noto Sans SC\", \"Microsoft YaHei\", monospace;\n}\n\nhtml.kct-lang-ja {\n  --kct-font-serif: \"Hiragino Mincho ProN\", \"Yu Mincho\", \"Noto Serif JP\", \"MS PMincho\", Georgia, serif;\n  --kct-font-sans: \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"Noto Sans JP\", \"Yu Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Hiragino Sans\", \"Noto Sans JP\", monospace;\n}\n\nhtml.kct-lang-ko {\n  --kct-font-serif: \"Noto Serif KR\", \"AppleMyungjo\", \"Batang\", Georgia, serif;\n  --kct-font-sans: \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Apple SD Gothic Neo\", \"Noto Sans KR\", monospace;\n}\n\nhtml.kct-lang-latin {\n  --kct-font-serif: Georgia, \"Charter\", \"Times New Roman\", serif;\n  --kct-font-sans: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Inter\", sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace;\n}\n\n@media (prefers-color-scheme: dark) {\n  :root {\n    --kct-accent: #38bdf8;\n    --kct-accent-soft: rgba(56, 189, 248, 0.12);\n    --kct-hairline: rgba(148, 163, 184, 0.34);\n    --kct-border: rgba(255, 255, 255, 0.16);\n    --kct-text: #f1f5f9;\n    --kct-bilingual-ink: #cbd5e1;\n    --kct-bg: rgba(15, 23, 42, 0.9);\n  }\n}\n\nbody[data-jp-theme-light=\"false\"],\nhtml[data-theme=\"dark\"],\nhtml.dark,\nbody.theme-dark {\n  --kct-accent: #38bdf8;\n  --kct-accent-soft: rgba(56, 189, 248, 0.12);\n  --kct-hairline: rgba(148, 163, 184, 0.34);\n  --kct-border: rgba(255, 255, 255, 0.16);\n  --kct-text: #f1f5f9;\n  --kct-bilingual-ink: #cbd5e1;\n  --kct-bg: rgba(15, 23, 42, 0.9);\n}\n\n/* =========================================================\n   1. Replace Mode (Native-Feel Typography Matching)\n   ========================================================= */\nhtml.kct-mode-replace .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-replace .kct-trans-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\n/* Native mode: keep original site Latin font first (when non-generic), fall back to matched Serif/Sans/Mono CJK */\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-font-mono) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-mono) !important;\n}\n\n/* System mode: uniform clean sans font */\nhtml.kct-typo-system.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\n/* Preserve mode: do not override font-family or line-height */\n\n/* Selective line-height lift ONLY on dense multi-line reading prose */\nhtml.kct-mode-replace:not(.kct-typo-preserve) [data-kct-has-trans=\"1\"][data-kct-lh-lift=\"1\"] {\n  line-height: 1.72 !important;\n}\n\n/* =========================================================\n   2. Original Mode (Instant Zero-Cost Compare)\n   ========================================================= */\nhtml.kct-mode-original .kct-trans-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-original .kct-orig-wrap {\n  display: contents;\n}\n\n/* =========================================================\n   3. Bilingual Mode (Clean Hairline Contrast)\n   ========================================================= */\nhtml.kct-mode-bilingual .kct-orig-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-bilingual .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-mono);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-mono);\n}\n\nhtml.kct-typo-system.kct-mode-bilingual .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-mode-bilingual [data-kct-inline-layout=\"1\"] > .kct-trans-wrap {\n  display: inline;\n  margin-top: 0;\n  margin-left: 0.45em;\n  padding-left: 0.45em;\n  border-left: 1px solid var(--kct-hairline);\n}\n\n/* =========================================================\n   Non-destructive Code Comment Translation\n   - Static <pre>: CSS attr() + font-size:0 swap\n   - CodeMirror 6 (.cm-editor): non-intrusive .cm-scroller overlay layer\n   ========================================================= */\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans] {\n  font-size: 0 !important;\n  letter-spacing: 0 !important;\n}\n\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans]::after {\n  content: attr(data-kct-comment-trans);\n  font-size: var(--kct-code-font-size, 13px);\n  letter-spacing: normal;\n  font-family: var(--kct-font-mono);\n}\n\n.kct-cm-layer {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 4;\n  overflow: visible;\n}\n\n.kct-cm-comment {\n  position: absolute;\n  display: flex;\n  align-items: center;\n  white-space: pre;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  font-family: var(--kct-font-mono);\n  pointer-events: none;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-cm-layer,\nhtml:not(.kct-comments-on) .kct-cm-layer,\nhtml .cm-editor.cm-focused .kct-cm-layer {\n  display: none !important;\n}\n\n/* =========================================================\n   Jupyter Code Cell Output Quick Translate Button & Result\n   ========================================================= */\n.kct-output-host {\n  position: relative;\n}\n\n.kct-output-btn {\n  all: unset;\n  box-sizing: border-box;\n  position: absolute;\n  top: 6px;\n  right: 8px;\n  z-index: 10;\n  cursor: pointer;\n  font-family: var(--kct-font-sans);\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: var(--kct-bg);\n  color: var(--kct-accent);\n  border: 1px solid var(--kct-border);\n  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);\n  opacity: 0.85;\n  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;\n}\n\n.kct-output-btn:hover {\n  opacity: 1;\n  background: var(--kct-accent);\n  color: #ffffff;\n  border-color: transparent;\n}\n\n.kct-output-trans {\n  font-family: var(--kct-font-sans);\n  color: var(--kct-text);\n  background: var(--kct-accent-soft);\n  border-left: 2px solid var(--kct-accent);\n  border-radius: 0 6px 6px 0;\n  padding: 8px 12px;\n  margin-top: 8px;\n  font-size: 13px;\n  line-height: 1.65;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n";
+  const PAGE_STYLE_CSS = "/* Universal AI Web & Notebook Translator v2.0 - Page Typography & Mode Rules */\n/* Note: Floating control pill & selection popover are encapsulated in Shadow DOM. */\n\n:root {\n  --kct-accent: #0284c7;\n  --kct-accent-soft: rgba(2, 132, 199, 0.08);\n  --kct-hairline: rgba(148, 163, 184, 0.45);\n  --kct-border: rgba(15, 23, 42, 0.12);\n  --kct-text: #1e293b;\n  --kct-bilingual-ink: #475569;\n  --kct-bg: rgba(255, 255, 255, 0.9);\n\n  /* Default target language: Traditional Chinese (zh-TW) */\n  --kct-font-serif: \"Noto Serif TC\", \"Songti TC\", \"PMingLiU\", \"Source Han Serif TC\", Georgia, serif;\n  --kct-font-sans: \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", \"Heiti TC\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang TC\", \"Noto Sans TC\", \"Microsoft JhengHei\", monospace;\n}\n\nhtml.kct-lang-sc {\n  --kct-font-serif: \"Noto Serif SC\", \"Songti SC\", \"STSong\", \"SimSun\", \"Source Han Serif SC\", Georgia, serif;\n  --kct-font-sans: \"PingFang SC\", \"Noto Sans SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"PingFang SC\", \"Noto Sans SC\", \"Microsoft YaHei\", monospace;\n}\n\nhtml.kct-lang-ja {\n  --kct-font-serif: \"Hiragino Mincho ProN\", \"Yu Mincho\", \"Noto Serif JP\", \"MS PMincho\", Georgia, serif;\n  --kct-font-sans: \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"Noto Sans JP\", \"Yu Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Hiragino Sans\", \"Noto Sans JP\", monospace;\n}\n\nhtml.kct-lang-ko {\n  --kct-font-serif: \"Noto Serif KR\", \"AppleMyungjo\", \"Batang\", Georgia, serif;\n  --kct-font-sans: \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", -apple-system, BlinkMacSystemFont, sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, \"Apple SD Gothic Neo\", \"Noto Sans KR\", monospace;\n}\n\nhtml.kct-lang-latin {\n  --kct-font-serif: Georgia, \"Charter\", \"Times New Roman\", serif;\n  --kct-font-sans: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Inter\", sans-serif;\n  --kct-font-mono: \"JetBrains Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace;\n}\n\n@media (prefers-color-scheme: dark) {\n  :root {\n    --kct-accent: #38bdf8;\n    --kct-accent-soft: rgba(56, 189, 248, 0.12);\n    --kct-hairline: rgba(148, 163, 184, 0.34);\n    --kct-border: rgba(255, 255, 255, 0.16);\n    --kct-text: #f1f5f9;\n    --kct-bilingual-ink: #cbd5e1;\n    --kct-bg: rgba(15, 23, 42, 0.9);\n  }\n}\n\nbody[data-jp-theme-light=\"false\"],\nhtml[data-theme=\"dark\"],\nhtml.dark,\nbody.theme-dark {\n  --kct-accent: #38bdf8;\n  --kct-accent-soft: rgba(56, 189, 248, 0.12);\n  --kct-hairline: rgba(148, 163, 184, 0.34);\n  --kct-border: rgba(255, 255, 255, 0.16);\n  --kct-text: #f1f5f9;\n  --kct-bilingual-ink: #cbd5e1;\n  --kct-bg: rgba(15, 23, 42, 0.9);\n}\n\n/* =========================================================\n   1. Replace Mode (Native-Feel Typography Matching)\n   ========================================================= */\nhtml.kct-mode-replace .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-replace .kct-trans-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\n/* Native mode: keep original site Latin font first (when non-generic), fall back to matched Serif/Sans/Mono CJK */\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-font-mono) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-serif) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-sans) !important;\n}\n\nhtml.kct-typo-native.kct-mode-replace [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] {\n  font-family: var(--kct-orig-font), var(--kct-font-mono) !important;\n}\n\n/* System mode: uniform clean sans font */\nhtml.kct-typo-system.kct-mode-replace [data-kct-has-trans=\"1\"] {\n  font-family: var(--kct-font-sans) !important;\n}\n\n/* Preserve mode: do not override font-family or line-height */\n\n/* Selective line-height lift ONLY on dense multi-line reading prose */\nhtml.kct-mode-replace:not(.kct-typo-preserve) [data-kct-has-trans=\"1\"][data-kct-lh-lift=\"1\"] {\n  line-height: 1.72 !important;\n}\n\n/* =========================================================\n   2. Original Mode (Instant Zero-Cost Compare)\n   ========================================================= */\nhtml.kct-mode-original .kct-trans-wrap {\n  display: none !important;\n}\n\nhtml.kct-mode-original .kct-orig-wrap {\n  display: contents;\n}\n\n/* =========================================================\n   3. Bilingual Mode (Clean Hairline Contrast)\n   ========================================================= */\nhtml.kct-mode-bilingual .kct-orig-wrap {\n  display: contents;\n}\n\nhtml.kct-mode-bilingual .kct-trans-wrap {\n  display: block;\n  color: var(--kct-bilingual-ink);\n  margin-top: 0.35em;\n  padding-left: 10px;\n  border-left: 2px solid var(--kct-hairline);\n  font-size: 0.94em;\n  line-height: 1.7;\n  font-weight: 400;\n  line-break: strict;\n  font-kerning: normal;\n  text-wrap: pretty;\n  text-autospace: normal;\n  text-rendering: optimizeLegibility;\n  -webkit-font-smoothing: antialiased;\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-font-mono);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"serif\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-serif);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"sans\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-sans);\n}\n\nhtml.kct-typo-native.kct-mode-bilingual [data-kct-has-trans=\"1\"][data-kct-has-orig-font=\"1\"][data-kct-typo=\"mono\"] > .kct-trans-wrap {\n  font-family: var(--kct-orig-font), var(--kct-font-mono);\n}\n\nhtml.kct-typo-system.kct-mode-bilingual .kct-trans-wrap {\n  font-family: var(--kct-font-sans);\n}\n\nhtml.kct-mode-bilingual [data-kct-inline-layout=\"1\"] > .kct-trans-wrap {\n  display: inline;\n  margin-top: 0;\n  margin-left: 0.45em;\n  padding-left: 0.45em;\n  border-left: 1px solid var(--kct-hairline);\n}\n\n/* =========================================================\n   Non-destructive Code Comment Translation\n   - Static <pre>: CSS attr() + font-size:0 swap\n   - CodeMirror 6 (.cm-editor): non-intrusive .cm-scroller overlay layer\n   ========================================================= */\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans] {\n  font-size: 0 !important;\n  letter-spacing: 0 !important;\n}\n\nhtml.kct-comments-on:not(.kct-mode-original) pre span[data-kct-comment-trans]::after {\n  content: attr(data-kct-comment-trans);\n  font-size: var(--kct-code-font-size, 13px);\n  letter-spacing: normal;\n  font-family: var(--kct-font-mono);\n}\n\n.kct-cm-layer {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  z-index: 4;\n  overflow: visible;\n}\n\n.kct-cm-comment {\n  position: absolute;\n  display: flex;\n  align-items: center;\n  white-space: pre;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  font-family: var(--kct-font-mono);\n  pointer-events: none;\n  box-sizing: border-box;\n}\n\nhtml.kct-mode-original .kct-cm-layer,\nhtml:not(.kct-comments-on) .kct-cm-layer,\nhtml .cm-editor.cm-focused .kct-cm-layer {\n  display: none !important;\n}\n\n/* =========================================================\n   Jupyter Code Cell Output Quick Translate Button & Result\n   ========================================================= */\n.kct-output-host {\n  position: relative;\n}\n\n.kct-output-btn {\n  all: unset;\n  box-sizing: border-box;\n  position: absolute;\n  top: 6px;\n  right: 8px;\n  z-index: 10;\n  cursor: pointer;\n  font-family: var(--kct-font-sans);\n  font-size: 11px;\n  font-weight: 600;\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: var(--kct-bg);\n  color: var(--kct-accent);\n  border: 1px solid var(--kct-border);\n  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);\n  opacity: 0.85;\n  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;\n}\n\n.kct-output-btn:hover {\n  opacity: 1;\n  background: var(--kct-accent);\n  color: #ffffff;\n  border-color: transparent;\n}\n\n.kct-output-trans {\n  font-family: var(--kct-font-sans);\n  color: var(--kct-text);\n  background: var(--kct-accent-soft);\n  border-left: 2px solid var(--kct-accent);\n  border-radius: 0 6px 6px 0;\n  padding: 8px 12px;\n  margin-top: 8px;\n  font-size: 13px;\n  line-height: 1.65;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n/* =========================================================\n   5. Image/Canvas-Backed PDF Text Layer Overlay (Google Drive PDF Viewer)\n   ========================================================= */\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] {\n  z-index: 2 !important;\n  opacity: 1 !important;\n  pointer-events: none !important;\n  overflow: visible !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > :not([data-kct-has-trans=\"1\"]),\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > [data-kct-pdf-merged=\"absorbed\"] {\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\nhtml.kct-active:not(.kct-mode-original) [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] {\n  opacity: 1 !important;\n  pointer-events: auto !important;\n  background-color: var(--kct-pdf-bg, #ffffff) !important;\n  box-shadow: 0 0 0 5px var(--kct-pdf-bg, #ffffff) !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  font-size: var(--kct-pdf-fs, 13px) !important;\n  line-height: var(--kct-pdf-lh, 1.42) !important;\n  font-weight: var(--kct-pdf-fw, 400) !important;\n  box-sizing: border-box !important;\n  margin: 0 !important;\n  padding: 1px 4px !important;\n  border-radius: 2px !important;\n  display: block !important;\n  white-space: normal !important;\n  word-break: break-word !important;\n  overflow: visible !important;\n  transition: box-shadow 0.14s ease;\n}\n\n/* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-orig-wrap {\n  display: none !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"] > .kct-trans-wrap {\n  display: contents !important;\n  color: var(--kct-pdf-fg, #1e293b) !important;\n  margin: 0 !important;\n  padding: 0 !important;\n  border: none !important;\n  font-size: inherit !important;\n  line-height: inherit !important;\n  font-weight: inherit !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover {\n  z-index: 30 !important;\n  height: auto !important;\n  padding: 8px 10px !important;\n  border-radius: 6px !important;\n  border: 1px solid var(--kct-accent) !important;\n  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.25) !important;\n}\n\nhtml.kct-active.kct-mode-bilingual [data-kct-pdf-layer=\"1\"] > p[data-kct-pdf-block=\"1\"][data-kct-has-trans=\"1\"]:hover > .kct-orig-wrap {\n  display: block !important;\n  font-size: 0.86em !important;\n  line-height: 1.4 !important;\n  opacity: 0.76 !important;\n  margin-bottom: 6px !important;\n  padding-bottom: 6px !important;\n  border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;\n}\n";
 
   // ============================================================
   // 1. Storage Adapter (GM_getValue / GM_setValue + localStorage)

@@ -1737,6 +1737,10 @@ function hasPdfMagicHeader(uint8) {
 function deriveFilenameFromUrl(urlStr) {
   try {
     const parsed = new URL(urlStr);
+    const gId = parsed.searchParams.get('id');
+    if (gId && (parsed.hostname.includes('drive.google.com') || parsed.hostname.includes('docs.google.com'))) {
+      return `GoogleDrive_${gId.slice(0, 8)}.pdf`;
+    }
     const seg = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '');
     return seg || parsed.hostname;
   } catch (_) {
@@ -1857,9 +1861,12 @@ function abortActiveFetch() {
 }
 
 async function loadPdfFromUrl(rawUrl) {
+  const normalizedUrl = typeof globalThis.KCTConfig?.resolvePdfSourceUrl === 'function'
+    ? (globalThis.KCTConfig.resolvePdfSourceUrl(rawUrl) || rawUrl)
+    : rawUrl;
   let parsed;
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(normalizedUrl);
   } catch (_) {
     showError('PDF 連結格式無效', `無法辨識網址：${rawUrl}`, false);
     return;

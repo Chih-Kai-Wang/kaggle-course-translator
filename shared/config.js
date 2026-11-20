@@ -441,6 +441,33 @@
     return false;
   }
 
+  function extractGoogleDriveFileId(url) {
+    if (!url || typeof url !== 'string') return '';
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (_) {
+      return '';
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'drive.google.com' && host !== 'docs.google.com') return '';
+    const m = (parsed.pathname || '').match(/\/file\/d\/([a-zA-Z0-9_-]{10,})/);
+    if (m) return m[1];
+    const qId = parsed.searchParams.get('id');
+    if (qId && /^[a-zA-Z0-9_-]{10,}$/.test(qId)) return qId;
+    return '';
+  }
+
+  function resolvePdfSourceUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    const gdriveId = extractGoogleDriveFileId(url);
+    if (gdriveId) {
+      return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(gdriveId)}`;
+    }
+    if (isPdfUrl(url)) return url;
+    return '';
+  }
+
   async function getSettings() {
     if (!chrome?.runtime?.id) {
       return { ...DEFAULT_SETTINGS, autoTranslateHosts: [] };
@@ -557,6 +584,8 @@
     toggleHostWhitelist,
     isInjectableUrl,
     isPdfUrl,
+    extractGoogleDriveFileId,
+    resolvePdfSourceUrl,
     isLocalEndpoint,
     sanitizeApiKey,
     getSettings,

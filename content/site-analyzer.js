@@ -254,6 +254,14 @@
       return [];
     }
 
+    // Dedicated multi-page document viewer containers (e.g. Google Drive PDF Viewer)
+    const gdrivePdfRoot = document.querySelector(
+      '.ndfHFb-c4YZDc-cYSp0e-DARUcf-gSKZZ, .ndfHFb-c4YZDc-cYSp0e-s2gQvd'
+    );
+    if (gdrivePdfRoot && isElementVisible(gdrivePdfRoot)) {
+      return [gdrivePdfRoot];
+    }
+
     // Dedicated embedded rendered-cell containers (e.g. Jupyter / Notebook outputs)
     const cells = Array.from(document.querySelectorAll(LESSON_CELL_SELECTOR)).filter(
       (node) => isElementVisible(node) && !node.closest('[data-testid="notebook-editor-render-tid"]')
@@ -536,8 +544,185 @@
     return { text, placeholders, nestedListEl };
   }
 
+  function parsePctBoxStyle(styleStr) {
+    if (!styleStr) return null;
+    const get = (k) => {
+      const m = styleStr.match(new RegExp(`(?:^|;|\\s)${k}\\s*:\\s*([\\d.]+)%`, 'i'));
+      return m ? parseFloat(m[1]) : null;
+    };
+    const left = get('left');
+    const top = get('top');
+    const width = get('width');
+    const height = get('height');
+    if (left === null || top === null || width === null || height === null) return null;
+    return { left, top, width, height };
+  }
+
+  function preparePdfOverlayLayers(roots) {
+    const searchRoots = Array.isArray(roots) && roots.length > 0 ? roots : [document.body];
+    const layerSelector = '.ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-bN97Pc-haAclf';
+    const layers = new Set();
+
+    for (const r of searchRoots) {
+      if (!r || r.nodeType !== Node.ELEMENT_NODE) continue;
+      if (r.matches && r.matches(layerSelector)) layers.add(r);
+      const found = r.querySelectorAll ? r.querySelectorAll(layerSelector) : [];
+      for (const l of found) layers.add(l);
+    }
+
+    for (const layer of layers) {
+      layer.setAttribute('data-kct-pdf-layer', '1');
+      const ps = Array.from(layer.querySelectorAll('p'));
+      if (ps.length === 0) continue;
+
+      if (
+        layer.getAttribute('data-kct-pdf-merged-count') === String(ps.length) &&
+        layer.querySelector('p[data-kct-pdf-block="1"]')
+      ) {
+        continue;
+      }
+
+      // Skip if any <p> in this layer is already wrapped with active translation spans
+      if (layer.querySelector('p[data-kct-has-trans="1"]')) {
+        continue;
+      }
+
+      const items = [];
+      for (const p of ps) {
+        if (!p.hasAttribute('data-kct-orig-style')) {
+          p.setAttribute('data-kct-orig-style', p.getAttribute('style') || '');
+        }
+        if (!p.hasAttribute('data-kct-orig-text')) {
+          p.setAttribute('data-kct-orig-text', p.textContent || '');
+        }
+        p.removeAttribute('data-kct-pdf-merged');
+        p.removeAttribute('data-kct-pdf-block');
+
+        const origStyle = p.getAttribute('data-kct-orig-style') || '';
+        const box = parsePctBoxStyle(origStyle);
+        const origText = (p.getAttribute('data-kct-orig-text') || '').replace(/\s+/g, ' ').trim();
+        if (!box || !origText) continue;
+
+        items.push({
+          el: p,
+          left: box.left,
+          top: box.top,
+          width: box.width,
+          height: box.height,
+          text: origText
+        });
+      }
+
+      if (items.length === 0) continue;
+
+      items.sort((a, b) => (Math.abs(a.top - b.top) > 0.55 ? a.top - b.top : a.left - b.left));
+
+      const groups = [];
+      for (const item of items) {
+        const prev = groups[groups.length - 1];
+        if (prev) {
+          const prevBottom = prev.top + prev.height;
+          const vGap = item.top - prevBottom;
+          const hRatio = Math.abs(item.height - prev.avgLineH) / Math.max(item.height, prev.avgLineH, 0.1);
+          const leftDiff = Math.abs(item.left - prev.left);
+          const isTocLine = /\s+\d{1,3}$/.test(prev.lastLineText) || /\s+\d{1,3}$/.test(item.text);
+          const prevEndedShort = prev.lastWidth < 46 && /[.!?。！？]$/.test(prev.text);
+
+          if (
+            !isTocLine &&
+            !prevEndedShort &&
+            hRatio <= 0.36 &&
+            leftDiff <= 3.6 &&
+            vGap >= -0.45 * prev.avgLineH &&
+            vGap <= 0.88 * prev.avgLineH
+          ) {
+            const newLeft = Math.min(prev.left, item.left);
+            const newRight = Math.max(prev.left + prev.width, item.left + item.width);
+            const newBottom = Math.max(prevBottom, item.top + item.height);
+            prev.left = newLeft;
+            prev.width = newRight - newLeft;
+            prev.height = newBottom - prev.top;
+            prev.avgLineH = (prev.avgLineH * prev.lineCount + item.height) / (prev.lineCount + 1);
+            prev.lineCount += 1;
+            prev.lastWidth = item.width;
+            prev.lastLineText = item.text;
+            prev.text = prev.text.endsWith('-') && /^[a-z]/.test(item.text)
+              ? prev.text.slice(0, -1) + item.text
+              : `${prev.text} ${item.text}`;
+            prev.members.push(item);
+            continue;
+          }
+        }
+
+        groups.push({
+          left: item.left,
+          top: item.top,
+          width: item.width,
+          height: item.height,
+          avgLineH: item.height,
+          lineCount: 1,
+          lastWidth: item.width,
+          lastLineText: item.text,
+          text: item.text,
+          members: [item]
+        });
+      }
+
+      for (const g of groups) {
+        const primary = g.members[0].el;
+        primary.setAttribute(
+          'style',
+          `left: ${g.left.toFixed(4)}%; top: ${g.top.toFixed(4)}%; width: ${g.width.toFixed(4)}%; height: ${g.height.toFixed(4)}%;`
+        );
+        primary.setAttribute('data-kct-pdf-block', '1');
+        primary.setAttribute('data-kct-pdf-lines', String(g.lineCount));
+        primary.setAttribute('data-kct-pdf-line-h', g.avgLineH.toFixed(4));
+        primary.setAttribute(
+          'data-kct-pdf-box',
+          `${g.left.toFixed(3)},${g.top.toFixed(3)},${g.width.toFixed(3)},${g.height.toFixed(3)}`
+        );
+        primary.textContent = g.text;
+
+        for (let i = 1; i < g.members.length; i++) {
+          const absorbed = g.members[i].el;
+          absorbed.setAttribute('data-kct-pdf-merged', 'absorbed');
+        }
+      }
+
+      layer.setAttribute('data-kct-pdf-merged-count', String(ps.length));
+    }
+  }
+
+  function restorePdfOverlayLayers(root = document) {
+    const layers = root.querySelectorAll ? root.querySelectorAll('[data-kct-pdf-layer="1"]') : [];
+    for (const layer of layers) {
+      layer.removeAttribute('data-kct-pdf-merged-count');
+      const ps = layer.querySelectorAll('p[data-kct-orig-style], p[data-kct-orig-text]');
+      for (const p of ps) {
+        if (p.hasAttribute('data-kct-orig-style')) {
+          p.setAttribute('style', p.getAttribute('data-kct-orig-style') || '');
+          p.removeAttribute('data-kct-orig-style');
+        }
+        if (p.hasAttribute('data-kct-orig-text')) {
+          p.textContent = p.getAttribute('data-kct-orig-text') || '';
+          p.removeAttribute('data-kct-orig-text');
+        }
+        p.removeAttribute('data-kct-pdf-block');
+        p.removeAttribute('data-kct-pdf-lines');
+        p.removeAttribute('data-kct-pdf-line-h');
+        p.removeAttribute('data-kct-pdf-box');
+        p.removeAttribute('data-kct-pdf-merged');
+        p.style.removeProperty('--kct-pdf-bg');
+        p.style.removeProperty('--kct-pdf-fg');
+      }
+      layer.removeAttribute('data-kct-pdf-layer');
+    }
+  }
+
   function shouldSkipBlock(el, scope, elementState) {
     if (!el || !el.isConnected) return true;
+    if (el.getAttribute('data-kct-pdf-merged') === 'absorbed') return true;
+    if (el.classList && el.classList.contains('ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-tJHJj')) return true;
     if (elementState && elementState.has(el)) return true;
     if (el.closest(SKIP_ANCESTOR_SELECTOR)) return true;
     if (scope !== 'all' && isInsideExcludedChrome(el)) return true;
@@ -596,6 +781,8 @@
 
   function collectUniversalCandidateElements(roots, scope, elementState) {
     if (!Array.isArray(roots) || roots.length === 0) return [];
+
+    preparePdfOverlayLayers(roots);
 
     const claimedSet = new Set();
     const pass1 = [];
@@ -733,6 +920,8 @@
     probeTypography,
     extractBlockContent,
     shouldSkipBlock,
+    preparePdfOverlayLayers,
+    restorePdfOverlayLayers,
     collectUniversalCandidateElements
   };
 })();

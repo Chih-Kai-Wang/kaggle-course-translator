@@ -1630,6 +1630,9 @@
     window.addEventListener('resize', () => {
       if (!pageActive) return;
       scheduleCmSync();
+      if (typeof Renderer.refitAllPdfOverlayBlocks === 'function') {
+        Renderer.refitAllPdfOverlayBlocks();
+      }
     });
 
     window.addEventListener('popstate', () => scheduleScan(400));
@@ -1654,11 +1657,17 @@
         if (state.pendingItems.length > 0) {
           sortViewportFirst(state.pendingItems);
         }
-        // Only trigger DOM rescan on scroll for pages with virtualized code editors or when lazyViewport is off
-        if (pageInfo.hasCodeWidgets || state.settings?.lazyViewport === false) {
-          scheduleScan(280);
+        const hasPdfOverlayLayer = Boolean(
+          document.querySelector('[data-kct-pdf-layer="1"], .ndfHFb-c4YZDc-cYSp0e-DARUcf')
+        );
+        if (hasPdfOverlayLayer && typeof Renderer.refitAllPdfOverlayBlocks === 'function') {
+          Renderer.refitAllPdfOverlayBlocks();
         }
-      }, 280);
+        // Trigger DOM rescan on scroll for virtualized code editors, virtualized PDF viewers, or when lazyViewport is off
+        if (pageInfo.hasCodeWidgets || hasPdfOverlayLayer || state.settings?.lazyViewport === false) {
+          scheduleScan(240);
+        }
+      }, 240);
     };
     document.addEventListener('scroll', onScrollOrBlur, { passive: true, capture: true });
     document.addEventListener('focusout', () => {

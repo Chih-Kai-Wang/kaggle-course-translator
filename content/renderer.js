@@ -147,6 +147,192 @@
     return parentDisplay.includes('flex') || parentDisplay.includes('grid');
   }
 
+  function samplePdfImageColors(img, boxStr) {
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight || !boxStr) {
+      return { bg: '#ffffff', fg: '#1e293b', ready: false };
+    }
+    const parts = boxStr.split(',').map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+      return { bg: '#ffffff', fg: '#1e293b', ready: true };
+    }
+    const [leftPct, topPct, widthPct, heightPct] = parts;
+
+    try {
+      const W = 400;
+      const H = 520;
+      if (!img._kctSamplePixels) {
+        const canvas = document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, W, H);
+        img._kctSamplePixels = ctx.getImageData(0, 0, W, H).data;
+      }
+      const data = img._kctSamplePixels;
+      const x0 = Math.max(0, Math.min(W - 1, Math.floor((leftPct / 100) * W)));
+      const y0 = Math.max(0, Math.min(H - 1, Math.floor((topPct / 100) * H)));
+      const x1 = Math.max(x0, Math.min(W - 1, Math.ceil(((leftPct + widthPct) / 100) * W)));
+      const y1 = Math.max(y0, Math.min(H - 1, Math.ceil(((topPct + heightPct) / 100) * H)));
+
+      const borderRs = [];
+      const borderGs = [];
+      const borderBs = [];
+      const pushPixel = (px, py) => {
+        const idx = (py * W + px) * 4;
+        if (data[idx + 3] < 128) return;
+        borderRs.push(data[idx]);
+        borderGs.push(data[idx + 1]);
+        borderBs.push(data[idx + 2]);
+      };
+
+      for (let x = x0; x <= x1; x += 2) {
+        pushPixel(x, y0);
+        pushPixel(x, y1);
+      }
+      for (let y = y0; y <= y1; y += 2) {
+        pushPixel(x0, y);
+        pushPixel(x1, y);
+      }
+
+      if (borderRs.length === 0) {
+        return { bg: '#ffffff', fg: '#1e293b', ready: true };
+      }
+      borderRs.sort((a, b) => a - b);
+      borderGs.sort((a, b) => a - b);
+      borderBs.sort((a, b) => a - b);
+      const mid = Math.floor(borderRs.length / 2);
+      const bgR = borderRs[mid];
+      const bgG = borderGs[mid];
+      const bgB = borderBs[mid];
+      const bgLum = 0.2126 * bgR + 0.7152 * bgG + 0.0722 * bgB;
+
+      const contrastPixels = [];
+      for (let y = y0; y <= y1; y += 1) {
+        for (let x = x0; x <= x1; x += 1) {
+          const idx = (y * W + x) * 4;
+          if (data[idx + 3] < 128) continue;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          const diff = Math.abs(lum - bgLum);
+          if (diff >= 40) {
+            contrastPixels.push({ r, g, b, lum, diff });
+          }
+        }
+      }
+
+      let fg = bgLum > 140 ? '#1e293b' : '#f8fafc';
+      if (contrastPixels.length >= 3) {
+        contrastPixels.sort((a, b) => b.diff - a.diff);
+        const take = Math.max(2, Math.min(20, Math.ceil(contrastPixels.length * 0.08)));
+        let sumR = 0;
+        let sumG = 0;
+        let sumB = 0;
+        for (let i = 0; i < take; i++) {
+          sumR += contrastPixels[i].r;
+          sumG += contrastPixels[i].g;
+          sumB += contrastPixels[i].b;
+        }
+        let fgR = Math.round(sumR / take);
+        let fgG = Math.round(sumG / take);
+        let fgB = Math.round(sumB / take);
+        const fgLum = 0.2126 * fgR + 0.7152 * fgG + 0.0722 * fgB;
+        // Compensate for anti-aliased raster downsampling so body text stays crisp & readable
+        if (bgLum > 160 && fgLum > 95) {
+          const darken = fgLum > 135 ? 0.58 : 0.76;
+          fgR = Math.round(fgR * darken);
+          fgG = Math.round(fgG * darken);
+          fgB = Math.round(fgB * darken);
+        } else if (bgLum <= 95 && fgLum < 185) {
+          fgR = Math.min(255, Math.round(fgR + (255 - fgR) * 0.45));
+          fgG = Math.min(255, Math.round(fgG + (255 - fgG) * 0.45));
+          fgB = Math.min(255, Math.round(fgB + (255 - fgB) * 0.45));
+        }
+        fg = `rgb(${fgR}, ${fgG}, ${fgB})`;
+      }
+
+      const bg = `rgb(${bgR}, ${bgG}, ${bgB})`;
+      return { bg, fg, ready: true };
+    } catch (_) {
+      return { bg: '#ffffff', fg: '#1e293b', ready: true };
+    }
+  }
+
+  function styleAndFitPdfOverlayBlock(el) {
+    if (!el || !el.isConnected || el.getAttribute('data-kct-pdf-block') !== '1') return;
+    const layer = el.closest('[data-kct-pdf-layer="1"]');
+    const pageContainer = layer?.parentElement || el.parentElement;
+    const boxStr = el.getAttribute('data-kct-pdf-box') || '';
+
+    const applyColorsFromImg = () => {
+      if (!el.isConnected) return false;
+      const img = pageContainer?.querySelector('img');
+      const sampled = samplePdfImageColors(img, boxStr);
+      el.style.setProperty('--kct-pdf-bg', sampled.bg);
+      el.style.setProperty('--kct-pdf-fg', sampled.fg);
+      if (!sampled.ready && img) {
+        img.addEventListener('load', () => {
+          const retry = samplePdfImageColors(img, boxStr);
+          if (el.isConnected) {
+            el.style.setProperty('--kct-pdf-bg', retry.bg);
+            el.style.setProperty('--kct-pdf-fg', retry.fg);
+          }
+        }, { once: true });
+      }
+      return sampled.ready;
+    };
+
+    if (!applyColorsFromImg()) {
+      setTimeout(applyColorsFromImg, 650);
+    }
+
+    const rectSource = layer || pageContainer;
+    const pageH = rectSource?.getBoundingClientRect?.().height || 1035.5;
+    const avgLineHPct = parseFloat(el.getAttribute('data-kct-pdf-line-h')) || 1.8;
+    const lineCount = parseInt(el.getAttribute('data-kct-pdf-lines'), 10) || 1;
+    const linePx = (avgLineHPct / 100) * pageH;
+
+    let fontSize;
+    let lineHeight;
+    let fontWeight = '400';
+
+    if (lineCount === 1 && avgLineHPct >= 2.2) {
+      fontSize = Math.round(linePx * 0.80);
+      lineHeight = '1.22';
+      fontWeight = '700';
+    } else if (avgLineHPct >= 2.8) {
+      fontSize = Math.round(linePx * 0.74);
+      lineHeight = '1.28';
+      fontWeight = '400';
+    } else {
+      fontSize = Math.round(linePx * 0.78);
+      lineHeight = '1.42';
+      fontWeight = '400';
+    }
+
+    fontSize = Math.max(10, Math.min(42, fontSize));
+    el.style.setProperty('--kct-pdf-fs', `${fontSize}px`);
+    el.style.setProperty('--kct-pdf-lh', lineHeight);
+    el.style.setProperty('--kct-pdf-fw', fontWeight);
+
+    const targetH = el.clientHeight;
+    const targetW = el.clientWidth;
+    if (targetH > 8 && targetW > 12) {
+      let fs = fontSize;
+      let guard = 0;
+      while (
+        guard < 16 &&
+        fs > 9.5 &&
+        (el.scrollHeight > targetH + 3 || el.scrollWidth > targetW + 6)
+      ) {
+        fs = Math.max(9.5, +(fs - (fs > 18 ? 1.5 : 0.75)).toFixed(2));
+        el.style.setProperty('--kct-pdf-fs', `${fs}px`);
+        guard += 1;
+      }
+    }
+  }
+
   function applyBlockTranslation(job, settings, state) {
     const { el, zh, placeholders, nestedListEl, typo } = job;
     if (!el || !el.isConnected) {
@@ -208,6 +394,9 @@
     }
 
     el.setAttribute('data-kct-has-trans', '1');
+    if (el.getAttribute('data-kct-pdf-block') === '1') {
+      styleAndFitPdfOverlayBlock(el);
+    }
     if (state?.elementState) state.elementState.set(el, 'done');
     return 'rendered';
   }
@@ -295,6 +484,15 @@
       el.removeAttribute('data-kct-lh-lift');
       el.removeAttribute('data-kct-has-orig-font');
       el.style.removeProperty('--kct-orig-font');
+      el.style.removeProperty('--kct-pdf-bg');
+      el.style.removeProperty('--kct-pdf-fg');
+      el.style.removeProperty('--kct-pdf-fs');
+      el.style.removeProperty('--kct-pdf-lh');
+      el.style.removeProperty('--kct-pdf-fw');
+    }
+
+    if (KCTSiteAnalyzer?.restorePdfOverlayLayers) {
+      KCTSiteAnalyzer.restorePdfOverlayLayers(document);
     }
 
     if (notebookAdapter?.clearNotebookOverlays) {
@@ -314,12 +512,21 @@
     }
   }
 
+  function refitAllPdfOverlayBlocks() {
+    const blocks = document.querySelectorAll('p[data-kct-pdf-block="1"][data-kct-has-trans="1"]');
+    for (const el of blocks) {
+      styleAndFitPdfOverlayBlock(el);
+    }
+  }
+
   globalThis.KCTRenderer = {
     applyDisplayModeClass,
     applyBlockTranslation,
     renderJobsWithRAF,
     clearAllInjectedTranslations,
     buildTranslatedFragment,
-    sanitizeFontFamily
+    sanitizeFontFamily,
+    styleAndFitPdfOverlayBlock,
+    refitAllPdfOverlayBlocks
   };
 })();

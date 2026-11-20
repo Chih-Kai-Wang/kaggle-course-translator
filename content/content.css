@@ -284,3 +284,74 @@ html .cm-editor.cm-focused .kct-cm-layer {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* =========================================================
+   5. Image/Canvas-Backed PDF Text Layer Overlay (Google Drive PDF Viewer)
+   ========================================================= */
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] {
+  z-index: 2 !important;
+  opacity: 1 !important;
+  pointer-events: none !important;
+  overflow: visible !important;
+}
+
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > :not([data-kct-has-trans="1"]),
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > [data-kct-pdf-merged="absorbed"] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+html.kct-active:not(.kct-mode-original) [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-has-trans="1"] {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  background-color: var(--kct-pdf-bg, #ffffff) !important;
+  box-shadow: 0 0 0 5px var(--kct-pdf-bg, #ffffff) !important;
+  color: var(--kct-pdf-fg, #1e293b) !important;
+  font-size: var(--kct-pdf-fs, 13px) !important;
+  line-height: var(--kct-pdf-lh, 1.42) !important;
+  font-weight: var(--kct-pdf-fw, 400) !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: 1px 4px !important;
+  border-radius: 2px !important;
+  display: block !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow: visible !important;
+  transition: box-shadow 0.14s ease;
+}
+
+/* In fixed-coordinate PDF overlay layers, keep layout clean in Bilingual mode and expand full bilingual card on hover */
+html.kct-active.kct-mode-bilingual [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-has-trans="1"] > .kct-orig-wrap {
+  display: none !important;
+}
+
+html.kct-active.kct-mode-bilingual [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-has-trans="1"] > .kct-trans-wrap {
+  display: contents !important;
+  color: var(--kct-pdf-fg, #1e293b) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  font-weight: inherit !important;
+}
+
+html.kct-active.kct-mode-bilingual [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-has-trans="1"]:hover {
+  z-index: 30 !important;
+  height: auto !important;
+  padding: 8px 10px !important;
+  border-radius: 6px !important;
+  border: 1px solid var(--kct-accent) !important;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.25) !important;
+}
+
+html.kct-active.kct-mode-bilingual [data-kct-pdf-layer="1"] > p[data-kct-pdf-block="1"][data-kct-has-trans="1"]:hover > .kct-orig-wrap {
+  display: block !important;
+  font-size: 0.86em !important;
+  line-height: 1.4 !important;
+  opacity: 0.76 !important;
+  margin-bottom: 6px !important;
+  padding-bottom: 6px !important;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.45) !important;
+}
