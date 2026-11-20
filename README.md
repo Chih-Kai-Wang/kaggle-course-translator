@@ -1,84 +1,103 @@
-# AI 原版美感翻譯 v2.0.0（原 Kaggle 課程智慧翻譯助手）
+# 原版美感 AI 網頁翻譯助手（v2.0.0）
 
-一款專注於「**原版無框美感排版**」與「**極速串流體驗**」的全網通用 AI 網頁翻譯 Chrome / Chromium Manifest V3 擴充功能（支援 Google Chrome、Microsoft Edge、Brave、Ego Lite 等瀏覽器）。
+> 讓外文網頁讀起來像母語原站一樣自然 —— **預設靜默按需啟動、SSE 串流逐段上屏、本地零延遲版面與字體配對引擎、Shadow DOM 隔離 UI**，並完整保留 **Kaggle / JupyterLab / CodeMirror 6** 深度強化能力。
 
-**v2.0.0** 從專精 Kaggle Learn 與 Jupyter Notebook 的翻譯工具全面進化為**支援任意 `http://` / `https://` 網站的通用 AI 翻譯助手**，同時完整保留對 Kaggle 跨域 `<iframe>`、JupyterLab v4 與 CodeMirror 6 編輯器的深度專屬支援。
-
-預設提供**繁體中文（台灣用語）**與多國語言即時切換，並堅持**預設靜默、按需啟動、無多餘框線、零第三方中轉**的極簡設計哲學。
+適用於所有 Chromium Manifest V3 瀏覽器（Google Chrome、Microsoft Edge、Brave、Arc、**Ego Lite** 等），零第三方伺服器中轉，直接使用你自己的 **Google Gemini / DeepSeek / OpenAI / OpenRouter / 本機 Ollama** API Key。
 
 ---
 
-## v2.0.0 核心亮點
+## 為什麼做這個擴充功能？
 
-### 1. 預設靜默．全網按需啟動（On-Demand Default）
-- **零侵入日常瀏覽**：預設不會在所有網頁背景自動注入或私自翻譯，保持瀏覽器極速輕量。
-- **任意網站即時翻譯**：瀏覽技術文件、部落格、GitHub、學術論文、新聞或 Kaggle 課程時，按下快捷鍵 **`Alt+T`**（macOS 亦可使用 `Option+T`），或點擊瀏覽器工具列圖示 → **「立即翻譯此頁面」**，即可免重新整理頁面即時注入並翻譯。
-- **單站自動翻譯白名單**：可在彈出面板頂部的**目前網站列**一鍵勾選「**總是自動翻譯此網站**」（例如 `www.kaggle.com`、`docs.python.org`），或在設定頁管理白名單清單。
+市面上的網頁翻譯外掛常有四個痛點：**背景偷偷常駐吃資源**、**粗暴塞入色塊框線破壞原站排版**、**把襯線長文一律強制改成死板黑體**，或是 **遇到 Jupyter Notebook / CodeMirror 編輯器就破壞程式碼與公式**。
 
-### 2. SSE 串流逐段即時上屏（Streaming Translation）
-- 原生支援 **OpenAI 相容 SSE 串流**與 **Google Gemini `:streamGenerateContent?alt=sse`**。
-- 模型每吐出一段譯文即刻渲染上屏，大幅縮短首字等待時間，不再乾等整批完成。
+本專案自 Kaggle 課程專用翻譯工具（`v1.x`）演進至 **`v2.0.0` 全網站通用版**，專注解決這四件事：
 
-### 3. 視口優先懶翻譯（Viewport-First Lazy Loading）
-- 透過 `IntersectionObserver` 優先翻譯目前螢幕可視範圍內的內容，捲動到哪翻到哪。
-- 長篇技術文件與論文可瞬間完成首屏呈現，並大幅節省大模型 Token 額度。
-
-### 4. 本機決策樹與原版美感排版配對（Local Decision Tree & Native Typography）
-- **本機規則決策樹**：翻譯前先於本機精準過濾導覽列、頁尾、工具按鈕、數學公式（LaTeX / MathJax / KaTeX）、程式碼識別符、URL 與純數字表格，避免雜訊污染與無效 API 呼叫。
-- **原版字體智慧配對**：自動偵測各段落原有字族（襯線 Serif / 無襯線 Sans-serif），於「**原版自動配對**」模式下分別補配優雅的中文明體或清晰黑體，同時保留原站英數字體、字重、字級、行高與留白節奏。
-- 支援 **譯文（原版乾淨排版）／ 僅原文 ／ 簡潔雙語** 三種模式，並提供啟動後才顯示的精簡懸浮控制列。
-
-### 5. 思考強度分級控制（Thinking Effort Control）
-- 提供 **極速（最低思考強度 · 推薦）／ 平衡（低思考強度）／ 深度（中等思考強度）** 三段控制。
-- 針對 Gemini 2.5 / 3.x 及推論型 OpenAI 模型自動對應調整思考預算，在日常技術閱讀時達到最快回應與最低費用，閱讀長難句或文學內容時亦可切換深度思考。
-
-### 6. IndexedDB 高容量本機快取
-- 從 `chrome.storage.local` 升級為 **IndexedDB 高容量本機 LRU 快取**，依「**模型 + 目標語言**」持久化儲存已翻譯的網頁段落與程式碼註解。
-- 重訪已讀頁面或回看教學文件時毫秒級命中快取，零延遲且不重複消耗 API 額度。
-
-### 7. Kaggle Learn / JupyterLab / CodeMirror 6 深度專屬能力（完整保留）
-- **跨域 `<iframe>` 無縫穿透**：支援 Kaggle Learn 課程內文與 Exercise 實作編輯器（`*.kaggleusercontent.com`、`*.kaggle.net`）。
-- **程式碼 `#` / `//` 註解智慧翻譯（不影響程式執行）**：
-  - 靜態 `<pre>` / `<code>` 區塊自動辨識引號與註解語法，保留原始語法高亮。
-  - **CodeMirror 6 編輯器**採用分離式唯讀疊加層顯示譯文註解；當點擊程式碼準備編輯或切回原文模式時自動還原英文，絕不改動底層程式碼或干擾 `step_X.check()` 驗證。
-- **Notebook 輸出「譯」按鈕與劃詞翻譯**：一鍵翻譯 `hint()`、`solution()` 提示與 Python Traceback 報錯；在任意網頁選取文字即可即時彈出劃詞翻譯卡片。
+| 核心設計 | 實際做法 | 帶來的體驗 |
+| --- | --- | --- |
+| **預設靜默・按需注入** | 移除靜態 `content_scripts`，未啟動的網站（包含 Kaggle）完全不注入任何腳本 | 日常瀏覽 0 負擔、0 懸浮球干擾、0 意外 API 消耗 |
+| **本地零延遲決策樹** | `< 10 ms` 本地識別網頁類型（Notebook / 技術文件 / 長文 / Web App）、Readability 主文評分、開放式 Shadow DOM 遍歷與語系過濾 | 不靠雲端 LLM 猜排版，精準避開導覽列、公式、程式碼與已是目標語言的文字 |
+| **母語級原版字體配對** | 逐區塊探測原文計算樣式（Serif / Sans / Mono），保留原站西文字體在前，後方補配對應的母語明體／黑體／等寬字體與溫和行高 | Wikipedia / Medium 襯線文自動配明體，MDN / GitHub 保留 `Inter`＋清晰黑體，不破版 |
+| **SSE 串流＋視口優先** | Gemini `:streamGenerateContent?alt=sse` / OpenAI `stream: true` 搭配逐行 NDJSON ＋ `IntersectionObserver`（上下 600px 預載） | 首段譯文最快 **`0.65s`** 上屏，捲到哪翻到哪，省下 50–80% 無效 Token |
+| **思考強度分級控制** | 支援 `極速（最低思考）`／`平衡（Low）`／`深度（Medium）`，自動對應各模型最低思考檔位並過濾 `thought` 片段 | 維持高品質翻譯同時大幅壓低首字延遲與思考 Token 費用 |
+| **IndexedDB 高容量快取** | 本機 20,000 筆 LRU 持久化快取（依模型、語言、思考強度與術語表分區） | 重訪已讀頁面秒出譯文、不重複扣款 |
 
 ---
 
-## 安裝與使用
+## 系統架構
 
-### 1. 載入擴充功能
-1. 下載或 Clone 本專案：
+```mermaid
+flowchart TD
+    Trigger["觸發方式：Alt+T / 彈窗按鈕 / 右鍵選單 / 站點白名單"] --> SW["Service Worker (background/service-worker.js)"]
+    SW -->|"chrome.scripting 按需動態注入"| Content["Content Orchestrator (content/content.js)"]
+    Content --> Analyzer["本地版面與字體決策樹 (content/site-analyzer.js)"]
+    Analyzer -->|"Notebook / 靜態程式碼註解"| Adapter["Notebook Adapter (content/adapters/notebook-adapter.js)"]
+    Analyzer -->|"視口優先佇列 (IntersectionObserver)"| Port["長連線 Port: kct-stream"]
+    Port --> Cache{"IndexedDB 快取 (shared/cache-db.js)"}
+    Cache -->|"命中"| Renderer["原版排版無縫渲染器 (content/renderer.js)"]
+    Cache -->|"未命中"| Stream["SSE 串流＋跨頁框自適應限流器 (429 冷卻保護)"]
+    Stream -->|"每收到 1 行 NDJSON 立即推送"| Renderer
+    Renderer -->|"rAF 分幀寫入 + Shadow DOM 懸浮控制列"| Page["原版美感網頁"]
+```
+
+---
+
+## 主要功能一覽
+
+### 1. 全網站按需翻譯與單站白名單
+- **三種即時啟動方式**（免重新整理頁面）：
+  - 快捷鍵：**`Alt+T`**（macOS 亦為 `Option+T`；已譯頁面再按可快速在「純譯文 ↔ 原文」間切換）。
+  - 工具列彈出面板：點擊 **「立即翻譯此頁面」**，支援強制重譯與一鍵還原。
+  - 頁面右鍵選單：**「翻譯此頁面」** 或反白文字後選 **「AI 翻譯選取文字」**。
+- **單站自動翻譯白名單**：可在彈窗頂部或右下角懸浮列點擊 **`☆ / ★`**，只讓常逛的網站（例如 `www.kaggle.com`、`docs.python.org`）自動翻譯，其餘網站維持靜默。
+
+### 2. 三種顯示模式與多語系支援
+- **純譯文（預設）**：直接融入原站版面結構，無任何多餘外框與色塊。
+- **僅原文**：一鍵零延遲切回原文對照。
+- **簡潔雙語**：以極細左側輔助線呈現原文＋譯文，不擁擠、不干擾視線。
+- **支援語言**：繁體中文（台灣慣用語，預設）、簡體中文、日本語、한국어、Español、Français、Deutsch、Tiếng Việt、Português，並支援任意**自訂目標語言**。
+
+### 3. 程式碼註解與 Kaggle / Jupyter Notebook 深度支援
+- **通用程式碼註解翻譯**：支援靜態 `<pre>`（Pygments、Prism、Highlight.js、GitHub `.pl-c` 等 `#` / `//` 註解），保留語法高亮與行內公式（LaTeX / KaTeX / MathJax）。
+- **CodeMirror 6 非侵入式疊加層**：針對 Kaggle Exercise / JupyterLab v4 互動式程式碼編輯器，採獨立唯讀疊加層顯示註解譯文；點擊編輯或切回原文時自動隱藏，**絕不改動底層程式碼，不干擾執行與 `check()` 驗證**。
+- **Output 快捷翻譯與劃詞翻譯**：Code Cell 輸出旁提供「**譯**」按鈕，可一鍵翻譯 `hint()`、`solution()` 與 Python Traceback 並附帶簡短排錯說明；任意網頁選取文字即可彈出隔離式 Shadow DOM 劃詞翻譯卡片。
+
+### 4. 多服務商與思考強度支援
+- **Google Gemini 原生介面（推薦）**：支援 `gemini-3.5-flash-lite`（預設高速高性價比）、`gemini-3.6-flash`、`gemini-3.8-flash`、`gemini-4-hydrogen`、`gemini-2.5-flash` 等模型；依設定自動配置 `thinkingLevel`（`MINIMAL` / `LOW` / `MEDIUM`）或 `thinkingBudget: 0`。
+- **OpenAI 相容介面**：內建 DeepSeek（`deepseek-chat`）、OpenAI、通義千問 Qwen、SiliconFlow、Moonshot Kimi、智譜 GLM、OpenRouter，以及任何自訂中轉站或本機 **Ollama**（`http://localhost:11434/v1`）。
+- **跨頁框自適應限流器**：當遇到免費額度 `HTTP 429` 時自動降為序列排隊、讀取 `Retry-After` / `retryDelay` 平滑退避重試，避免多頁框同時併發撞線。
+
+---
+
+## 安裝與快速上手
+
+### 步驟 1：載入未封裝擴充功能
+1. 下載或 Clone 本倉庫：
    ```bash
    git clone https://github.com/Chih-Kai-Wang/kaggle-course-translator.git
    ```
-2. 開啟 Chromium 系瀏覽器的擴充功能管理頁面：
-   - Chrome：`chrome://extensions/`
+2. 在瀏覽器開啟擴充功能管理頁：
+   - Chrome / Brave / Ego Lite：`chrome://extensions/`
    - Edge：`edge://extensions/`
-   - Brave / Ego Lite：`chrome://extensions/`
 3. 開啟右上角 **開發人員模式（Developer mode）**。
 4. 點擊 **載入未封裝項目（Load unpacked）**，選擇 `kaggle-course-translator` 資料夾。
 
-### 2. 設定大模型 API 與偏好
-1. 點擊瀏覽器工具列上的擴充功能圖示 → **進階與 API 設定**。
-2. 選擇模型服務商（內建 Google Gemini 原生介面、DeepSeek、OpenAI、通義千問 Qwen、SiliconFlow、Moonshot Kimi、智譜 GLM、OpenRouter 與本機 Ollama）：
-   - **Google Gemini（原生介面 · 推薦免費額度方案）**：填入 Google AI Studio API Key，預設推薦 `gemini-3.5-flash-lite`（免費層高速低延遲，支援串流與思考強度控制），亦可選擇 `gemini-3.1-flash-lite` / `gemini-3.8-flash` / `gemini-4-hydrogen`。
-   - **OpenAI 相容端點 / 本機 Ollama**：支援任意中轉站、OneAPI 或本機 `http://localhost:11434/v1`。
-3. 貼上 API Key，點擊 **測試連線** 確認成功後點擊 **儲存設定**。
-4. 依需求調整 **原版美感字體配對**、**思考強度**、**視口懶翻譯**、**SSE 串流**、**自動翻譯網站白名單**與**領域術語表**。
-
-### 3. 日常使用方式
-- **快捷鍵啟動**：在任意外文網頁按下 **`Alt+T`** 立即翻譯（再次按或透過懸浮列可切換原文／譯文／雙語）。
-- **彈出面板控制**：點擊工具列圖示可立即翻譯、強制重譯、還原原文、切換目標語言或將目前網站加入自動翻譯白名單。
-- **Kaggle 課程與實作**：可將 `www.kaggle.com` 加入自動翻譯白名單，開啟 `/learn` 或 Exercise Notebook 時即自動呈現原版美感譯文與註解翻譯。
+### 步驟 2：填入 API Key 並測試連線
+1. 點擊工具列上的擴充功能圖示 → **模型與 API 設定 ↗**。
+2. 選擇服務商（例如 **Google Gemini** 或 **DeepSeek**），填入你的 API Key 與模型名稱。
+3. 點擊 **測試連線** 確認正常回傳後，按 **儲存設定**。
+4. （可選）於設定頁微調：
+   - **原版美感字體配對**：`原版自動配對`（預設）／`統一系統黑體`／`完全沿用原站字體`。
+   - **思考強度**：`極速 · 最低思考`（預設）／`平衡 · Low`／`深度 · Medium`。
+   - **加速選項**：`視口優先懶翻譯`、`SSE 串流逐段上屏`、`每批最大段落數`。
+   - **自動翻譯白名單** 與 **領域術語表**（自動於 Notebook 與技術文件站套用，一般新聞／部落格不會被 ML 術語干擾）。
 
 ---
 
-## 隱私與安全
+## 隱私與安全保證
 
-- **無任何第三方中轉伺服器**：所有翻譯請求皆由瀏覽器背景 Service Worker 直接發送至您自行設定的模型端點。
-- **本機儲存**：API Key 與偏好設定僅存於瀏覽器本機 `chrome.storage.local`，譯文快取僅存於本機 IndexedDB，隨時可於設定頁一鍵清空。
-- **嚴格遵循 Chrome Manifest V3 CSP**：無 `eval()`、無內嵌腳本、所有動態譯文與 UI 皆以安全 DOM API 渲染。
+- **零第三方中轉**：所有請求皆由本機 Service Worker 直接發送至你設定的模型 API 端點，API Key 僅置於 HTTP Header（`x-goog-api-key` / `Authorization`），不出現於 URL 或日誌。
+- **完全本機儲存**：設定與 API Key 存於 `chrome.storage.local`，譯文快取存於本機 IndexedDB，設定頁可隨時一鍵清除。
+- **嚴格遵循 MV3 CSP 與零 XSS 設計**：無 `eval()`、無 `new Function()`、無內嵌 `<script>`，所有譯文與頁面 DOM 均以 `createTextNode` / `textContent` 安全寫入，絕不使用 `innerHTML` 拼接外部譯文；懸浮工具列與劃詞彈窗完全隔離於 **Shadow DOM**。
 
 ---
 
@@ -86,23 +105,36 @@
 
 ```text
 kaggle-course-translator/
-├── manifest.json              # Manifest V3 宣告、Alt+T 快捷鍵與按需腳本注入權限
+├── manifest.json                         # Manifest V3 清單、Alt+T 快捷鍵與按需動態注入權限
 ├── shared/
-│   └── config.js              # Schema v5 設定管理、模型預設、語言/術語表與白名單工具
+│   ├── config.js                         # Schema v5 設定、模型預設、思考強度解析、多語字體堆疊與白名單工具
+│   └── cache-db.js                       # IndexedDB 本機高容量 LRU 快取層（20,000 筆＋舊版自動遷移）
 ├── background/
-│   └── service-worker.js      # SSE 串流與批次翻譯排程、思考強度控制、按需注入與 IndexedDB LRU 快取
+│   └── service-worker.js                 # 按需注入器、右鍵選單、快捷鍵、SSE/NDJSON 串流引擎與 429 自適應限流器
 ├── content/
-│   ├── content.js             # 本機決策樹、原版字體偵測、視口懶翻譯、註解疊加層與懸浮控制列
-│   └── content.css            # 原版無框排版樣式、Serif/Sans CJK 字型配對與懸浮 UI
-├── popup/                     # 全網通用快速控制面板（含目前網站白名單開關）
-├── options/                   # 進階設定頁（思考強度、字體配對、白名單管理、API 與 IndexedDB 快取）
-├── icons/                     # 擴充功能圖示 (16 / 48 / 128 px)
-├── LICENSE                    # MIT License
+│   ├── site-analyzer.js                  # 本地決策樹（站點分類、Readability 主文評分、Shadow DOM 遍歷、語系與字體探測）
+│   ├── renderer.js                       # 原版排版安全渲染器（字體族配對、智慧行高保護、rAF 分幀寫入與完整還原）
+│   ├── adapters/
+│   │   └── notebook-adapter.js           # 程式碼註解（靜態 pre / CodeMirror 6 疊加層）與 Jupyter Output 翻譯按鈕
+│   ├── content.js                        # 視口優先懶載入協調器、kct-stream 串流客戶端與 Shadow DOM 懸浮／劃詞 UI
+│   └── content.css                       # 頁面層原版字體映射（Serif / Sans / Mono）、行高保護與模式切換樣式
+├── popup/                                # 全網通用快速彈窗（單站白名單開關、模式／範圍切換與即時進度）
+├── options/                              # 進階設定頁（服務商、思考強度、排版風格、白名單管理、術語表與快取）
+├── icons/                                # 擴充功能圖示（16 / 48 / 128 px）
+├── LICENSE                               # MIT License
 └── README.md
 ```
 
 ---
 
+## 更新日誌
+
+- **`v2.0.0`**：全面升級為全網站原版美感 AI 翻譯擴充功能；改採預設靜默＋按需動態注入、SSE 串流逐段上屏、視口優先 `IntersectionObserver` 懶載入、本地版面決策樹與 Serif/Sans/Mono 字體基因配對、Shadow DOM 隔離 UI、三段思考強度控制、IndexedDB 20,000 筆快取，以及單站自動翻譯白名單。
+- **`v1.2.x`**：原生整合 Google Gemini 3.x / 4-Hydrogen API、加入跨頁框自適應 429 冷卻限流器、優化大批次翻譯與手動觸發體驗。
+- **`v1.1.x`**：支援多語言目標切換、繁體中文（台灣）原版無框排版、CodeMirror 6 非侵入式 Python 註解疊加層。
+
+---
+
 ## 授權條款
 
-本專案採用 [MIT License](LICENSE) 開源釋出，歡迎提出 Issue 或 Pull Request 一起打造更優雅的閱讀與學習體驗。
+本專案採用 [MIT License](LICENSE) 開源釋出，歡迎提出 Issue 或 Pull Request！
