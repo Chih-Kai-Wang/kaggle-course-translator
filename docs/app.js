@@ -103,6 +103,30 @@ const PROVIDER_PRESETS = {
     placeholderKey: 'sk-...',
     hint: '中文語意理解流暢。'
   },
+  anthropic: {
+    id: 'anthropic',
+    label: 'Anthropic Claude（原生 Messages API）',
+    protocol: 'anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    defaultModel: 'claude-opus-5-5',
+    suggestedModels: [
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
+      'claude-haiku-5-5'
+    ],
+    placeholderKey: 'sk-ant-...',
+    hint: '請至 platform.claude.com 取得 API Key；若需節省成本，可改選 claude-sonnet-5-5 或 claude-haiku-5-5。'
+  },
+  azure: {
+    id: 'azure',
+    label: 'Azure OpenAI（v1 API · api-key）',
+    protocol: 'openai',
+    baseUrl: 'https://YOUR-RESOURCE.openai.azure.com/openai/v1',
+    defaultModel: '',
+    suggestedModels: [],
+    placeholderKey: 'Azure API Key...',
+    hint: '請將網址中的 YOUR-RESOURCE 替換為您的 Azure 資源名稱，並在模型欄位填入部署名稱（Deployment Name）。'
+  },
   custom: {
     id: 'custom',
     label: '自訂 OpenAI 相容介面',
@@ -308,9 +332,192 @@ function normalizeGeminiEndpoint(baseUrl, model) {
   return `${clean}/v1beta/models/${encodeURIComponent(m)}:generateContent`;
 }
 
+// ---- Provider helpers kept in sync with shared/config.js (Anthropic Messages API + Azure OpenAI) ----
+function isAzureOpenAIEndpoint(baseUrl) {
+  if (!baseUrl || typeof baseUrl !== 'string') return false;
+  try {
+    const { hostname } = new URL(baseUrl.trim());
+    const host = hostname.toLowerCase();
+    return (
+      host.endsWith('.openai.azure.com') ||
+      host.endsWith('.services.ai.azure.com') ||
+      host.endsWith('.cognitiveservices.azure.com')
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function normalizeAnthropicEndpoint(baseUrl) {
+  const raw = String(baseUrl || '').trim();
+  if (!raw) return 'https://api.anthropic.com/v1/messages';
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch (_) {
+    return '';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return '';
+  }
+  const clean = parsed.toString().replace(/\/+$/, '');
+  if (clean.endsWith('/v1/messages')) return clean;
+  if (clean.endsWith('/v1')) return `${clean}/messages`;
+  return `${clean}/v1/messages`;
+}
+
+function buildProviderAuthHeaders(settings, cleanKey) {
+  const headers = { 'Content-Type': 'application/json' };
+  const protocol = settings?.protocol || 'openai';
+  const key = String(cleanKey || '').trim();
+
+  if (protocol === 'gemini') {
+    if (key) headers['x-goog-api-key'] = key;
+    return headers;
+  }
+
+  if (protocol === 'anthropic') {
+    if (key) headers['x-api-key'] = key;
+    headers['anthropic-version'] = '2026-10-21';
+    headers['anthropic-dangerous-direct-browser-access'] = 'true';
+    return headers;
+  }
+
+  if (key) {
+    if (isAzureOpenAIEndpoint(settings?.baseUrl)) {
+      headers['api-key'] = key;
+    } else {
+      headers['Authorization'] = `Bearer ${key}`;
+    }
+  }
+  return headers;
+}
+
+function resolveAnthropicEffort(model, thinkingEffort) {
+  const m = String(model || '').trim();
+  const supportsEffort =
+    /^claude-(?:opus|sonnet|haiku|fable|mythos)-(?:5|[6-9])(?:[-.]|$)/.test(m) ||
+    /^claude-(?:opus-4-[5-9]|sonnet-4-6|opus-4-6)(?:[-.]|$)/.test(m);
+  if (!supportsEffort) return '';
+
+  const map = {
+    fastest: 'low',
+    balanced: 'medium',
+    deep: 'high'
+  };
+  return map[thinkingEffort] || '';
+}
+
+function buildAnthropicMessagesBody(
+  settings,
+  messages,
+  { stream = false, maxTokens = 16000, image = null } = {}
+) {
+  const systemParts = [];
+  const convMessages = [];
+
+  if (Array.isArray(messages)) {
+    for (const msg of messages) {
+      if (!msg || typeof msg !== 'object') continue;
+      const role = msg.role;
+      const text = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
+      if (!text.trim()) continue;
+
+      if (role === 'system') {
+        systemParts.push(text);
+      } else if (role === 'user' || role === 'assistant') {
+        convMessages.push({ role, content: text });
+      }
+    }
+  }
+
+  if (image && image.base64 && image.mimeType) {
+    let lastUserIdx = -1;
+    for (let i = convMessages.length - 1; i >= 0; i--) {
+      if (convMessages[i].role === 'user') {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx !== -1) {
+      const cleanBase64 = String(image.base64).replace(/^data:[^;]+;base64,/, '');
+      const textContent = convMessages[lastUserIdx].content;
+      convMessages[lastUserIdx] = {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: String(image.mimeType).trim(),
+              data: cleanBase64
+            }
+          },
+          {
+            type: 'text',
+            text: textContent
+          }
+        ]
+      };
+    }
+  }
+
+  const model = String(settings?.model || '').trim();
+  const body = {
+    model,
+    max_tokens: Number(maxTokens) > 0 ? Math.floor(Number(maxTokens)) : 16000,
+    messages: convMessages
+  };
+
+  if (systemParts.length > 0) {
+    body.system = systemParts.join('\n\n');
+  }
+
+  if (stream) {
+    body.stream = true;
+  }
+
+  const effort = resolveAnthropicEffort(model, settings?.thinkingEffort);
+  if (effort) {
+    body.output_config = { effort };
+  }
+
+  return body;
+}
+
+function extractAnthropicStreamDelta(eventObj) {
+  const result = { text: '', error: '', stopReason: '' };
+  if (!eventObj || typeof eventObj !== 'object') return result;
+
+  try {
+    if (
+      eventObj.type === 'content_block_delta' &&
+      eventObj.delta?.type === 'text_delta' &&
+      typeof eventObj.delta.text === 'string'
+    ) {
+      result.text = eventObj.delta.text;
+    } else if (eventObj.type === 'error') {
+      result.error = String(
+        eventObj.error?.message || eventObj.error?.type || 'Anthropic Stream Error'
+      );
+    } else if (eventObj.type === 'message_delta') {
+      if (typeof eventObj.delta?.stop_reason === 'string') {
+        result.stopReason = eventObj.delta.stop_reason;
+      }
+    }
+  } catch (_) {
+    // Never throw
+  }
+
+  return result;
+}
+
 function resolveEndpoint(settings) {
   if (settings?.protocol === 'gemini') {
     return normalizeGeminiEndpoint(settings.baseUrl, settings.model);
+  }
+  if (settings?.protocol === 'anthropic') {
+    return normalizeAnthropicEndpoint(settings.baseUrl);
   }
   return normalizeOpenAIEndpoint(settings?.baseUrl);
 }
@@ -687,6 +894,15 @@ function extractStreamTextDelta(protocol, chunkObj) {
     }
     return out;
   }
+  if (protocol === 'anthropic') {
+    if (chunkObj.type === 'message' && Array.isArray(chunkObj.content)) {
+      return chunkObj.content
+        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join('');
+    }
+    return extractAnthropicStreamDelta(chunkObj).text;
+  }
   const choice = chunkObj?.choices?.[0];
   if (!choice) return '';
   if (typeof choice?.delta?.content === 'string') return choice.delta.content;
@@ -773,13 +989,13 @@ async function streamTranslateBatchWithCache(settings, items, docTitle, onItem, 
     { role: 'user', content: JSON.stringify(payload) }
   ];
 
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = buildProviderAuthHeaders(settings, cleanKey);
   let bodyObj;
   if (settings.protocol === 'gemini') {
-    if (cleanKey) headers['x-goog-api-key'] = cleanKey;
     bodyObj = buildGeminiRequestBody(settings, messages);
+  } else if (settings.protocol === 'anthropic') {
+    bodyObj = buildAnthropicMessagesBody(settings, messages, { stream: true, maxTokens: 32000 });
   } else {
-    if (cleanKey) headers['Authorization'] = `Bearer ${cleanKey}`;
     bodyObj = buildOpenAIRequestBody(settings, endpoint, messages, true);
   }
 
@@ -3032,6 +3248,14 @@ async function init() {
 
   // Register PWA Service Worker
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    let updateBannerShown = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController && !updateBannerShown) {
+        updateBannerShown = true;
+        showSyncBanner('已更新到最新版本，重新整理頁面即可套用。');
+      }
+    });
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 

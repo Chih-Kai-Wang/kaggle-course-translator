@@ -2,183 +2,253 @@
 
 [English](README.md) · **繁體中文** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
-**NativeRead（v2.2.0）** 是一款 Manifest V3 瀏覽器擴充功能與手機版 PWA，能在保留原網頁字體氣質與排版結構的前提下，翻譯網頁、PDF 文件、程式碼註解與內嵌資訊圖表。它預設靜默、按需啟動、直接使用你自己的大模型 API Key，並以串流方式逐段上屏，維持自然的母語閱讀節奏。
+**NativeRead（v2.4.0）** 是一款 Manifest V3 瀏覽器擴充功能與行動版 PWA，可翻譯網頁、PDF、程式碼註解與嵌入式資訊圖表，同時完整保留原始頁面字體與排版。它預設保持靜默，僅在使用者主動觸發時透過自備的 LLM API 金鑰運作，並逐段串流輸出譯文，不中斷閱讀節奏。
 
 ---
 
-## 1. 產品總覽與快速上手
+## 1. 產品總覽與快速開始
 
-### 核心功能
+### 核心能力
 
-| 核心能力 | 實作方式 | 閱讀體驗 |
+| 功能 | 運作方式 | 閱讀體驗 |
 | --- | --- | --- |
-| **預設靜默・按需網頁翻譯** | 零靜態 `content_scripts`；僅於觸發時透過 `chrome.scripting` 動態注入（`Alt+T`、彈窗按鈕、右鍵選單或單站白名單 `autoTranslateHosts`）。 | 未翻譯的網站 0 腳本負擔、0 懸浮球干擾、0 意外 API 消耗。 |
-| **內建 PDF.js 閱讀器** | 內建本機 Apache-2.0 `PDF.js`（`vendor/pdfjs/`）於 `viewer/pdf-viewer.html`；支援遠端 PDF、Google Drive 連結與本機 `.pdf` 拖曳開啟。 | 一鍵切換 **原位覆蓋**、**雙欄對照**、**原版** 三模式（`1` / `2` / `3`）；圖表、表格與獨立公式原封不動保留。 |
-| **Google Drive PDF 頁內原位覆蓋** | 直接偵測 `.ndfHFb-c4YZDc-cYSp0e-DARUcf` 文字層，進行跨群組同欄合併、目錄（TOC）引導點線重建，並由頁面點陣圖量測原始字高與筆畫粗細。 | 免跳離 Google Drive 分頁即可逐頁原位翻譯多頁 PDF。 |
-| **按需圖片與資訊圖表覆蓋** | 嚴格按需觸發，透過右鍵選單（**NativeRead 翻譯圖片文字**）或大圖（`>= 200x140` px）右上角懸停按鈕（**譯圖**）啟動；絕不自動掃描全頁圖片。 | 取樣原圖底色與高對比墨色原位替換文字，完整保留 3D 結構圖與插畫。 |
-| **程式碼註解與 Notebook 輸出** | 靜態 `<pre>`（Pygments、Prism、Highlight.js、GitHub `.pl-c`）採非破壞性 CSS `attr()` 替換；CodeMirror 6（`.cm-editor`）採唯讀疊加層；Jupyter 執行輸出附快捷「譯」按鈕。 | 程式碼可正常編輯與執行；點擊編輯器或切回原文時疊加層自動隱藏。 |
-| **手機與跨平台支援** | 提供獨立手機版 PWA（`docs/`）、全平台 Userscript（`docs/nativeread.user.js`）、Android 擴充包（`docs/nativeread-android-extension.zip`）與本機 QR Code `#nr_sync` 同步。 | iOS Safari 與 Android 瀏覽器皆可完整使用，免重打 API Key。 |
+| **預設靜默的網頁翻譯** | 不註冊靜態 `content_scripts`；僅在需要時透過 `chrome.scripting` 動態注入（`Alt+T`、彈出視窗按鈕、右鍵選單或網站白名單 `autoTranslateHosts`）。 | 未翻譯的網站零額外開銷、零浮動 UI、零 API 消耗。 |
+| **內建 PDF.js 閱讀器** | 於 `viewer/pdf-viewer.html` 內建本地 Apache-2.0 `PDF.js`（`vendor/pdfjs/`）；支援遠端 PDF、Google Drive 連結與本地 `.pdf` 拖放開啟。 | 可自由切換 **Overlay（覆蓋）**、**Split（雙欄對照）** 與 **Original（原文）** 模式（`1` / `2` / `3`）；圖表、表格與獨立公式完整保留。 |
+| **Google Drive PDF 頁內覆蓋** | 直接偵測 `.ndfHFb-c4YZDc-cYSp0e-DARUcf` 檢視層，合併同欄文字框、重建目錄導引點線，並從頁面點陣圖量測原生字形尺寸。 | 不必離開分頁，即可在 Google Drive 內直接翻譯多頁 PDF。 |
+| **按需圖片與資訊圖表覆蓋** | 嚴格採按需觸發，僅於右鍵點選（**NativeRead 翻譯圖片文字**）或懸停標籤（**譯圖**）且圖片尺寸 `>= 200x140` px 時執行；絕不自動掃描頁面圖片。 | 取樣背景與前景色原地替換文字區塊，同時保留 3D 圖解與插畫。 |
+| **程式碼註解與 Notebook 輸出** | 靜態 `<pre>` 區塊採非破壞性 CSS `attr()` 替換（支援 Pygments、Prism、Highlight.js、GitHub `.pl-c`），CodeMirror 6（`.cm-editor`）採唯讀覆蓋層，並為 Jupyter 輸出提供快速翻譯按鈕。 | 程式碼仍可編輯與執行；聚焦編輯器或切回原文模式時覆蓋層會自動隱藏。 |
+| **行動裝置與跨平台** | 隨附獨立行動版 PWA（`docs/`）、通用 Userscript（`docs/nativeread.user.js`）、Android 擴充功能 ZIP（`docs/nativeread-android-extension.zip`）與本地 QR Code `#nr_sync` 同步。 | 在 iOS Safari 與 Android 瀏覽器上享受完整翻譯流程，無須重複輸入 API 金鑰。 |
 
-### 快速上手（桌面端擴充功能）
+### 快速開始（桌面版擴充功能）
 
-支援 Chromium 119+（Chrome、Edge、Brave 或相容瀏覽器）。
+需使用 Chromium 119 以上版本（Chrome、Edge、Brave 或相容瀏覽器）。
 
-1. Clone 專案倉庫：
+1. 複製專案儲存庫：
    ```bash
    git clone https://github.com/Chih-Kai-Wang/native-read.git
    ```
-2. 開啟 `chrome://extensions/`（Edge 為 `edge://extensions/`），啟用右上角 **開發人員模式（Developer mode）**。
-3. 點擊 **載入未封裝項目（Load unpacked）**，選擇 `native-read` 資料夾。
-4. 點擊工具列上的 **NativeRead** 圖示 → **設定頁**，選擇 AI 服務商、填入 API Key、點擊 **測試連線** 並儲存。
-5. 在任意網頁或 PDF 分頁按下 **`Alt+T`**、點擊彈窗按鈕或使用右鍵選單即可啟動翻譯；點擊彈窗或懸浮列上的 `☆` / `★` 可將目前網域加入或移除自動翻譯白名單。
+2. 開啟 `chrome://extensions/`（或 `edge://extensions/`）並啟用 **開發人員模式（Developer mode）**。
+3. 點擊 **載入未封裝項目（Load unpacked）**，選擇複製下來的 `native-read` 目錄。
+4. 點擊工具列上的 **NativeRead** 圖示 → **設定（Options）**，選擇模型供應商、填入 API 金鑰，點擊 **測試連線（Test Connection）** 並儲存。
+5. 在任意網頁或 PDF 分頁按下 **`Alt+T`**、點擊彈出視窗按鈕或透過右鍵選單即可啟動翻譯。點擊彈出視窗或浮動膠囊上的 `☆` / `★`，可將目前網域加入或移出自動翻譯白名單。
 
-### 支援的模型服務商
+### 支援的模型供應商
 
-定義於 `shared/config.js`（`PROVIDER_PRESETS`）。本機端點（`localhost`、`127.0.0.1`、`0.0.0.0`）無須填寫 API Key。
+設定於 `shared/config.js`（`PROVIDER_PRESETS`）。本地端點（`localhost`、`127.0.0.1`、`0.0.0.0`）無須填寫 API 金鑰。
 
-| 服務商 ID | 協定 | 預設 Base URL | 預設模型 |
+| 供應商 ID | 協定 | 預設 Base URL | 預設模型 |
 | --- | --- | --- | --- |
 | `deepseek` | OpenAI | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| `gemini` | Gemini 原生 | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.5-flash-lite` |
+| `gemini` | Gemini Native | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.5-flash-lite` |
 | `qwen` | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
 | `siliconflow` | OpenAI | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` |
 | `moonshot` | OpenAI | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
 | `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
 | `openrouter` | OpenAI | `https://openrouter.ai/api/v1` | `google/gemini-2.5-flash` |
+| `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` | `claude-opus-5-5` |
+| `azure` | OpenAI (api-key header) | `https://YOUR-RESOURCE.openai.azure.com/openai/v1` | 部署名稱（Deployment name） |
 | `custom` | OpenAI | `http://localhost:11434/v1` | `qwen2.5:7b` |
 
-- **目標語言**：預設 `zh-TW`（繁體中文・台灣），並內建 `zh-CN`、`ja`、`ko`、`es`、`fr`、`de`、`vi`、`pt` 與自訂語言。
-- **思考強度（`thinkingEffort`）**：支援 `fastest`（預設）、`balanced`、`deep`。`fastest` 模式下自動將 Gemini 3.x/4.x 對應至 `thinkingLevel`（`MINIMAL` / `LOW` / `MEDIUM`）、Gemini 2.5 Flash 對應至 `thinkingBudget`（`0` / `512` / `2048`）、OpenAI `o1`/`o3`/`o4` 設為 `reasoning_effort: "low"`、阿里雲 `qwen3` 設為 `enable_thinking: false`，並於回應解析時過濾 `thought` 片段。
+- **Anthropic Claude（`anthropic`）**：透過原生 Messages API 支援擴充功能、Userscript 與 PWA（SSE 串流、批次／單段翻譯、測試連線，以及使用 base64 圖片區塊的按需圖片翻譯），並提供 `claude-sonnet-5-5` 與 `claude-haiku-5-5` 作為建議模型；同時檢查 `stop_reason`，遇到模型拒答時會顯示明確錯誤。
+- **Azure OpenAI（`azure`）**：支援 `*.openai.azure.com`、`*.services.ai.azure.com` 與 `*.cognitiveservices.azure.com` 端點；模型欄位請填入部署名稱（deployment name），API 金鑰會自動透過 `api-key` 標頭傳送。
+- **驗證說明**：Anthropic Claude 與 Azure OpenAI 支援已完成離線測試樣本（fixture）驗證（涵蓋端點、標頭、請求本文與回應／串流解析），但尚未針對線上正式 API 進行實測。
+- **目標語言**：`zh-TW`（預設）、`zh-CN`、`ja`、`ko`、`es`、`fr`、`de`、`vi`、`pt`，並支援自訂語言提示詞。
+- **思考強度（`thinkingEffort`）**：提供 `fastest`（預設）、`balanced` 與 `deep` 三檔。系統會自動將 Gemini 3.x/4.x 對應至 `thinkingLevel`（`MINIMAL` / `LOW` / `MEDIUM`）、Gemini 2.5 Flash 對應至 `thinkingBudget`（`0` / `512` / `2048`）、OpenAI `o1`/`o3`/`o4` 對應至 `reasoning_effort: "low"`、DashScope `qwen3` 於 `fastest` 模式設定 `enable_thinking: false` 並濾除回應中的 `thought` 片段，並將支援此參數的 Anthropic Claude 模型對應至 `output_config.effort`（`low` / `medium` / `high`），且不傳送 `temperature`、`top_p`、`top_k` 或 thinking 設定。
 
-### 手機與跨平台使用方式
+### 行動裝置與跨平台支援
 
-- **手機版 PWA（`https://chih-kai-wang.github.io/native-read/`）**：支援 iOS Safari 與 Android Chrome「加入主畫面」，內建手機版 PDF.js 閱讀器（原位覆蓋／雙欄對照／原版）、網址與貼上文章翻譯器、離線 App Shell（`docs/sw.js`）與本機 IndexedDB 快取。
-- **全平台 Userscript（`https://chih-kai-wang.github.io/native-read/nativeread.user.js`）**：適用於 iOS Safari（搭配 *Stay* 或 *Userscripts*）與 Android（*Tampermonkey*、*狐猴 Lemur*、*Kiwi*、*Firefox*）。頁緣提供可上下拖曳的 Shadow DOM `NR` 觸控膠囊，遇到嚴格頁面 CSP 阻擋 `fetch` 時自動降級為 `GM_xmlhttpRequest`。
-- **Android 擴充功能包（`https://chih-kai-wang.github.io/native-read/nativeread-android-extension.zip`）**：完整 MV3 擴充包，支援 *狐猴 Lemur*、*Kiwi*、*Quetta*、*Edge Android*，並整合觸控選字（`touchend` / `selectionchange`）劃詞翻譯。
-- **本機 QR Code `#nr_sync` 同步**：於桌面設定頁產生同步連結與本機 QR Code，手機掃描後自動匯入服務商、API Key、模型與偏好至 PWA、Userscript 或 Android 擴充功能，並立即清除網址列錨點。
+- **行動版 PWA（`https://chih-kai-wang.github.io/native-read/`）**：可在 iOS Safari 與 Android Chrome 加入主畫面安裝。內建行動版 PDF.js 閱讀器（覆蓋／雙欄／原文模式，支援 Google Drive 連結解析、15 秒完整下載逾時與「在新分頁開啟 PDF」備援按鈕）、網頁 URL 與直接貼上文章翻譯器、涵蓋 Claude 等供應商的串流翻譯、離線 App Shell（`docs/sw.js`）與本地 IndexedDB 快取。
+- **通用 Userscript（`https://chih-kai-wang.github.io/native-read/nativeread.user.js`）**：可於 iOS Safari（透過 *Stay* 或 *Userscripts*）與 Android 瀏覽器（*Tampermonkey*、*Lemur*、*Kiwi*、*Firefox*）執行。頁面側邊注入可拖曳的 Shadow DOM `NR` 標籤，當頁面嚴格 CSP 阻擋 `fetch` 時自動降級使用 `GM_xmlhttpRequest`。
+- **Android 擴充功能 ZIP（`https://chih-kai-wang.github.io/native-read/nativeread-android-extension.zip`）**：適用於 Chromium 核心 Android 瀏覽器（*Lemur*、*Kiwi*、*Quetta*、*Edge Android*）的完整 MV3 套件，支援觸控選取翻譯（`touchend` / `selectionchange`）。
+- **本地 QR Code `#nr_sync` 同步**：於桌面版設定頁產生同步連結與 QR Code；手機掃描後即可將供應商、API 金鑰、模型與偏好設定匯入 PWA、Userscript 或 Android 擴充功能，並立即清除網址片段（fragment）。
+
+### 版本更新方式
+
+- **Userscript**：標頭內含 `@updateURL`（`docs/nativeread.meta.js`）、`@downloadURL`（`docs/nativeread.user.js`）、`@homepageURL` 與 `@supportURL`，Tampermonkey、Violentmonkey 與 Stay 可自動檢查並更新。
+- **行動版 PWA**：採用帶版本號的 Service Worker 快取（`nativeread-pwa-v<version>`）。當新版 Service Worker 接管已開啟的頁面時，畫面上會出現更新提示橫幅，重新整理即可套用新版本。
+- **桌面未封裝擴充功能與 Android 擴充功能 ZIP**：開啟擴充功能彈出視窗時，系統會檢查 GitHub Pages 上的 `version.json`（每 24 小時最多檢查一次，可於設定頁透過 `checkForUpdates` 開關）；若有較新版本，會顯示 `有新版本 vX（目前 vY）/ 查看更新` 並連結至 GitHub README。由於這兩種安裝方式未透過商店託管，更新時仍需手動重新安裝（拉取最新程式碼並重新載入，或重新匯入新版 Android ZIP）。
 
 ---
 
-## 2. 系統技術架構
+## 2. 技術架構
 
 ```mermaid
 flowchart TD
-    Trigger["觸發入口：Alt+T / 彈窗 / 右鍵選單 / 白名單"] --> SW["Service Worker (background/service-worker.js)"]
-    SW -->|"一般網頁（按需動態注入）"| Content["內容協調器 (content/content.js)"]
-    SW -->|"PDF 分頁或本機檔案"| PDF["PDF.js 閱讀器 (viewer/pdf-viewer.js)"]
-    SW -->|"圖片右鍵 / 懸停譯圖"| Vision["視覺翻譯引擎 (OffscreenCanvas + 多模態)"]
+    Trigger["觸發：Alt+T / 彈出視窗 / 右鍵選單 / 白名單"] --> SW["Service Worker (background/service-worker.js)"]
+    SW -->|"網頁（動態注入）"| Content["內容協調器 (content/content.js)"]
+    SW -->|"PDF 分頁或本地檔案"| PDF["PDF.js 閱讀器 (viewer/pdf-viewer.js)"]
+    SW -->|"圖片右鍵／懸停"| Vision["視覺管線 (OffscreenCanvas + 多模態)"]
     Content --> Analyzer["本地決策模型 (content/site-analyzer.js)"]
-    Analyzer -->|"語意區塊 + SPA 葉子 + Shadow DOM"| Queue["視口懶載入佇列 (IntersectionObserver)"]
-    Analyzer -->|"程式碼註解與執行輸出"| Code["程式碼註解層 (content/code-overlay.js)"]
+    Analyzer -->|"語意區塊 + SPA 葉節點 + Shadow DOM"| Queue["視窗懶載入佇列 (IntersectionObserver)"]
+    Analyzer -->|"程式碼註解與輸出"| Code["程式碼覆蓋層 (content/code-overlay.js)"]
     Code --> Queue
-    Queue --> Port["長連線 Port: kct-stream"]
-    PDF -->|"XY-Cut 段落萃取 + 公式保護"| Port
+    Queue --> Port["長連線埠：kct-stream"]
+    PDF -->|"XY-Cut 段落 + 公式保護"| Port
     Port --> Cache{"IndexedDB LRU 快取 (kct_cache_db_v2)"}
-    Cache -->|"命中"| Render["原版排版渲染器 (rAF / PDF 覆蓋 / 雙欄)"]
-    Cache -->|"未命中"| Stream["SSE NDJSON 串流 + 429 自適應限流器"]
-    Stream -->|"逐段推送"| Render
+    Cache -->|"命中"| Render["原生渲染器 (rAF / PDF 覆蓋 / 雙欄)"]
+    Cache -->|"未命中"| Stream["SSE NDJSON 串流 + 429 自適應限流"]
+    Stream --> LLM["LLM APIs (OpenAI / Gemini / Claude / Azure)"]
+    LLM -->|"逐筆增量回傳"| Render
     Vision --> Cache
-    Vision --> ImgOverlay["圖片原位覆蓋層 (content/renderer.js)"]
+    Vision --> LLM
+    Vision --> ImgOverlay["圖片覆蓋層 (content/renderer.js)"]
 ```
 
 ### 2.1 本地零延遲決策模型
 
-所有正文判斷、過濾與字體配對皆於 `content/site-analyzer.js` 與 `content/renderer.js` 本地即時完成，不消耗額外模型請求：
+所有頁面分區、內容過濾與字體排版決策皆於 `content/site-analyzer.js` 與 `content/renderer.js` 在本地端完成，不消耗任何額外 LLM 呼叫：
 
-- **主內容偵測（`findContentRoots`、`scoreReadabilityContainer`）**：優先辨識 Jupyter / Notebook 渲染格（`LESSON_CELL_SELECTOR`）、Google Drive PDF 檢視器頁面（`.ndfHFb-c4YZDc-cYSp0e-DARUcf`）與語意容器（`article`、`main`、`[role="main"]`、`.markdown-body`、`.prose`、`#mw-content-text`）。以 `textLen + pCount * 40` 計分，連結率 `linkRatio > 0.55` 時施加懲罰，文章容器加權 `1.25x`，若內層容器涵蓋 `>= 65%` 文字則收斂至內層，並保留頁面主標題（`#firstHeading` / `h1`）。
-- **雙階段 DOM 掃描（`collectUniversalCandidateElements`）**：
-  - *Pass 1*：掃描語意區塊（`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`），僅認領無子區塊的葉子段落。
-  - *Pass 2*：針對現代 SPA 遍歷 `DIV`、`SPAN`、`A`、`LABEL`、`BUTTON` 葉子文字，排除 Shadow DOM 宿主、含區塊子元素或互動控制項（`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`）、純數據中繼文字（`PURE_METADATA_REGEX`）以及僅包覆 `<a href>` 的外層容器。兩階段結果依 DOM 文件順序（`compareDocumentPosition`）合併排序。
-- **Shadow DOM 穿透（`queryAllDeep`、`ensureShadowModeStyle`）**：深度最多 5 層遞迴掃描開放式 `shadowRoot`（略過程式碼編輯器與 UI 節點 `SHADOW_SKIP_SELECTOR`），並注入 `:host-context(html.kct-mode-*)` 規則確保譯文／原文／雙語模式在 Shadow DOM 內同步生效。
-- **行內保護區符記（`extractBlockContent`、`buildTranslatedFragment`）**：將行內程式碼（`code, kbd, var`）轉為 `[[C#]]`，數學公式與引用（`.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`）轉為 `[[M#]]`，短／非翻譯 `<a href>` 連結（`<= 28` 字元）轉為 `[[L#]]`。渲染時以 `cloneNode(true)` 原生還原原始 DOM 節點至 `DocumentFragment`。
-- **語系過濾（`shouldTranslateText`）**：略過網址、電子郵件、檔案路徑、Jupyter `In[]`/`Out[]` 提示、單一 ASCII 程式碼識別碼，並依 Unicode 字元比例跳過已是目標語言的段落（繁中／簡中目標下，漢字比例 `>= 0.55` 且拉丁單字 `< 6` 個時略過，但含假名比例 `>= 0.12` 的日文仍會翻譯）。
-- **字體基因配對（`probeTypography`、`sanitizeFontFamily`、`content/content.css`）**：逐區塊由計算樣式判別 `serif` / `sans` / `mono`，剝離尾端通用字族（`serif`、`sans-serif`、`monospace`、`system-ui` 等）後保留最多 5 個原站西文字體至 `--kct-orig-font`，後方補配對應母語字體堆疊（`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`）。未截斷且 `lineHeight / fontSize < 1.62` 的長文區塊會選擇性提升行高至 `1.72`（`data-kct-lh-lift="1"`）。
+NativeRead 採用單一通用的三層本地管線（無分站分支、無 Adapter），在不增加額外 LLM 呼叫的前提下，完成翻譯範圍篩選、原版字體探測與無縫串流渲染。
 
-### 2.2 雙軌 PDF 原版排版管線
+```mermaid
+flowchart TD
+    A["觸發：彈出視窗 / Alt+T / 右鍵選單 / 站點白名單"] --> B["background/service-worker.js：按需動態注入腳本"]
+    B --> C1
 
-針對瀏覽器呈現 PDF 的兩種方式，NativeRead 維護兩條專用原版排版管線：
+    subgraph L1["Layer 1：決定翻譯什麼 (content/site-analyzer.js)"]
+        C1["findContentRoots + scoreReadabilityContainer"]
+        C1 --> C2["collectUniversalCandidateElements + queryAllDeep (Shadow DOM)"]
+        C2 --> C3["shouldSkipBlock / isMeaningfulLeafText / shouldTranslateText"]
+        C3 -->|"略過"| SKIP["介面元件 / 程式碼 / 已屬目標語言 (0 Token)"]
+        C3 -->|"保留"| C4["extractBlockContent ([[C#]] [[M#]] [[L#]] 保護標記)"]
+        C1 -->|"Drive PDF"| C5["preparePdfOverlayLayers + detectPdfTocEntries"]
+        C1 -->|"程式碼區塊"| C6["content/code-overlay.js：collectCodeComments + 輸出譯鈕"]
+    end
 
-| 處理階段 | 內建 PDF.js 閱讀器（`viewer/pdf-viewer.js`） | Google Drive 頁內覆蓋（`site-analyzer.js` + `renderer.js`） |
+    subgraph L2["Layer 2：決定排版樣式 (本地探測)"]
+        D1["probeTypography + sanitizeFontFamily + detectPageDarkBackground"]
+        D2["Drive PDF：ensurePdfLayerTypography (measurePdfBlockGlyphs) + samplePdfImageColors"]
+    end
+
+    C4 --> D1
+    C6 --> D1
+    C5 --> D2
+
+    D1 --> Q1["IntersectionObserver 視口優先佇列 (rootMargin 600px)"]
+    D2 --> Q1
+    Q1 --> Q2["IndexedDB LRU 快取 (kct_cache_db_v2)"]
+    Q2 -->|"快取命中 (0 Token)"| R1
+    Q2 -->|"快取未命中"| Q3["kct-stream 埠：SSE / NDJSON (最低思考強度 + 429 自適應限流)"]
+    Q3 -->|"NDJSON 串流"| R1
+
+    subgraph L3["Layer 3：原版排版無縫渲染 (content/renderer.js)"]
+        R1["renderJobsWithRAF (每幀最多 15 筆) + Shadow DOM 控制列"]
+        R1 --> R2["applyBlockTranslation + buildTranslatedFragment (零 innerHTML)"]
+        R1 -->|"Drive PDF"| R3["styleAndFitPdfOverlayBlock + appendPdfTocTail"]
+    end
+
+    M1["按需觸發：圖片右鍵 / 懸停「譯圖」按鈕"] --> M2["Service Worker 視覺模型呼叫 → renderImageVisionOverlay"]
+```
+
+- **主內容偵測（`findContentRoots`、`scoreReadabilityContainer`）**：優先辨識嵌入式 Jupyter／Notebook 儲存格（`LESSON_CELL_SELECTOR`）、Google Drive PDF 檢視頁（`.ndfHFb-c4YZDc-cYSp0e-DARUcf`）及語意容器（`article`、`main`、`[role="main"]`、`.markdown-body`、`.prose`、`#mw-content-text`）。容器依 `textLen + pCount * 40` 計分，當 `linkRatio > 0.55` 時降權，文章／文件容器給予 `1.25x` 加權，若內層容器保留 `>= 65%` 文字則收斂至更精準的內層容器，並保留頂層 `#firstHeading` / `h1` 標題。
+- **兩階段 DOM 掃描（`collectUniversalCandidateElements`）**：
+  - *第一階段*：蒐集語意區塊（`h1–h6, p, li, blockquote, td, th, figcaption, summary, dt, dd`），略過巢狀容器，僅選取葉層正文區塊。
+  - *第二階段*：針對現代 SPA 遍歷 `DIV`、`SPAN`、`A`、`LABEL` 與 `BUTTON` 葉節點候選項目，排除 Shadow DOM 宿主、含區塊子元素或互動控制項的節點（`LEAF_FORBIDDEN_DESCENDANT_SELECTOR`）、純中繼資料計數器（`PURE_METADATA_REGEX`），以及僅包裹 `<a href>` 連結的 `div`/`span` 容器。兩階段結果依 DOM 文件順序（`compareDocumentPosition`）合併。
+- **Shadow DOM 遍歷（`queryAllDeep`、`ensureShadowModeStyle`）**：最深遞迴遍歷至第 5 層開啟中的 `shadowRoot`，同時略過程式碼編輯器與 UI 節點（`SHADOW_SKIP_SELECTOR`），並注入 `:host-context(html.kct-mode-*)` 樣式規則，使替換／原文／雙語切換在 Shadow DOM 內同樣生效。
+- **行內保護符記（`extractBlockContent`、`buildTranslatedFragment`）**：將行內程式碼（`code, kbd, var`）替換為 `[[C#]]`，數學公式與引用標記（`.katex, .MathJax, mjx-container, math, .mwe-math-element, sup.reference`）替換為 `[[M#]]`，短／不須翻譯的 `<a href>` 連結（`<= 28` 字元）替換為 `[[L#]]`。渲染器透過 `cloneNode(true)` 複製原始 DOM 節點並還原至 `DocumentFragment`。
+- **語言過濾（`shouldTranslateText`）**：依據 Unicode 字集比例過濾網址、電子郵件、檔案路徑、Jupyter `In[]`/`Out[]` 提示字、單一 ASCII 程式碼識別字，以及原本即為目標語言的文字（針對 `zh-TW`/`zh-CN`，當漢字比例 `>= 0.55` 且拉丁單詞 `< 6` 時略過，但仍會翻譯假名比例 `>= 0.12` 的日文內容）。
+- **字體基因配對（`probeTypography`、`sanitizeFontFamily`、`content/content.css`）**：依計算後的 `fontFamily` 將每個區塊分類為 `serif`、`sans` 或 `mono`，剔除通用 CSS 兜底字體（`serif`、`sans-serif`、`monospace`、`system-ui` 等）使 `--kct-orig-font` 保留最多 5 個網站專屬拉丁字體，再接上對應的目標語言字體堆疊（`var(--kct-orig-font), var(--kct-font-serif|sans|mono)`）。對於未限高且 `lineHeight / fontSize < 1.62` 的密集正文區塊，選擇性提升至 `line-height: 1.72`（`data-kct-lh-lift="1"`）。
+
+### 2.2 雙重 PDF 原生排版管線
+
+NativeRead 針對瀏覽器中不同的 PDF 呈現方式，維護兩套專屬管線：
+
+| 階段 | 內建 PDF.js 閱讀器（`viewer/pdf-viewer.js`） | Google Drive 頁內覆蓋（`site-analyzer.js` + `renderer.js`） |
 | --- | --- | --- |
-| **文字與座標來源** | `pdfPage.getTextContent()` 轉換至 CSS 視口座標；略過旋轉文字（`\|angle\| > 0.25`）。 | `.ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-bN97Pc-haAclf` 內以百分比定位的隱藏 `<p>` 文字層。 |
-| **切欄與段落合併** | 基線聚類、幾何上下標吸收、連續欄溝偵測切欄、跨行連字號還原，以及遞迴 XY-Cut 閱讀順序（Y-Cut → X-Cut → 內谷跨欄拆分）。 | 跨群組同欄合併（`leftDiff <= 3.6%`、`hRatio <= 0.36`）、連字號還原與 `nearestBelowTop` 安全高度夾制；被合併 `<p>` 標記 `data-kct-pdf-merged="absorbed"` 隱藏。 |
-| **公式與目錄處理** | 跳過獨立公式區塊（`isDisplayedMathBlock`）、行內公式以 `[[M#]]` 保護，並將殘留 LaTeX 轉為 Unicode（`cleanLatexMathInText`）。 | `detectPdfTocEntries` 偵測 `>= 3` 列右對齊頁碼的目錄列（誤差 `1.2%` 內），僅翻譯標題並以彈性排版重建 CSS 引導點線（`.kct-pdf-toc-leader`）與等寬頁碼。 |
-| **字級與字重判定** | 由 `styles` 與 `commonObjs` 讀取 PDF 字體中繼資料（`isSerif`、`isBold`、`isItalic`、`isMono`、`isMathFont`）。 | `ensurePdfLayerTypography` 直接量測頁面 `<img>` 光柵的 x-height 墨水帶（拉丁 `0.53` / CJK `0.88`）與筆畫粗細比（`>= 1.3x` 中位數判為粗體），並將相近字級（`1.08x` 容差）聚類對齊。 |
-| **色彩與防撞保護** | 單頁一次 `ctx.getImageData` 取樣邊框中位數底色與 WCAG 對比字色；`refineMaxHeightWithCanvasInk` 向下掃描畫布墨水避免蓋到圖表與線條，並辨識緊湊圖表標籤。 | `samplePdfImageColors` 依各頁 `<img>`（綁定 `img.currentSrc \|\| img.src`）取樣底色與對比修正字色，搭配 `2px` 光暈與 `:hover` 展開檢視。 |
-| **顯示模式** | **原位覆蓋**、**雙欄對照**（畫布＋譯文卡片）、**原版**，並支援點擊段落彈出原文對照與複製。 | **譯文**、**原文**、**雙語**（預設精簡原位顯示，滑鼠懸停展開雙語對照卡片）。 |
+| **文字與幾何來源** | 將 `pdfPage.getTextContent()` 轉換至 CSS 視口座標；略過旋轉文字（`\|angle\| > 0.25`）。 | `.ndfHFb-c4YZDc-cYSp0e-DARUcf-Df1ZY-bN97Pc-haAclf` 內採百分比定位的隱藏 `<p>` 節點。 |
+| **分欄與段落分群** | 基線列聚類、幾何上下標吸收、連續欄間距分欄、斷字還原，以及遞迴 XY-Cut 閱讀順序（Y-Cut → X-Cut → 內部 X 谷跨欄切分）。 | 跨群組同欄合併（`leftDiff <= 3.6%`、`hRatio <= 0.36`）、斷字還原與 `nearestBelowTop` 安全高度限制；被吸收的 `<p>` 透過 `data-kct-pdf-merged="absorbed"` 隱藏。 |
+| **公式與目錄處理** | 略過獨立公式（`isDisplayedMathBlock`）、以 `[[M#]]` 保護行內公式，並將溢出的 LaTeX 正規化為 Unicode（`cleanLatexMathInText`）。 | `detectPdfTocEntries` 偵測 `>= 3` 筆靠右對齊的目錄列（誤差 `1.2%` 內），僅翻譯標題並以 CSS 點線導引（`.kct-pdf-toc-leader`）與等寬頁碼重建原生 flex 版面。 |
+| **字體與字重量測** | 從 `styles` 與 `commonObjs` 讀取 PDF 字體中繼資料（`isSerif`、`isBold`、`isItalic`、`isMono`、`isMathFont`）。 | `ensurePdfLayerTypography` 直接從頁面 `<img>` 點陣圖量測 x-height 筆畫帶（拉丁 `0.53` / 中日韓 `0.88`）與筆畫比例（`>= 1.3x` 中位數判定為粗體），並將相近字級（`1.08x` 容差）聚類為共同中位數。 |
+| **色彩與碰撞防護** | 每頁單次 `ctx.getImageData` 取樣外框中位數背景色 `bg` 與符合 WCAG 對比的前景色 `fg`；`refineMaxHeightWithCanvasInk` 掃描段落下方以避免覆蓋圖表／分隔線，並辨識精簡圖表標籤。 | `samplePdfImageColors` 從每頁 `<img>`（綁定 `img.currentSrc \|\| img.src`）取樣外框中位數 `bg` 與高對比 `fg`，並加上 `2px` 陰影光暈與 `:hover` 展開效果。 |
+| **顯示模式** | **Overlay（覆蓋）**、**Split（畫布＋譯文卡片）**、**Original（原文）**，並支援點擊原文對照氣泡。 | **Replace（替換）**、**Original（原文）** 與 **Bilingual（雙語，精簡覆蓋並於懸停時展開雙語卡片）**。 |
 
-### 2.3 按需多模態圖片原位覆蓋管線
+### 2.3 按需多模態圖片覆蓋管線
 
-1. **使用者明確觸發**：僅在使用者對圖片點右鍵（**NativeRead 翻譯圖片文字**）或懸停大圖（`>= 200x140` px，排除導覽列與 Google Drive PDF 底圖）點擊 **譯圖** 時啟動。
-2. **背景擷取與智慧縮放（`background/service-worker.js`）**：`prepareImagePayloadForVision` 於 Service Worker 背景下載 `http(s):` 圖片（繞過頁面 Canvas CORS 限制；上限 16 MB、20 秒逾時、魔術位元組 MIME 偵測），或接收本機／`blob:` 圖片的 `data:` URL。透過 `createImageBitmap` + `OffscreenCanvas` 建立 `~480px` 保留透明通道的取樣緩衝區，並對超過 `1600px` 或 `4 MB` 的圖片自動縮放重編碼。
-3. **多模態推論與取色**：`callVisionImageLLM` 單次呼叫多模態端點（Gemini `inlineData` 或 OpenAI `image_url`，60 秒逾時），回傳 0–1000 座標的 `{"blocks":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","role":"title|badge|body"}]}`。`sampleImageBoxColors` 計算每個區塊的邊框主色 `bg` 與符合 WCAG 對比的字色 `fg`，並以 SHA-256 摘要與正規化網址雙鍵寫入 IndexedDB 快取。
-4. **原位覆蓋渲染（`content/renderer.js`）**：`renderImageVisionOverlay` 建立 `.kct-img-overlay-host` 與對齊圖片邊界的 `.kct-img-overlay-layer`，依角色繪製譯文區塊並自適應縮放字級（`fitVisionOverlayBlock`），支援隨時切換 **原圖 / 顯示譯圖**。
+1. **明確的使用者觸發**：僅在使用者對圖片按右鍵（**NativeRead 翻譯圖片文字**）或點擊懸停膠囊（**譯圖**），且內容圖片尺寸 `>= 200x140` px 時啟動（自動排除導覽列／頁首／頁尾與 Google Drive PDF 頁面點陣圖）。
+2. **背景擷取與縮放（`background/service-worker.js`）**：`prepareImagePayloadForVision` 由 Service Worker 直接下載 `http(s):` 圖片（避開頁面 Canvas CORS 汙染；上限 16 MB、20 秒逾時、魔術位元組 MIME 偵測），或接受本地／blob 圖片的 `data:` URL。透過 `createImageBitmap` + `OffscreenCanvas` 建立 `~480px` 保留透明通道的取樣緩衝區，並對超過 `1600px` 或 `4 MB` 的圖片重新編碼。
+3. **結構化視覺推論、筆畫邊界微調與色彩取樣**：`callVisionImageLLM` 送出單次多模態請求（支援 Gemini `inlineData`、OpenAI `image_url` 或 Anthropic Messages base64 `image` 區塊；60 秒逾時，並固定至少使用 `balanced` 思考強度以提升框選穩定度），回傳 0–1000 座標系的 `{"blocks":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","role":"title|badge|body"}]}`。`refineImageBoxToInk` 會依筆畫將各邊向外擴展最多約 `0.6 ×` 單行高度，以包覆模型裁切到的字形邊緣，同時僅跨越字距並在實心邊框或插畫邊緣停止。`sampleImageBoxColors` 為每個文字框計算外框眾數 `bg` 與通過 WCAG 檢查的內部 `fg`，移除中日韓字元間多餘的空白或換行，並以帶版本號的 `img:v4:` 鍵值（同時索引 SHA-256 雜湊與正規化 URL）存入 IndexedDB。
+4. **原地覆蓋渲染（`content/renderer.js`）**：`renderImageVisionOverlay` 以 `.kct-img-overlay-host` 包裹 `<img>`，將 `.kct-img-overlay-layer` 精準對齊圖片尺寸，使用自適應縮字（`fitVisionOverlayBlock`）配置各區塊並統一相同角色（`title` / `badge` / `body`）標籤的字體大小，並提供隨時切換 **原圖 / 顯示譯圖** 的按鈕。
 
-### 2.4 串流傳輸、視口懶載入、限流與 LRU 快取
+### 2.4 串流傳輸、視窗懶載入、限流控制與 LRU 快取
 
-- **SSE / NDJSON 串流與韌性降級**：內容腳本與 PDF 閱讀器透過 `kct-stream` 長連線 Port 與 Service Worker 通訊。背景端串流解析 Gemini（`:streamGenerateContent?alt=sse`）或 OpenAI（`stream: true`）的逐行 NDJSON（`{"i":0,"t":"..."}`，使用 `createIncrementalJsonScanner`）；若漏項或串流失敗則自動降級為批次 JSON（`TRANSLATE_BATCH`）並支援遞迴二分重試（`translateItemsWithFallback`，最多 3 層）。
-- **rAF 微批次上屏與視口懶載入**：網頁串流結果透過 `renderJobsWithRAF` 以每幀最多 `15` 項寫入 DOM（支援時搭配 `scheduler.yield()` 讓出主執行緒）。視口外段落交由 `IntersectionObserver`（網頁 `rootMargin: 600px 0px`；PDF.js `500px 0px`）捲動按需排程，視口優先排序並以最多 `3` 個並行批次工作執行（預設 `batchSize: 20`、`maxBatchChars: 5500`）。
-- **跨頁框 429 自適應限流器**：`background/service-worker.js` 全域控管跨頁框併發數上限為 `3`。遭遇 HTTP `429` 時解析 `Retry-After` / `retryDelay`，啟動 90 秒自適應節流（併發降至 `1`、請求間隔 `4.3s`）與全域冷卻，並區分每日／零配額上限（`QUOTA_EXCEEDED`）與短期頻率限制（`RATE_LIMITED`）。
-- **IndexedDB LRU 快取（`shared/cache-db.js`）**：於 `kct_cache_db_v2`（`entries` 資料表、`ts` 索引）儲存最多 `20,000` 筆譯文，快取鍵包含 `protocol:model:thinkingEffort:targetLang:customLang:glossaryHash`。命中時節流更新 `ts`（`60s` 門檻、`250ms` 防抖），超量時依 `ts` 游標淘汰最久未使用項目。
+- **SSE / NDJSON 串流與彈性降級**：內容腳本與 PDF 閱讀器透過長連線埠 `kct-stream` 連線。Service Worker 串流接收 Gemini（`:streamGenerateContent?alt=sse`）、OpenAI（`stream: true`）或 Anthropic Messages SSE 的 NDJSON 行（`{"i":0,"t":"..."}`），並由 `createIncrementalJsonScanner` 逐筆解析。若出現漏項或串流中斷，自動降級為批次 JSON（`TRANSLATE_BATCH`）並啟用遞迴二分重試（`translateItemsWithFallback`，最深 3 層）。
+- **rAF 微批次與視窗懶載入**：串流回傳的網頁譯文經由 `renderJobsWithRAF` 以每動畫影格最多 `15` 筆的切片寫入 DOM（瀏覽器支援時於切片間呼叫 `scheduler.yield()`）。可視範圍外的區塊透過 `IntersectionObserver` 延遲載入（網頁 `rootMargin: 600px 0px`；PDF.js `500px 0px`），以視窗優先順序排入佇列，並以最多 `3` 個並行批次工作執行緒處理（`batchSize: 20`、`maxBatchChars: 5500`）。
+- **跨影格 429 自適應限流器**：`background/service-worker.js` 在所有分頁／影格間強制套用全域並行上限 `3`。遇 HTTP `429` 時解析 `Retry-After` / `retryDelay`，啟動 90 秒自適應降速視窗（並行數降為 `1`、請求間隔 `4.3s`）與全域冷卻，並區分每日／零額度耗盡（`QUOTA_EXCEEDED`）與暫時性每分鐘限流（`RATE_LIMITED`）。
+- **IndexedDB LRU 快取（`shared/cache-db.js`）**：於 `kct_cache_db_v2`（資料表 `entries`，依 `ts` 建立索引）儲存最多 `20,000` 筆紀錄，快取鍵值包含 `protocol:model:thinkingEffort:targetLang:customLang:glossaryHash`。命中快取時以防抖方式更新 `ts`（`60s` 門檻、`250ms` 防抖），確保容量溢出時優先淘汰最久未使用的紀錄。
 
-### 2.5 專案目錄結構
+### 2.5 專案結構
 
 ```text
 native-read/
-├── manifest.json                 # MV3 清單、權限與 Alt+T 快捷鍵（無靜態 content_scripts）
+├── manifest.json                 # MV3 manifest、版本號單一來源、權限與 Alt+T 快捷鍵
 ├── shared/
-│   ├── config.js                 # Schema v5 設定、服務商預設、思考強度解析、網址與 PDF 工具
-│   └── cache-db.js               # IndexedDB kct_cache_db_v2 20,000 筆 LRU 快取層
+│   ├── config.js                 # Schema v5 設定、供應商預設值、思考參數、URL/PDF 工具
+│   └── cache-db.js               # IndexedDB kct_cache_db_v2（20,000 筆 LRU 快取）
 ├── background/
-│   └── service-worker.js         # 按需注入器、SSE/NDJSON 串流、429 限流器、視覺引擎與 #nr_sync 驗證
+│   └── service-worker.js         # 動態注入器、SSE/NDJSON 串流、429 限流、視覺引擎、#nr_sync 防護
 ├── content/
-│   ├── site-analyzer.js          # 本地決策模型（Readability、雙階段 SPA、Shadow DOM、Drive PDF 合併/目錄）
-│   ├── code-overlay.js           # 靜態 <pre> 註解替換、CodeMirror 6 疊加層、Jupyter 輸出翻譯
-│   ├── renderer.js               # 安全 DOM 渲染、字體基因配對、Drive PDF 光柵量測、圖片覆蓋層
-│   ├── content.js                # 視口懶載入佇列、kct-stream 客戶端、Shadow DOM 懸浮／劃詞／譯圖 UI
-│   └── content.css               # 譯文／原文／雙語模式、多語字體堆疊、Drive PDF 與圖片覆蓋樣式
+│   ├── site-analyzer.js          # 本地決策模型（Readability、兩階段 SPA、Shadow DOM、Drive PDF 合併／目錄）
+│   ├── code-overlay.js           # 靜態 <pre> 註解替換、CodeMirror 6 覆蓋層、Jupyter 輸出翻譯
+│   ├── renderer.js               # 安全 DOM 渲染、字體基因配對、Drive PDF 點陣量測、圖片覆蓋層
+│   ├── content.js                # 視窗懶載入佇列、kct-stream 用戶端、Shadow DOM 膠囊／選取／圖片 UI
+│   └── content.css               # 替換／原文／雙語模式、字體堆疊、Drive PDF 與圖片覆蓋樣式
 ├── viewer/                       # 內建 PDF.js 閱讀器（pdf-viewer.html / .css / .js）
-├── popup/                        # 擴充功能彈窗控制、白名單切換與 PDF 閱讀器入口
-├── options/                      # 設定頁、模型與術語表配置、本機 QR 同步與快取管理
+├── popup/                        # 擴充功能彈出視窗、白名單切換、更新通知、PDF 閱讀器啟動鈕
+├── options/                      # 設定頁、供應商／模型設定、術語表、本地 QR 同步、快取管理
 ├── icons/                        # 擴充功能圖示（16 / 48 / 128 px）
 ├── scripts/
-│   └── build-mobile.js           # 自動產出 docs/nativeread.user.js、Android ZIP 並同步 PDF.js 與圖示
-├── docs/                         # GitHub Pages 手機版 PWA（index.html、app.js、app.css、sw.js 與建置產物）
-├── LICENSE                       # MIT License
-└── README*.md                    # 多語系產品介紹、技術規格與安全文件
+│   └── build-mobile.js           # 同步版本號；產出 Userscript、meta.js、version.json、Android ZIP 與 PDF.js／圖示
+├── docs/                         # GitHub Pages 行動版 PWA（index.html、app.js、app.css、sw.js 與建置產物）
+├── LICENSE                       # MIT 授權條款
+└── README*.md                    # 多語系產品、架構與安全說明文件
 ```
 
 ---
 
 ## 3. 隱私與安全架構
 
-| 安全面向 | 實作細節 |
+| 面向 | 實作方式 |
 | --- | --- |
-| **完全本機儲存** | 擴充功能設定與 API Key 僅存於 `chrome.storage.local`（`kct_settings_v1`）；PWA 存於 `localStorage`；Userscript 存於 `GM_getValue`/`GM_setValue`（降級 `localStorage`）。譯文快取存於本機 IndexedDB（`kct_cache_db_v2`），可隨時一鍵清除。 |
-| **直連模型端點** | 擴充功能與 Userscript 僅直連你設定的模型端點，API Key 嚴格置於 HTTP Header（`x-goog-api-key` 或 `Authorization: Bearer`），錯誤訊息皆經 `redactApiKey` 遮罩；遠端 PDF 與按需圖片由 Service Worker 直接向來源網址下載。 |
-| **`#nr_sync` 錨點安全機制** | 同步負載僅編碼於 URL `#` Fragment（絕不使用 `?query`），依 HTTP 規範不會傳送至伺服器。`background/service-worker.js` 嚴格限制僅接受擴充自身來源或官方 PWA（`https://chih-kai-wang.github.io/native-read`），未附帶明確 `apiKey` 時拒絕變更 `baseUrl` / `protocol` / `providerId`，驗證 `http:`/`https:` 協定，並於匯入後立即以 `history.replaceState` 抹除錨點。 |
-| **零 `innerHTML` 防 XSS** | 所有譯文、彈窗與覆蓋層文字皆透過 `document.createTextNode` 與 `.textContent` 寫入；行內佔位符（`[[C#]]`、`[[M#]]`、`[[L#]]`）僅複製頁面既有原始 DOM 節點。 |
-| **MV3 CSP 與 PDF.js 加固** | PDF.js 完全本機化打包，且於 `viewer/pdf-viewer.js` 與 `docs/app.js` 皆停用 `eval` 探測（`isEvalSupported: false`）。Service Worker 關鍵控制訊息（`ENSURE_AND_COMMAND`、`TEST_CONNECTION`、`OPEN_PDF_VIEWER`、`GET_SW_DEBUG`、`CLEAR_CACHE`）強制驗證 `isExtensionSender(sender)`。 |
-| **介面與 QR 碼隔離** | 懸浮控制列、劃詞彈窗、圖片懸停按鈕與 Userscript 介面均封裝於 Shadow DOM（`all: initial`）。手機同步 QR Code 於設定頁純本機端繪製，不將金鑰傳送至任何外部 QR 服務。 |
+| **本地儲存** | 擴充功能設定與 API 金鑰僅存於 `chrome.storage.local`（`kct_settings_v1`）；PWA 設定存於 `localStorage`；Userscript 存於 `GM_getValue`/`GM_setValue`（降級使用 `localStorage`）。翻譯快取存於本地 IndexedDB（`kct_cache_db_v2`），隨時可清除。 |
+| **網路端點** | 擴充功能與 Userscript 流量皆直連您設定的 LLM 端點——包含您所選用的 `api.anthropic.com` 或 Azure OpenAI 主機——API 金鑰嚴格置於 HTTP 標頭中（`x-goog-api-key`、`Authorization: Bearer`；Anthropic 使用 `x-api-key` + `anthropic-version: 2026-10-21` + `anthropic-dangerous-direct-browser-access: true`；Azure 使用 `api-key`），並從錯誤訊息中遮罩移除（`redactApiKey`）。遠端 PDF 與按需翻譯的圖片由 Service Worker 直接向來源網址擷取。 |
+| **版本更新檢查** | 僅在開啟擴充功能彈出視窗且啟用 `checkForUpdates`（預設開啟）時，每 24 小時最多向 `https://chih-kai-wang.github.io/native-read/version.json` 發送一次請求（結果快取於 `chrome.storage.local` 鍵值 `nr_update_check_v1`，5 秒逾時、`credentials: 'omit'`、無須額外權限、無背景計時器）。回傳 JSON 經嚴格驗證且絕不作為跳轉網址；更新連結固定指向 GitHub README。於設定頁取消勾選 `checkForUpdates` 即可完全停用。 |
+| **`#nr_sync` 片段處理** | 同步資料僅置於網址 `#` 片段（絕不使用 `?query`），瀏覽器不會將其隨 HTTP 請求送出。`background/service-worker.js` 僅接受來自擴充功能來源或 `https://chih-kai-wang.github.io/native-read` 的 `#nr_sync`，若未同時提供明確的 `apiKey` 則拒絕變更端點（`baseUrl` / `protocol` / `providerId`），驗證 `http:`/`https:` 協定，並立即以 `history.replaceState` 清除片段。 |
+| **零 `innerHTML` DOM 安全** | 所有譯文、彈出氣泡與覆蓋層皆透過 `document.createTextNode` 與 `.textContent` 寫入。行內佔位符（`[[C#]]`、`[[M#]]`、`[[L#]]`）僅還原既有 DOM 節點的複製體。 |
+| **MV3 CSP 與 PDF.js 加固** | `viewer/pdf-viewer.js` 與 `docs/app.js` 均使用本地打包的 PDF.js 並設定 `isEvalSupported: false`。高權限 Service Worker 操作（`ENSURE_AND_COMMAND`、`TEST_CONNECTION`、`OPEN_PDF_VIEWER`、`GET_SW_DEBUG`、`CLEAR_CACHE`）皆強制檢查 `isExtensionSender(sender)`。 |
+| **UI 與 QR 隔離** | 浮動膠囊、選取翻譯氣泡、圖片懸停按鈕與 Userscript 控制項皆隔離於 Shadow DOM（`all: initial`）中。同步 QR Code 於設定頁本地生成，不呼叫外部 QR 服務。 |
 
-> **關於手機版 PWA（`docs/app.js`）的跨網域說明**：針對 PDF 網址，NativeRead 採取僅直連政策——移除舊版 `api.allorigins.win` CORS 代理降級，改為直連搭配逾時提示並引導下載後開啟本機檔案，避免私密 PDF 網址或內容經過第三方伺服器。PWA 的選用 **網頁翻譯** 分頁目前在擷取跨網域公開網頁時（`fetchReadableArticleFromUrl`）會透過 `r.jina.ai`（降級 `api.allorigins.win`）解析正文；若你在手機端需要 100% 零第三方中繼，請改用該分頁的「直接貼上外文段落」，或安裝 Userscript／Android 擴充功能。
+> **行動版 PWA（`docs/app.js`）備註**：針對 PDF 網址，NativeRead 會解析 Google Drive 連結並僅採瀏覽器直接擷取（15 秒完整下載逾時、不經過 `api.allorigins.win` 中繼，並提供「在新分頁開啟 PDF」備援按鈕與本地檔案指引），確保私人 PDF 網址與內容不會送往第三方中繼服務。在 PWA 選用的 **Web URL** 分頁中，跨來源公開文章擷取（`fetchReadableArticleFromUrl`）目前使用 `r.jina.ai`（並以 `api.allorigins.win` 作為備援）；若您在行動端要求完全不經第三方中繼，請於網頁分頁直接貼上文章內容，或改用 Userscript／Android 擴充功能。
 
 ---
 
 ## 開發與建置
 
-執行手機端建置腳本並對全部 JavaScript 檔案進行語法檢查：
+建置行動端發佈產物並對所有 JavaScript 檔案執行語法檢查：
 
 ```bash
 node scripts/build-mobile.js
 for f in shared/*.js background/*.js content/*.js popup/*.js options/*.js viewer/*.js scripts/*.js docs/app.js docs/sw.js docs/nativeread.user.js; do node --check "$f" || exit 1; done
 ```
 
-`docs/nativeread.user.js`、`docs/nativeread-android-extension.zip`、`docs/vendor/pdfjs/`、`docs/icons/` 與 `docs/.nojekyll` 皆為 `scripts/build-mobile.js` 自動產生之檔案——請直接修改 `shared/`、`content/`、`viewer/` 與 `docs/app.js` 原始碼後重新執行建置腳本。
+`manifest.json` 中的 `"version"` 為版本號單一來源（`MAJOR.MINOR.PATCH`）。執行 `node scripts/build-mobile.js` 會驗證格式並自動寫入 Userscript 的 `@version`、`docs/sw.js` 的 `CACHE_NAME`（`nativeread-pwa-v<version>`），以及 `docs/index.html` 的 PWA 版本徽章。
+
+`docs/nativeread.user.js`、`docs/nativeread.meta.js`、`docs/version.json`、`docs/nativeread-android-extension.zip`、`docs/vendor/pdfjs/`、`docs/icons/` 與 `docs/.nojekyll` 皆由 `scripts/build-mobile.js` 自動產生——請編輯 `shared/`、`content/`、`viewer/` 與 `docs/app.js` 下的原始模組後再重新執行建置腳本。
+
+**發佈流程（維護者）**：更新 `manifest.json` 的 `"version"` → 執行 `node scripts/build-mobile.js` → 提交並推送至遠端，GitHub Pages 即會提供最新的 PWA、Userscript、中繼檔、`version.json` 與 Android ZIP。
+
+---
+
+## 規劃中與尚未支援項目
+
+- **瀏覽器擴充功能商店**：尚未上架 Chrome Web Store 或 Edge Add-ons；桌面版目前需透過 **載入未封裝項目** 安裝，尚無商店自動更新。
+- **雲端 PDF 連結轉換**：尚未支援 Dropbox、OneDrive 與 Box 的 PDF 連結轉換（目前已支援 Google Drive 連結）。
+- **其他媒體與文件格式**：尚未支援影片字幕翻譯、掃描版 PDF OCR，以及 EPUB 或 Office 文件。
+- **介面多語系化**：擴充功能與 PWA 的操作介面文字目前僅提供繁體中文。
+- **其他桌面瀏覽器**：尚未正式支援桌面版 Firefox 與 Safari。
 
 ---
 
 ## 授權條款
 
-本專案採用 [MIT License](LICENSE) 開源釋出；隨附之 PDF.js（`vendor/pdfjs/` 與 `docs/vendor/pdfjs/`）遵循 Apache-2.0 License（見 [docs/vendor/pdfjs/LICENSE](docs/vendor/pdfjs/LICENSE)）。
+本專案採 [MIT 授權條款](LICENSE) 釋出。隨附之 PDF.js（`vendor/pdfjs/` 與 `docs/vendor/pdfjs/`）採 Apache-2.0 授權條款（詳見 [docs/vendor/pdfjs/LICENSE](docs/vendor/pdfjs/LICENSE)）。

@@ -151,6 +151,9 @@ function buildUserscript(version) {
     resolveTargetLanguage,
     resolveEndpoint,
     resolveStreamEndpoint,
+    buildProviderAuthHeaders,
+    buildAnthropicMessagesBody,
+    extractAnthropicStreamDelta,
     resolveThinkingConfig,
     normalizeHostname,
     isHostWhitelisted,
@@ -454,6 +457,15 @@ function buildUserscript(version) {
       }
       return out;
     }
+    if (protocol === 'anthropic') {
+      if (chunkObj.type === 'message' && Array.isArray(chunkObj.content)) {
+        return chunkObj.content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text)
+          .join('');
+      }
+      return extractAnthropicStreamDelta(chunkObj).text;
+    }
     const c = chunkObj?.choices?.[0];
     return c?.delta?.content || c?.message?.content || '';
   }
@@ -481,8 +493,17 @@ function buildUserscript(version) {
         headers,
         body: JSON.stringify(body)
       };
+    } else if (settings.protocol === 'anthropic') {
+      // Claude Messages API (no temperature / thinking fields; JSON is requested in the prompt)
+      const body = buildAnthropicMessagesBody(settings, messages, { stream: Boolean(stream), maxTokens: 32000 });
+      return {
+        url: resolveEndpoint(settings),
+        headers: buildProviderAuthHeaders(settings, cleanKey),
+        body: JSON.stringify(body)
+      };
     } else {
-      if (cleanKey) headers['Authorization'] = \`Bearer \${cleanKey}\`;
+      // OpenAI-compatible; Azure OpenAI endpoints get the api-key header
+      Object.assign(headers, buildProviderAuthHeaders(settings, cleanKey));
       const model = String(settings.model || '').trim();
       const body = { model, messages, stream: Boolean(stream) };
       if (!/^o[134](?:-|$)|deepseek-reasoner|^r1\\b/i.test(model)) {

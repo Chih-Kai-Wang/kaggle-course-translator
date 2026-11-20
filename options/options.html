@@ -67,6 +67,10 @@
           <input id="show-output-btn" type="checkbox">
           <span>互動式程式碼輸出旁顯示「譯」按鈕</span>
         </label>
+        <label class="inline-check">
+          <input id="check-for-updates" type="checkbox">
+          <span>開啟彈出視窗時檢查新版本（每天最多一次，只讀取 GitHub Pages 上的 version.json）</span>
+        </label>
       </div>
     </section>
 
@@ -85,6 +89,7 @@
           <select id="protocol-select">
             <option value="openai">OpenAI 相容</option>
             <option value="gemini">Google Gemini 原生</option>
+            <option value="anthropic">Anthropic Claude 原生</option>
           </select>
         </div>
         <div class="field">

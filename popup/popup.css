@@ -449,3 +449,23 @@ input[type="checkbox"]:focus-visible {
     align-items: center;
   }
 }
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  font-size: 12px;
+}
+
+.update-banner .link-btn {
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}

@@ -15,7 +15,11 @@ const {
   isHostWhitelisted,
   isInjectableUrl,
   isFilePdfUrl,
-  isPdfUrl
+  isPdfUrl,
+  buildProviderAuthHeaders,
+  buildAnthropicMessagesBody,
+  extractAnthropicText,
+  extractAnthropicStreamDelta
 } = globalThis.KCTConfig;
 
 const CacheDB = globalThis.KCTCacheDB;
@@ -610,12 +614,19 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
           body: JSON.stringify(body),
           signal: controller.signal
         });
+      } else if (settings.protocol === 'anthropic') {
+        // Claude Messages API: JSON output is requested in the prompt (no prefill, no response_format)
+        const headers = buildProviderAuthHeaders(settings, sanitizeApiKey(settings.apiKey));
+        const body = buildAnthropicMessagesBody(settings, messages, { stream: false, maxTokens: 16000 });
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
       } else {
-        const headers = { 'Content-Type': 'application/json' };
-        const cleanKey = sanitizeApiKey(settings.apiKey);
-        if (cleanKey) {
-          headers['Authorization'] = `Bearer ${cleanKey}`;
-        }
+        // OpenAI-compatible (Azure OpenAI endpoints get the `api-key` header)
+        const headers = buildProviderAuthHeaders(settings, sanitizeApiKey(settings.apiKey));
         const body = buildOpenAIRequestBody(settings, endpoint, messages, { expectJson, stream: false });
         response = await fetch(endpoint, {
           method: 'POST',
@@ -691,6 +702,12 @@ async function callLLMChat(settings, messages, expectJson = true, externalSignal
             ? redactApiKey(data.error.message, settings.apiKey)
             : `Gemini 未返回文本內容${reason}`;
           throw new Error(msg);
+        }
+        return text;
+      } else if (settings.protocol === 'anthropic') {
+        const text = extractAnthropicText(data);
+        if (!text) {
+          throw new Error('Claude 未返回文本內容');
         }
         return text;
       } else {
@@ -956,6 +973,16 @@ function extractStreamTextDelta(protocol, chunkObj) {
     }
     return out;
   }
+  if (protocol === 'anthropic') {
+    // Non-SSE fallback returns a whole message; SSE returns one event per line
+    if (chunkObj.type === 'message' && Array.isArray(chunkObj.content)) {
+      return chunkObj.content
+        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join('');
+    }
+    return extractAnthropicStreamDelta(chunkObj).text;
+  }
   const choice = chunkObj?.choices?.[0];
   if (!choice) return '';
   if (typeof choice?.delta?.content === 'string') {
@@ -1044,11 +1071,17 @@ async function streamTranslateItems(settings, items, pageContext, onItem, extern
           body: JSON.stringify(body),
           signal: controller.signal
         });
+      } else if (settings.protocol === 'anthropic') {
+        const headers = buildProviderAuthHeaders(settings, cleanKey);
+        const body = buildAnthropicMessagesBody(settings, messages, { stream: true, maxTokens: 32000 });
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
       } else {
-        const headers = { 'Content-Type': 'application/json' };
-        if (cleanKey) {
-          headers['Authorization'] = `Bearer ${cleanKey}`;
-        }
+        const headers = buildProviderAuthHeaders(settings, cleanKey);
         const body = buildOpenAIRequestBody(settings, endpoint, messages, { expectJson: false, stream: true });
         response = await fetch(endpoint, {
           method: 'POST',
@@ -2052,7 +2085,7 @@ async function tryImportNrSyncFromUrl(urlStr) {
       patch.apiKey = sanitizeApiKey(rawKey);
       if (providerId) patch.providerId = providerId;
       const protocol = rawProtocol || preset?.protocol || '';
-      if (protocol === 'openai' || protocol === 'gemini') {
+      if (protocol === 'openai' || protocol === 'gemini' || protocol === 'anthropic') {
         patch.protocol = protocol;
       }
       const resolvedBaseUrl = rawBaseUrl || preset?.baseUrl || '';
@@ -3319,14 +3352,29 @@ async function callVisionImageLLM(settings, systemPrompt, userPrompt, mimeType, 
           generationConfig
         })
       });
+    } else if (settings.protocol === 'anthropic') {
+      const headers = buildProviderAuthHeaders(settings, cleanKey);
+      const bodyObj = buildAnthropicMessagesBody(
+        { ...settings, thinkingEffort: visionEffort },
+        [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        { stream: false, maxTokens: 16000, image: { mimeType, base64: base64Data } }
+      );
+      resp = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify(bodyObj)
+      });
     } else {
       const model = String(settings.model || '').trim();
       const effort = settings.thinkingEffort || 'fastest';
       const isOpenAIReasoning = /^o[134](?:-|$)/i.test(model);
       const isDeepSeekReasoner = /deepseek-reasoner|^r1\b/i.test(model);
 
-      const headers = { 'Content-Type': 'application/json' };
-      if (cleanKey) headers.Authorization = `Bearer ${cleanKey}`;
+      const headers = buildProviderAuthHeaders(settings, cleanKey);
       const bodyObj = {
         model,
         messages: [
@@ -3440,6 +3488,8 @@ async function callVisionImageLLM(settings, systemPrompt, userPrompt, mimeType, 
         .map((p) => (typeof p.text === 'string' ? p.text : ''))
         .join('\n')
         .trim();
+    } else if (settings.protocol === 'anthropic') {
+      outText = String(extractAnthropicText(data) || '').trim();
     } else {
       outText = String(data?.choices?.[0]?.message?.content || '').trim();
     }

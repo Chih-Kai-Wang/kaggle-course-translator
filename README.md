@@ -2,7 +2,7 @@
 
 **English** · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
-**NativeRead (v2.2.0)** is a Manifest V3 browser extension and mobile PWA that translates web pages, PDFs, code comments, and embedded infographics while preserving the original page typography and layout. It stays silent by default, runs on demand with your own LLM API key, and streams translations paragraph by paragraph without breaking reading rhythm.
+**NativeRead (v2.4.0)** is a Manifest V3 browser extension and mobile PWA that translates web pages, PDFs, code comments, and embedded infographics while preserving the original page typography and layout. It stays silent by default, runs on demand with your own LLM API key, and streams translations paragraph by paragraph without breaking reading rhythm.
 
 ---
 
@@ -46,17 +46,28 @@ Configured in `shared/config.js` (`PROVIDER_PRESETS`). Local endpoints (`localho
 | `moonshot` | OpenAI | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
 | `zhipu` | OpenAI | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
 | `openrouter` | OpenAI | `https://openrouter.ai/api/v1` | `google/gemini-2.5-flash` |
+| `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` | `claude-opus-5-5` |
+| `azure` | OpenAI (api-key header) | `https://YOUR-RESOURCE.openai.azure.com/openai/v1` | Deployment name |
 | `custom` | OpenAI | `http://localhost:11434/v1` | `qwen2.5:7b` |
 
+- **Anthropic Claude (`anthropic`)**: Uses the native Messages API across the extension, Userscript, and PWA (streaming SSE, batch/single translation, Test Connection, and on-demand image translation via base64 image blocks), with suggested models `claude-sonnet-5-5` and `claude-haiku-5-5`. Checks `stop_reason` so refusals surface as clear errors.
+- **Azure OpenAI (`azure`)**: Supports `*.openai.azure.com`, `*.services.ai.azure.com`, and `*.cognitiveservices.azure.com` endpoints; enter your deployment name in the model field, and the API key is automatically sent in the `api-key` header.
+- **Verification note**: Anthropic Claude and Azure OpenAI support were verified with offline fixture tests (endpoint, headers, request body, and response/stream parsing) but have not yet been tested against the live APIs.
 - **Target languages**: `zh-TW` (default), `zh-CN`, `ja`, `ko`, `es`, `fr`, `de`, `vi`, `pt`, plus custom language prompts.
-- **Thinking effort (`thinkingEffort`)**: `fastest` (default), `balanced`, or `deep`. Automatically maps Gemini 3.x/4.x to `thinkingLevel` (`MINIMAL` / `LOW` / `MEDIUM`), Gemini 2.5 Flash to `thinkingBudget` (`0` / `512` / `2048`), OpenAI `o1`/`o3`/`o4` to `reasoning_effort: "low"`, and DashScope `qwen3` to `enable_thinking: false` in `fastest` mode while stripping `thought` parts from responses.
+- **Thinking effort (`thinkingEffort`)**: `fastest` (default), `balanced`, or `deep`. Automatically maps Gemini 3.x/4.x to `thinkingLevel` (`MINIMAL` / `LOW` / `MEDIUM`), Gemini 2.5 Flash to `thinkingBudget` (`0` / `512` / `2048`), OpenAI `o1`/`o3`/`o4` to `reasoning_effort: "low"`, DashScope `qwen3` to `enable_thinking: false` in `fastest` mode while stripping `thought` parts from responses, and Anthropic Claude to `output_config.effort` (`low` / `medium` / `high`) on models that support it without sending `temperature`, `top_p`, `top_k`, or a thinking config.
 
 ### Mobile & Cross-Platform Support
 
-- **Mobile PWA (`https://chih-kai-wang.github.io/native-read/`)**: Installable to the Home Screen on iOS Safari and Android Chrome. Includes a mobile PDF.js reader (overlay / split / original), a Web URL & direct-paste article translator, an offline App Shell (`docs/sw.js`), and local IndexedDB caching.
+- **Mobile PWA (`https://chih-kai-wang.github.io/native-read/`)**: Installable to the Home Screen on iOS Safari and Android Chrome. Includes a mobile PDF.js reader (overlay / split / original, with Google Drive link resolution, a 15 s full-download timeout, and an "open PDF in a new tab" fallback button), a Web URL & direct-paste article translator, streaming translation across supported providers including Claude, an offline App Shell (`docs/sw.js`), and local IndexedDB caching.
 - **Universal Userscript (`https://chih-kai-wang.github.io/native-read/nativeread.user.js`)**: Runs in iOS Safari (via *Stay* or *Userscripts*) and Android browsers (*Tampermonkey*, *Lemur*, *Kiwi*, *Firefox*). Injects a draggable Shadow DOM `NR` edge tab and falls back to `GM_xmlhttpRequest` when strict page CSPs block `fetch`.
 - **Android Extension ZIP (`https://chih-kai-wang.github.io/native-read/nativeread-android-extension.zip`)**: Full MV3 package for Chromium-based Android browsers (*Lemur*, *Kiwi*, *Quetta*, *Edge Android*) with touch selection translation (`touchend` / `selectionchange`).
 - **Local QR-Code `#nr_sync` Sync**: Generate a sync link and QR code in the desktop Options page; scanning it on mobile imports your provider, API key, model, and preferences into the PWA, Userscript, or Android extension and immediately wipes the URL fragment.
+
+### Updates
+
+- **Userscript**: Includes `@updateURL` (`docs/nativeread.meta.js`), `@downloadURL` (`docs/nativeread.user.js`), `@homepageURL`, and `@supportURL` so Tampermonkey, Violentmonkey, and Stay can update automatically.
+- **Mobile PWA**: Uses a versioned Service Worker cache (`nativeread-pwa-v<version>`). When a new Service Worker takes control of an open page, an update banner appears and refreshing applies the new version.
+- **Desktop Extension (Unpacked) & Android Extension ZIP**: When opened, the extension popup checks `version.json` on GitHub Pages (at most once per 24 hours; toggleable via `checkForUpdates` in Options) and displays `有新版本 vX（目前 vY）/ 查看更新` linking to the GitHub README when a newer version is available. Because these installs are not managed by a web store, updating still requires manual reinstall (pulling the latest repo and reloading, or re-importing the updated Android ZIP).
 
 ---
 
@@ -77,14 +88,58 @@ flowchart TD
     Port --> Cache{"IndexedDB LRU Cache (kct_cache_db_v2)"}
     Cache -->|"Hit"| Render["Native Renderer (rAF / PDF Overlay / Split)"]
     Cache -->|"Miss"| Stream["SSE NDJSON Stream + 429 Adaptive Limiter"]
-    Stream -->|"Incremental items"| Render
+    Stream --> LLM["LLM APIs (OpenAI / Gemini / Claude / Azure)"]
+    LLM -->|"Incremental items"| Render
     Vision --> Cache
+    Vision --> LLM
     Vision --> ImgOverlay["Image Overlay Layer (content/renderer.js)"]
 ```
 
 ### 2.1 Local Zero-Latency Decision Model
 
 All page segmentation, filtering, and typography decisions run locally in `content/site-analyzer.js` and `content/renderer.js` with zero extra LLM calls:
+
+NativeRead runs a single universal three-layer local pipeline—with no per-site branches or adapters—to decide what to translate, match native typography, and render streams seamlessly with zero extra LLM calls.
+
+```mermaid
+flowchart TD
+    A["Trigger: Popup / Alt+T / Context Menu / Allowlist"] --> B["background/service-worker.js: On-Demand Script Injection"]
+    B --> C1
+
+    subgraph L1["Layer 1: What to Translate (content/site-analyzer.js)"]
+        C1["findContentRoots + scoreReadabilityContainer"]
+        C1 --> C2["collectUniversalCandidateElements + queryAllDeep (Shadow DOM)"]
+        C2 --> C3["shouldSkipBlock / isMeaningfulLeafText / shouldTranslateText"]
+        C3 -->|"Skip"| SKIP["UI Chrome / Code / Target Lang (0 Tokens)"]
+        C3 -->|"Keep"| C4["extractBlockContent ([[C#]] [[M#]] [[L#]] Protection)"]
+        C1 -->|"Drive PDF"| C5["preparePdfOverlayLayers + detectPdfTocEntries"]
+        C1 -->|"Code Blocks"| C6["content/code-overlay.js: collectCodeComments + Output Button"]
+    end
+
+    subgraph L2["Layer 2: How It Should Look (Local Probe)"]
+        D1["probeTypography + sanitizeFontFamily + detectPageDarkBackground"]
+        D2["Drive PDF: ensurePdfLayerTypography (measurePdfBlockGlyphs) + samplePdfImageColors"]
+    end
+
+    C4 --> D1
+    C6 --> D1
+    C5 --> D2
+
+    D1 --> Q1["IntersectionObserver Viewport Queue (rootMargin 600px)"]
+    D2 --> Q1
+    Q1 --> Q2["IndexedDB LRU Cache (kct_cache_db_v2)"]
+    Q2 -->|"Cache Hit (0 Tokens)"| R1
+    Q2 -->|"Cache Miss"| Q3["kct-stream Port: SSE / NDJSON (Lowest Thinking + 429 Limiter)"]
+    Q3 -->|"NDJSON Stream"| R1
+
+    subgraph L3["Layer 3: Native Rendering (content/renderer.js)"]
+        R1["renderJobsWithRAF (Max 15/Frame) + Shadow DOM Control Pill"]
+        R1 --> R2["applyBlockTranslation + buildTranslatedFragment (Zero innerHTML)"]
+        R1 -->|"Drive PDF"| R3["styleAndFitPdfOverlayBlock + appendPdfTocTail"]
+    end
+
+    M1["On-Demand: Image Right-Click / Hover Image Button"] --> M2["Service Worker Vision Call → renderImageVisionOverlay"]
+```
 
 - **Main-content detection (`findContentRoots`, `scoreReadabilityContainer`)**: Prioritizes embedded Jupyter/notebook cells (`LESSON_CELL_SELECTOR`), Google Drive PDF viewer pages (`.ndfHFb-c4YZDc-cYSp0e-DARUcf`), and semantic containers (`article`, `main`, `[role="main"]`, `.markdown-body`, `.prose`, `#mw-content-text`). Containers are scored by `textLen + pCount * 40`, penalized when `linkRatio > 0.55`, boosted `1.25x` for article/doc containers, and refined to tighter inner containers when they retain `>= 65%` of text. Top-level `#firstHeading` / `h1` headings are preserved.
 - **Two-pass DOM scan (`collectUniversalCandidateElements`)**:
@@ -112,12 +167,12 @@ NativeRead maintains two specialized PDF pipelines tailored to how PDFs are rend
 
 1. **Explicit user trigger**: Activated only when the user right-clicks an image (**NativeRead 翻譯圖片文字**) or clicks the hover pill (**譯圖**) on content images `>= 200x140` px (excluding nav/header/footer and Google Drive PDF page rasters).
 2. **Background fetch & downscaling (`background/service-worker.js`)**: `prepareImagePayloadForVision` downloads `http(s):` images from the Service Worker (avoiding page Canvas CORS taint; 16 MB cap, 20 s timeout, magic-byte MIME sniffing) or accepts `data:` URLs for local/blob images. Using `createImageBitmap` + `OffscreenCanvas`, it creates a `~480px` alpha-preserving sample buffer and re-encodes images exceeding `1600px` or `4 MB`.
-3. **Structured Vision inference & color sampling**: `callVisionImageLLM` sends a single multimodal request (Gemini `inlineData` or OpenAI `image_url`, 60 s timeout) returning `{"blocks":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","role":"title|badge|body"}]}` in 0–1000 coordinates. `sampleImageBoxColors` computes modal perimeter `bg` and WCAG-checked interior `fg` for each box, and caches the result in IndexedDB by both SHA-256 digest and normalized URL.
-4. **In-place overlay rendering (`content/renderer.js`)**: `renderImageVisionOverlay` wraps the `<img>` in `.kct-img-overlay-host`, aligns `.kct-img-overlay-layer` to exact image dimensions, places each block with adaptive font shrinking (`fitVisionOverlayBlock`), and lets users toggle **原圖 / 顯示譯圖** on demand.
+3. **Structured Vision inference, ink refinement & color sampling**: `callVisionImageLLM` sends a single multimodal request (Gemini `inlineData`, OpenAI `image_url`, or Anthropic Messages base64 `image` block; 60 s timeout, always using at least the `balanced` thinking level for more reliable boxes) returning `{"blocks":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","role":"title|badge|body"}]}` in 0–1000 coordinates. `refineImageBoxToInk` expands each box per side by at most `~0.6 ×` one line height to cover cut-off glyph edges while bridging only letter spacing and stopping at solid borders or illustration edges. `sampleImageBoxColors` computes modal perimeter `bg` and WCAG-checked interior `fg` for each box, strips stray spaces/newlines between CJK characters, and caches the result in IndexedDB under versioned `img:v4:` keys by both SHA-256 digest and normalized URL.
+4. **In-place overlay rendering (`content/renderer.js`)**: `renderImageVisionOverlay` wraps the `<img>` in `.kct-img-overlay-host`, aligns `.kct-img-overlay-layer` to exact image dimensions, places each block with adaptive font shrinking (`fitVisionOverlayBlock`) while unifying font size across labels of the same role (`title` / `badge` / `body`), and lets users toggle **原圖 / 顯示譯圖** on demand.
 
 ### 2.4 Streaming, Viewport Lazy Loading, Rate Limiting & LRU Cache
 
-- **SSE / NDJSON streaming & resilient fallback**: Content scripts and the PDF viewer connect over a long-lived `kct-stream` port. The Service Worker streams Gemini (`:streamGenerateContent?alt=sse`) or OpenAI (`stream: true`) NDJSON lines (`{"i":0,"t":"..."}`), parsed incrementally via `createIncrementalJsonScanner`. Missing items or broken streams fall back to batch JSON (`TRANSLATE_BATCH`) with recursive bisection (`translateItemsWithFallback`, up to depth 3).
+- **SSE / NDJSON streaming & resilient fallback**: Content scripts and the PDF viewer connect over a long-lived `kct-stream` port. The Service Worker streams Gemini (`:streamGenerateContent?alt=sse`), OpenAI (`stream: true`), or Anthropic Messages SSE NDJSON lines (`{"i":0,"t":"..."}`), parsed incrementally via `createIncrementalJsonScanner`. Missing items or broken streams fall back to batch JSON (`TRANSLATE_BATCH`) with recursive bisection (`translateItemsWithFallback`, up to depth 3).
 - **rAF micro-batching & viewport lazy loading**: Streamed web translations flush through `renderJobsWithRAF` in slices of up to `15` items per animation frame (`scheduler.yield()` between slices when supported). Off-screen blocks are deferred via `IntersectionObserver` (`rootMargin: 600px 0px` for web; `500px 0px` for PDF.js), queued viewport-first with up to `3` concurrent batch workers (`batchSize: 20`, `maxBatchChars: 5500`).
 - **Cross-frame 429 adaptive rate limiter**: `background/service-worker.js` enforces a global concurrency cap of `3` across frames. On HTTP `429`, it parses `Retry-After` / `retryDelay`, triggers a 90 s adaptive pacing window (concurrency `1`, `4.3s` inter-request gap) plus global cooldown, and separates daily/zero quota exhaustion (`QUOTA_EXCEEDED`) from temporary RPM limits (`RATE_LIMITED`).
 - **IndexedDB LRU cache (`shared/cache-db.js`)**: Stores up to `20,000` entries in `kct_cache_db_v2` (store `entries`, indexed by `ts`), keyed by `protocol:model:thinkingEffort:targetLang:customLang:glossaryHash`. Cache hits debounce-touch `ts` (`60s` threshold, `250ms` debounce) so overflow eviction removes least-recently-used records.
@@ -126,7 +181,7 @@ NativeRead maintains two specialized PDF pipelines tailored to how PDFs are rend
 
 ```text
 native-read/
-├── manifest.json                 # MV3 manifest, permissions, Alt+T command (no static content_scripts)
+├── manifest.json                 # MV3 manifest, version source of truth, permissions, Alt+T command
 ├── shared/
 │   ├── config.js                 # Schema v5 settings, provider presets, thinking config, URL/PDF helpers
 │   └── cache-db.js               # IndexedDB kct_cache_db_v2 20,000-entry LRU cache
@@ -139,11 +194,11 @@ native-read/
 │   ├── content.js                # Viewport lazy queue, kct-stream client, Shadow DOM pill/selection/image UI
 │   └── content.css               # Replace/Original/Bilingual modes, font stacks, Drive PDF & image overlay styles
 ├── viewer/                       # Built-in PDF.js reader (pdf-viewer.html / .css / .js)
-├── popup/                        # Extension popup controls, allowlist toggle, PDF reader launcher
+├── popup/                        # Extension popup controls, allowlist toggle, update notice, PDF reader launcher
 ├── options/                      # Settings page, provider/model config, glossary, local QR sync, cache controls
 ├── icons/                        # Extension icons (16 / 48 / 128 px)
 ├── scripts/
-│   └── build-mobile.js           # Generates docs/nativeread.user.js, Android ZIP, and copies PDF.js/icons
+│   └── build-mobile.js           # Stamps version; generates Userscript, meta.js, version.json, Android ZIP, PDF.js/icons
 ├── docs/                         # GitHub Pages mobile PWA (index.html, app.js, app.css, sw.js, generated bundles)
 ├── LICENSE                       # MIT License
 └── README*.md                    # Multilingual product, architecture, and security documentation
@@ -156,13 +211,14 @@ native-read/
 | Area | Implementation |
 | --- | --- |
 | **Local Storage** | Extension settings and API keys live only in `chrome.storage.local` (`kct_settings_v1`); PWA settings live in `localStorage`; Userscript settings live in `GM_getValue`/`GM_setValue` (`localStorage` fallback). Translation caches live locally in IndexedDB (`kct_cache_db_v2`) and can be cleared anytime. |
-| **Network Endpoints** | Extension and Userscript traffic goes directly to your configured LLM endpoint with API keys placed strictly in HTTP headers (`x-goog-api-key` or `Authorization: Bearer`) and redacted from error messages (`redactApiKey`). Remote PDFs and on-demand images are fetched directly from their source URLs by the Service Worker. |
+| **Network Endpoints** | Extension and Userscript traffic goes directly to your configured LLM endpoint—including `api.anthropic.com` or Azure OpenAI hosts when selected—with API keys placed strictly in HTTP headers (`x-goog-api-key`, `Authorization: Bearer`, `x-api-key` + `anthropic-version: 2026-10-21` + `anthropic-dangerous-direct-browser-access: true` for Anthropic, or `api-key` for Azure) and redacted from error messages (`redactApiKey`). Remote PDFs and on-demand images are fetched directly from their source URLs by the Service Worker. |
+| **Update Check** | When the extension popup is opened (and `checkForUpdates` is enabled, default on), it fetches `https://chih-kai-wang.github.io/native-read/version.json` at most once per 24 hours (cached in `chrome.storage.local` under `nr_update_check_v1`, 5 s timeout, `credentials: 'omit'`, no extra permissions, no background timers). The JSON payload is strictly validated and never used as a URL; the update link is hard-coded to the GitHub README. Uncheck `checkForUpdates` in Options to disable it completely. |
 | **`#nr_sync` Fragment Handling** | Sync payloads live exclusively in the URL `#` fragment (never `?query`), which browsers do not transmit in HTTP requests. `background/service-worker.js` accepts `#nr_sync` only from the extension origin or `https://chih-kai-wang.github.io/native-read`, rejects endpoint mutations (`baseUrl` / `protocol` / `providerId`) unless an explicit `apiKey` is included, validates `http:`/`https:` schemes, and immediately clears the fragment with `history.replaceState`. |
 | **Zero-`innerHTML` DOM Safety** | All translated strings, popovers, and overlays are written via `document.createTextNode` and `.textContent`. Inline placeholders (`[[C#]]`, `[[M#]]`, `[[L#]]`) restore only cloned pre-existing DOM nodes. |
 | **MV3 CSP & PDF.js Hardening** | PDF.js is bundled locally with `isEvalSupported: false` in both `viewer/pdf-viewer.js` and `docs/app.js`. Privileged Service Worker actions (`ENSURE_AND_COMMAND`, `TEST_CONNECTION`, `OPEN_PDF_VIEWER`, `GET_SW_DEBUG`, `CLEAR_CACHE`) enforce `isExtensionSender(sender)`. |
 | **UI & QR Isolation** | Floating pills, selection popovers, image hover triggers, and Userscript controls are isolated inside Shadow DOM (`all: initial`). Sync QR codes are generated locally in the Options page without calling external QR services. |
 
-> **Note on the Mobile PWA (`docs/app.js`)**: For PDF URLs, NativeRead's policy is direct browser fetch only—removing the legacy `api.allorigins.win` CORS proxy fallback in favor of direct fetch with timeout and local-file download guidance so private PDF URLs/bytes are never sent to a third-party relay. In the PWA's optional **Web URL** tab, cross-origin public article extraction (`fetchReadableArticleFromUrl`) currently uses `r.jina.ai` (with an `api.allorigins.win` fallback); if you require zero third-party relays on mobile, paste article text directly in the Web tab or use the Userscript / Android extension instead.
+> **Note on the Mobile PWA (`docs/app.js`)**: For PDF URLs, NativeRead resolves Google Drive links and uses direct browser fetch only (15 s full-download timeout, no `api.allorigins.win` relay, plus an "open PDF in a new tab" fallback button and local-file guidance) so private PDF URLs/bytes are never sent to a third-party relay. In the PWA's optional **Web URL** tab, cross-origin public article extraction (`fetchReadableArticleFromUrl`) currently uses `r.jina.ai` (with an `api.allorigins.win` fallback); if you require zero third-party relays on mobile, paste article text directly in the Web tab or use the Userscript / Android extension instead.
 
 ---
 
@@ -175,7 +231,21 @@ node scripts/build-mobile.js
 for f in shared/*.js background/*.js content/*.js popup/*.js options/*.js viewer/*.js scripts/*.js docs/app.js docs/sw.js docs/nativeread.user.js; do node --check "$f" || exit 1; done
 ```
 
-`docs/nativeread.user.js`, `docs/nativeread-android-extension.zip`, `docs/vendor/pdfjs/`, `docs/icons/`, and `docs/.nojekyll` are generated by `scripts/build-mobile.js`—edit the source modules under `shared/`, `content/`, `viewer/`, and `docs/app.js`, then re-run the build script.
+`manifest.json` `"version"` is the single source of truth (`MAJOR.MINOR.PATCH`). Running `node scripts/build-mobile.js` validates the version and stamps it into the Userscript `@version`, `docs/sw.js` `CACHE_NAME` (`nativeread-pwa-v<version>`), and the PWA badge in `docs/index.html`.
+
+`docs/nativeread.user.js`, `docs/nativeread.meta.js`, `docs/version.json`, `docs/nativeread-android-extension.zip`, `docs/vendor/pdfjs/`, `docs/icons/`, and `docs/.nojekyll` are generated by `scripts/build-mobile.js`—edit the source modules under `shared/`, `content/`, `viewer/`, and `docs/app.js`, then re-run the build script.
+
+**Release flow (maintainers)**: bump `"version"` in `manifest.json` → run `node scripts/build-mobile.js` → commit and push so GitHub Pages serves the updated PWA, Userscript, metadata, `version.json`, and Android ZIP.
+
+---
+
+## Roadmap / Not yet supported
+
+- **Browser web stores**: Not yet published on the Chrome Web Store or Edge Add-ons; desktop installation currently requires **Load unpacked** without store auto-updates.
+- **Cloud PDF link resolvers**: Dropbox, OneDrive, and Box PDF links are not converted yet (Google Drive links are supported).
+- **Additional media & formats**: No video subtitle translation, no OCR for scanned PDFs, and no EPUB or Office document support.
+- **UI localization**: Extension and PWA interface strings are currently Traditional Chinese only.
+- **Other desktop browsers**: Desktop Firefox and Safari are not officially supported.
 
 ---
 

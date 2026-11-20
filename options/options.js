@@ -120,6 +120,7 @@ function readFormValues() {
     displayMode: document.getElementById('mode-select').value,
     translateCodeComments: document.getElementById('translate-code-comments').checked,
     showOutputTranslateBtn: document.getElementById('show-output-btn').checked,
+    checkForUpdates: document.getElementById('check-for-updates').checked,
     typographyMatch: document.getElementById('typography-match').value,
     thinkingEffort: document.getElementById('thinking-effort').value,
     lazyViewport: document.getElementById('lazy-viewport').checked,
@@ -659,6 +660,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('mode-select').value = settings.displayMode || 'replace';
   document.getElementById('translate-code-comments').checked = settings.translateCodeComments !== false;
   document.getElementById('show-output-btn').checked = settings.showOutputTranslateBtn !== false;
+  document.getElementById('check-for-updates').checked = settings.checkForUpdates !== false;
   document.getElementById('typography-match').value = settings.typographyMatch || 'native';
   document.getElementById('thinking-effort').value = settings.thinkingEffort || 'fastest';
   document.getElementById('lazy-viewport').checked = settings.lazyViewport !== false;

@@ -321,6 +321,96 @@ async function sendCommandToActiveTab(action) {
   }
 }
 
+// popup/popup.js — helper functions + checkForExtensionUpdate
+const UPDATE_CACHE_KEY = 'nr_update_check_v1';
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const UPDATE_FETCH_TIMEOUT_MS = 5000;
+const UPDATE_VERSION_URL = 'https://chih-kai-wang.github.io/native-read/version.json';
+const UPDATE_README_URL = 'https://github.com/Chih-Kai-Wang/native-read#readme';
+const SEMVER_RE = /^\d+\.\d+\.\d+$/;
+
+function compareSemver(a, b) {
+  if (!SEMVER_RE.test(a) || !SEMVER_RE.test(b)) return 0;
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] > pb[i] ? 1 : -1;
+  }
+  return 0;
+}
+
+function renderUpdateBanner(latest, current) {
+  const banner = document.getElementById('update-banner');
+  if (!banner) return;
+
+  banner.replaceChildren();
+
+  const text = document.createElement('span');
+  text.textContent = `有新版本 v${latest}（目前 v${current}）`;
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'link-btn';
+  btn.textContent = '查看更新';
+  btn.addEventListener('click', () => {
+    chrome.tabs.create({ url: UPDATE_README_URL });
+  });
+
+  banner.appendChild(text);
+  banner.appendChild(btn);
+  banner.classList.remove('hidden');
+}
+
+async function checkForExtensionUpdate(settings) {
+  if (settings && settings.checkForUpdates === false) return;
+
+  const current = chrome.runtime.getManifest().version;
+  if (!SEMVER_RE.test(current)) return;
+
+  const stored = await chrome.storage.local.get(UPDATE_CACHE_KEY);
+  const entry = stored && stored[UPDATE_CACHE_KEY];
+  const prevLatest = entry && typeof entry.latest === 'string' && SEMVER_RE.test(entry.latest)
+    ? entry.latest
+    : '';
+  const checkedAt = entry && typeof entry.checkedAt === 'number' ? entry.checkedAt : 0;
+  const now = Date.now();
+  const isFresh = checkedAt > 0 && now >= checkedAt && (now - checkedAt) < UPDATE_CHECK_INTERVAL_MS;
+
+  let latest = prevLatest;
+
+  if (!isFresh) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(UPDATE_VERSION_URL, {
+        cache: 'no-store',
+        credentials: 'omit',
+        signal: controller.signal
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (!data || typeof data.version !== 'string' || !SEMVER_RE.test(data.version)) {
+        throw new Error('Invalid version');
+      }
+      latest = data.version;
+      await chrome.storage.local.set({
+        [UPDATE_CACHE_KEY]: { checkedAt: Date.now(), latest }
+      });
+    } catch {
+      await chrome.storage.local.set({
+        [UPDATE_CACHE_KEY]: { checkedAt: Date.now(), latest: prevLatest }
+      }).catch(() => {});
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  if (latest && compareSemver(latest, current) > 0) {
+    renderUpdateBanner(latest, current);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   const langSel = document.getElementById('lang-select');
   for (const lang of Object.values(TARGET_LANGUAGES)) {
@@ -494,4 +584,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   };
   document.getElementById('btn-open-options')?.addEventListener('click', openOptions);
   document.getElementById('btn-go-config')?.addEventListener('click', openOptions);
+  // Fire-and-forget: at most one GitHub Pages check per day, only while the popup is open
+  checkForExtensionUpdate(settings).catch(() => {});
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NativeRead — 原版美感 AI 網頁翻譯 (Mobile & Desktop)
 // @namespace    https://chih-kai-wang.github.io/native-read/
-// @version      2.3.0
+// @version      2.4.0
 // @description  保留原網站 Serif / Sans 排版氣質的 AI 串流網頁與程式碼註解翻譯器（支援 iOS Safari Stay / Userscripts 與 Android Tampermonkey / 狐猴 / Kiwi）
 // @author       Chih-Kai Wang
 // @homepageURL  https://github.com/Chih-Kai-Wang/native-read
@@ -105,6 +105,30 @@
       ],
       placeholderKey: 'sk-or-...',
       hint: '聚合多家大模型，填入對應模型 ID 即可。'
+    },
+    anthropic: {
+      id: 'anthropic',
+      label: 'Anthropic Claude（原生 Messages API）',
+      protocol: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      defaultModel: 'claude-opus-5-5',
+      suggestedModels: [
+        'claude-opus-5-5',
+        'claude-sonnet-5-5',
+        'claude-haiku-5-5'
+      ],
+      placeholderKey: 'sk-ant-...',
+      hint: '請至 platform.claude.com 取得 API Key；若需節省成本，可改選 claude-sonnet-5-5 或 claude-haiku-5-5。'
+    },
+    azure: {
+      id: 'azure',
+      label: 'Azure OpenAI（v1 API · api-key）',
+      protocol: 'openai',
+      baseUrl: 'https://YOUR-RESOURCE.openai.azure.com/openai/v1',
+      defaultModel: '',
+      suggestedModels: [],
+      placeholderKey: 'Azure API Key...',
+      hint: '請將網址中的 YOUR-RESOURCE 替換為您的 Azure 資源名稱，並在模型欄位填入部署名稱（Deployment Name）。'
     },
     custom: {
       id: 'custom',
@@ -261,6 +285,7 @@
     selectionTranslate: true,
     showFloatingBall: true,
     showOutputTranslateBtn: true,
+    checkForUpdates: true,
     lazyViewport: true,
     streamTranslation: true,
     thinkingEffort: 'fastest', // 'fastest' | 'balanced' | 'deep'
@@ -320,14 +345,234 @@
     return `${clean}/v1beta/models/${encodeURIComponent(m)}:generateContent`;
   }
 
+  function isAzureOpenAIEndpoint(baseUrl) {
+    if (!baseUrl || typeof baseUrl !== 'string') return false;
+    try {
+      const { hostname } = new URL(baseUrl.trim());
+      const host = hostname.toLowerCase();
+      return (
+        host.endsWith('.openai.azure.com') ||
+        host.endsWith('.services.ai.azure.com') ||
+        host.endsWith('.cognitiveservices.azure.com')
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function normalizeAnthropicEndpoint(baseUrl) {
+    const raw = String(baseUrl || '').trim();
+    if (!raw) return 'https://api.anthropic.com/v1/messages';
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch (_) {
+      return '';
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+    const clean = parsed.toString().replace(/\/+$/, '');
+    if (clean.endsWith('/v1/messages')) return clean;
+    if (clean.endsWith('/v1')) return `${clean}/messages`;
+    return `${clean}/v1/messages`;
+  }
+
+  function buildProviderAuthHeaders(settings, cleanKey) {
+    const headers = { 'Content-Type': 'application/json' };
+    const protocol = settings?.protocol || 'openai';
+    const key = String(cleanKey || '').trim();
+
+    if (protocol === 'gemini') {
+      if (key) headers['x-goog-api-key'] = key;
+      return headers;
+    }
+
+    if (protocol === 'anthropic') {
+      if (key) headers['x-api-key'] = key;
+      headers['anthropic-version'] = '2026-10-21';
+      headers['anthropic-dangerous-direct-browser-access'] = 'true';
+      return headers;
+    }
+
+    if (key) {
+      if (isAzureOpenAIEndpoint(settings?.baseUrl)) {
+        headers['api-key'] = key;
+      } else {
+        headers['Authorization'] = `Bearer ${key}`;
+      }
+    }
+    return headers;
+  }
+
+  function resolveAnthropicEffort(model, thinkingEffort) {
+    const m = String(model || '').trim();
+    const supportsEffort =
+      /^claude-(?:opus|sonnet|haiku|fable|mythos)-(?:5|[6-9])(?:[-.]|$)/.test(m) ||
+      /^claude-(?:opus-4-[5-9]|sonnet-4-6|opus-4-6)(?:[-.]|$)/.test(m);
+    if (!supportsEffort) return '';
+
+    const map = {
+      fastest: 'low',
+      balanced: 'medium',
+      deep: 'high'
+    };
+    return map[thinkingEffort] || '';
+  }
+
+  function buildAnthropicMessagesBody(
+    settings,
+    messages,
+    { stream = false, maxTokens = 16000, image = null } = {}
+  ) {
+    const systemParts = [];
+    const convMessages = [];
+
+    if (Array.isArray(messages)) {
+      for (const msg of messages) {
+        if (!msg || typeof msg !== 'object') continue;
+        const role = msg.role;
+        const text = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
+        if (!text.trim()) continue;
+
+        if (role === 'system') {
+          systemParts.push(text);
+        } else if (role === 'user' || role === 'assistant') {
+          convMessages.push({ role, content: text });
+        }
+      }
+    }
+
+    if (image && image.base64 && image.mimeType) {
+      let lastUserIdx = -1;
+      for (let i = convMessages.length - 1; i >= 0; i--) {
+        if (convMessages[i].role === 'user') {
+          lastUserIdx = i;
+          break;
+        }
+      }
+      if (lastUserIdx !== -1) {
+        const cleanBase64 = String(image.base64).replace(/^data:[^;]+;base64,/, '');
+        const textContent = convMessages[lastUserIdx].content;
+        convMessages[lastUserIdx] = {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: String(image.mimeType).trim(),
+                data: cleanBase64
+              }
+            },
+            {
+              type: 'text',
+              text: textContent
+            }
+          ]
+        };
+      }
+    }
+
+    const model = String(settings?.model || '').trim();
+    const body = {
+      model,
+      max_tokens: Number(maxTokens) > 0 ? Math.floor(Number(maxTokens)) : 16000,
+      messages: convMessages
+    };
+
+    if (systemParts.length > 0) {
+      body.system = systemParts.join('\n\n');
+    }
+
+    if (stream) {
+      body.stream = true;
+    }
+
+    const effort = resolveAnthropicEffort(model, settings?.thinkingEffort);
+    if (effort) {
+      body.output_config = { effort };
+    }
+
+    return body;
+  }
+
+  function extractAnthropicText(data) {
+    if (!data || typeof data !== 'object') return '';
+
+    if (data.type === 'error') {
+      const msg = data.error?.message || data.error?.type || 'Anthropic API Error';
+      throw new Error(msg);
+    }
+
+    const stopReason = data.stop_reason;
+    if (stopReason === 'refusal') {
+      const category = data.stop_details?.category || 'refusal';
+      const err = new Error(`Claude 拒絕了此請求（${category}）`);
+      err.noRetry = true;
+      err.noSplit = true;
+      throw err;
+    }
+
+    let text = '';
+    if (Array.isArray(data.content)) {
+      for (const block of data.content) {
+        if (block && block.type === 'text' && typeof block.text === 'string') {
+          text += block.text;
+        }
+      }
+    }
+
+    if (stopReason === 'max_tokens' && !text) {
+      const err = new Error('Claude 輸出被截斷（max_tokens）');
+      err.noSplit = false;
+      throw err;
+    }
+
+    return text;
+  }
+
+  function extractAnthropicStreamDelta(eventObj) {
+    const result = { text: '', error: '', stopReason: '' };
+    if (!eventObj || typeof eventObj !== 'object') return result;
+
+    try {
+      if (
+        eventObj.type === 'content_block_delta' &&
+        eventObj.delta?.type === 'text_delta' &&
+        typeof eventObj.delta.text === 'string'
+      ) {
+        result.text = eventObj.delta.text;
+      } else if (eventObj.type === 'error') {
+        result.error = String(
+          eventObj.error?.message || eventObj.error?.type || 'Anthropic Stream Error'
+        );
+      } else if (eventObj.type === 'message_delta') {
+        if (typeof eventObj.delta?.stop_reason === 'string') {
+          result.stopReason = eventObj.delta.stop_reason;
+        }
+      }
+    } catch (_) {
+      // Never throw
+    }
+
+    return result;
+  }
+
   function resolveEndpoint(settings) {
     if (settings?.protocol === 'gemini') {
       return normalizeGeminiEndpoint(settings.baseUrl, settings.model);
+    }
+    if (settings?.protocol === 'anthropic') {
+      return normalizeAnthropicEndpoint(settings.baseUrl);
     }
     return normalizeOpenAIEndpoint(settings?.baseUrl);
   }
 
   function resolveStreamEndpoint(settings) {
+    if (settings?.protocol === 'anthropic') {
+      return normalizeAnthropicEndpoint(settings.baseUrl);
+    }
     const endpoint = resolveEndpoint(settings);
     if (!endpoint) return '';
     if (settings?.protocol === 'gemini') {
@@ -635,6 +880,13 @@
     isPdfUrl,
     extractGoogleDriveFileId,
     resolvePdfSourceUrl,
+    isAzureOpenAIEndpoint,
+    normalizeAnthropicEndpoint,
+    buildProviderAuthHeaders,
+    resolveAnthropicEffort,
+    buildAnthropicMessagesBody,
+    extractAnthropicText,
+    extractAnthropicStreamDelta,
     isLocalEndpoint,
     sanitizeApiKey,
     getSettings,
@@ -3147,6 +3399,9 @@
     resolveTargetLanguage,
     resolveEndpoint,
     resolveStreamEndpoint,
+    buildProviderAuthHeaders,
+    buildAnthropicMessagesBody,
+    extractAnthropicStreamDelta,
     resolveThinkingConfig,
     normalizeHostname,
     isHostWhitelisted,
@@ -3450,6 +3705,15 @@
       }
       return out;
     }
+    if (protocol === 'anthropic') {
+      if (chunkObj.type === 'message' && Array.isArray(chunkObj.content)) {
+        return chunkObj.content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text)
+          .join('');
+      }
+      return extractAnthropicStreamDelta(chunkObj).text;
+    }
     const c = chunkObj?.choices?.[0];
     return c?.delta?.content || c?.message?.content || '';
   }
@@ -3477,8 +3741,17 @@
         headers,
         body: JSON.stringify(body)
       };
+    } else if (settings.protocol === 'anthropic') {
+      // Claude Messages API (no temperature / thinking fields; JSON is requested in the prompt)
+      const body = buildAnthropicMessagesBody(settings, messages, { stream: Boolean(stream), maxTokens: 32000 });
+      return {
+        url: resolveEndpoint(settings),
+        headers: buildProviderAuthHeaders(settings, cleanKey),
+        body: JSON.stringify(body)
+      };
     } else {
-      if (cleanKey) headers['Authorization'] = `Bearer ${cleanKey}`;
+      // OpenAI-compatible; Azure OpenAI endpoints get the api-key header
+      Object.assign(headers, buildProviderAuthHeaders(settings, cleanKey));
       const model = String(settings.model || '').trim();
       const body = { model, messages, stream: Boolean(stream) };
       if (!/^o[134](?:-|$)|deepseek-reasoner|^r1\b/i.test(model)) {
